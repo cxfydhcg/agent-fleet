@@ -36,6 +36,13 @@ class AppServerError(RuntimeError):
         self.error = error
 
 
+def task_folder_name(task_id, name=None):
+    """A readable folder for a new task: date, name and short id, e.g. 2026-10-12_检查B站登录状态_a0bece4b."""
+    label = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', ' ', name or '').strip(' .')[:40].strip()
+    parts = [datetime.now().strftime('%Y-%m-%d')] + ([re.sub(r'\s+', '-', label)] if label else []) + [task_id[:8]]
+    return '_'.join(parts)
+
+
 FINISHED = ('completed', 'failed', 'cancelled', 'interrupted', 'timed_out')
 WAKE_HEADER = '【自动通知 · 派任务服务】'
 WORKER_RULES = '''你是被派出来执行具体任务的子 agent（worker）。必须遵守：
@@ -508,7 +515,8 @@ class TaskManager:
             if any(j['status'] in ('queued', 'running') and j.get('thread_id') == parent['thread_id'] for j in self.jobs.values()):
                 raise ValueError('This session already has pending work; wait for it to finish')
         task_id = str(uuid.uuid4())
-        target = Path(parent['workspace']).resolve() if parent else (Path(workspace).resolve() if workspace else self.root / task_id)
+        target = Path(parent['workspace']).resolve() if parent else (
+            Path(workspace).resolve() if workspace else self.root / task_folder_name(task_id, name))
         if not any(target.is_relative_to(root) for root in self.roots):
             raise ValueError('workspace is outside allowed_roots in the server configuration')
         target.mkdir(parents=True, exist_ok=True)
@@ -692,6 +700,9 @@ class TaskManager:
                            'approvalPolicy': policy['approvalPolicy']}  # turn/start takes no developerInstructions
             if sandbox == 'danger-full-access':
                 turn_params['sandboxPolicy'] = {'type': 'dangerFullAccess'}
+            elif sandbox == 'workspace-write' and self.config.get('shared_dir'):
+                # The shared folder is where tasks hand files to each other, so it must be writable too.
+                turn_params['sandboxPolicy'] = {'type': 'workspaceWrite', 'writableRoots': [self.config['shared_dir']]}
             await connection.request('turn/start', turn_params)
             done, _ = await asyncio.wait({turn_done, connection.reader}, return_when=asyncio.FIRST_COMPLETED)
             if turn_done not in done:
@@ -724,8 +735,9 @@ class TaskManager:
         deadline = asyncio.get_running_loop().time() + self.config.get('writer_wait_seconds', 10)
         while True:
             try:
-                # Re-apply the current permissions so older sessions pick up config changes.
-                await connection.request('thread/resume', {'threadId': job['thread_id'], **policy})
+                # Re-apply the current permissions and folder, so older sessions pick up config changes
+                # and sessions whose folder was moved continue in the new place.
+                await connection.request('thread/resume', {'threadId': job['thread_id'], 'cwd': job['workspace'], **policy})
                 return
             except AppServerError as error:
                 if 'active writer' not in str(error):
@@ -741,7 +753,7 @@ class TaskManager:
                                        '直到 Codex 完全退出；请开一个新任务，或退出 Codex 后再继续。') from error
                 break
         original = job['thread_id']
-        forked = await connection.request('thread/fork', {'threadId': original, **policy})
+        forked = await connection.request('thread/fork', {'threadId': original, 'cwd': job['workspace'], **policy})
         job.update(forked_from_thread_id=original, thread_id=forked['thread']['id'])
         self.save(job)
         base = job.get('name') or 'Codex task'

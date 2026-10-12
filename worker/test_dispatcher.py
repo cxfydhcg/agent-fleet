@@ -185,6 +185,8 @@ for line in sys.stdin:
     if method in ('thread/start', 'thread/resume', 'turn/start'):
         log('policy:%s:%s:%s' % (method, params.get('approvalPolicy'), params.get('sandbox') or (params.get('sandboxPolicy') or {}).get('type')))
         log('worker-rules:%s:%s' % (method, 'yes' if '子 agent（worker）' in (params.get('developerInstructions') or '') else 'no'))
+        if params.get('cwd'): log('cwd:%s:%s' % (method, params['cwd']))
+        if (params.get('sandboxPolicy') or {}).get('writableRoots'): log('writable:%s' % params['sandboxPolicy']['writableRoots'][0])
     if method == 'initialize': send({'id': message['id'], 'result': {}})
     elif method == 'thread/start': send({'id': message['id'], 'result': {'thread': {'id': 'as-thread'}}})
     elif method == 'thread/name/set': send({'id': message['id'], 'result': {}})
@@ -342,6 +344,24 @@ class AppServerDispatcherTests(DispatcherTests):
         self.manager.register_agent('总管', '主 Agent', agent_type='main')
         self.assertFalse(self.manager.is_worker({'workspace': str(self.root / 'tasks' / 'x'), 'name': '总管'}))
         self.assertTrue(self.manager.is_worker({'workspace': str(self.root / 'tasks' / 'x'), 'name': '剪辑视频'}))
+
+    async def test_task_folders_are_readable_and_moved_sessions_follow_their_folder(self):
+        shared = self.root / 'shared'
+        self.manager.config['shared_dir'] = str(shared)
+        first = self.manager.submit('work', None, 10, None, name='检查B站: 登录?')
+        folder = Path(first['workspace']).name
+        self.assertRegex(folder, r'^\d{4}-\d{2}-\d{2}_检查B站-登录_[0-9a-f]{8}$')
+        await self.wait_for(first['task_id'], {'completed'})
+        self.assertIn(f'writable:{shared}', self.call_log())
+        # The session's folder is moved (e.g. into a new workspace); continuing tells Codex where it is now.
+        moved = self.root / 'tasks' / 'moved-here'
+        moved.mkdir(parents=True)
+        self.manager.jobs[first['task_id']]['workspace'] = str(moved)
+        followup = self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])
+        await self.wait_for(followup['task_id'], {'completed'})
+        self.assertIn(f'cwd:thread/resume:{moved}', self.call_log())
+        unnamed = self.manager.submit('x', None, 10, None)
+        self.assertRegex(Path(unnamed['workspace']).name, r'^\d{4}-\d{2}-\d{2}_[0-9a-f]{8}$')
 
     async def test_default_policy_stays_locked_down(self):
         first = self.manager.submit('hello', None, 10, None)

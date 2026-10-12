@@ -5,7 +5,8 @@
 param(
     [string]$Name = $env:COMPUTERNAME.ToLower(),
     [string]$Description = '',
-    [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),
+    [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),      # 内部数据：配置、令牌、任务记录
+    [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-agent\、tasks\、shared\
     [int]$Port = 8765,
     [int]$TailscalePort = 8766,
     [switch]$FullAccess,          # 子任务不设沙箱并自动同意权限请求，才能操作桌面、浏览器和其他程序
@@ -58,7 +59,7 @@ $nodeExe = (Get-Command node).Source
 
 # 3. Python environment for the service
 Step '准备 Python 环境'
-New-Item -ItemType Directory -Force -Path $DataDir, (Join-Path $DataDir 'state'), (Join-Path $DataDir 'tasks') | Out-Null
+New-Item -ItemType Directory -Force -Path $DataDir, (Join-Path $DataDir 'state'), (Join-Path $Workspace 'tasks'), (Join-Path $Workspace 'shared') | Out-Null
 $venv = Join-Path $DataDir 'venv'
 $venvPython = Join-Path $venv 'Scripts\python.exe'
 if (-not (Test-Path $venvPython)) {
@@ -94,12 +95,12 @@ if (-not $tsName) { $warnings.Add('Tailscale 还没有登录：登录后重新�
 
 # 6. This computer's main agent
 Step '创建主agent export'
-$mainWorkspace = Join-Path $DataDir 'tasks\main-agent-export'
+$mainWorkspace = Join-Path $Workspace 'main-agent'
 New-Item -ItemType Directory -Force -Path (Join-Path $mainWorkspace '.codex') | Out-Null
 $agentsFile = Join-Path $mainWorkspace 'AGENTS.md'
 if (-not (Test-Path $agentsFile)) {
     $template = [System.IO.File]::ReadAllText((Join-Path $worker 'templates\main-agent\AGENTS.md'))
-    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name))
+    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace))
 }
 Write-Utf8 (Join-Path $mainWorkspace '.codex\config.toml') @"
 # 主agent export 专用：只在本项目里启用派任务服务，子任务不会加载它。文件里含有访问令牌，不要分享。
@@ -140,8 +141,9 @@ $config = [ordered]@{
     tailscale_executable = $tailscale
     state_dir = (Join-Path $DataDir 'state')
     token_file = $tokenFile
-    tasks_dir = (Join-Path $DataDir 'tasks')
-    allowed_roots = @((Join-Path $DataDir 'tasks'))
+    tasks_dir = (Join-Path $Workspace 'tasks')
+    shared_dir = (Join-Path $Workspace 'shared')
+    allowed_roots = @($Workspace)
     allowed_hosts = $allowedHosts
     main_agent_workspaces = @($mainWorkspace)
     executor = 'app-server'

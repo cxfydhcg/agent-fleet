@@ -24,7 +24,16 @@
 | `install-orchestrator.ps1` | 管理端电脑 | 不用插件市场时，手动安装 skill（也可以装到 Codex） |
 | `AGENTS.md` / `CLAUDE.md` | — | 写给 AI 的安装和开发说明 |
 
-每台电脑自己的配置、令牌和数据在 `%LOCALAPPDATA%\agent-fleet\`；管理端的登记表和各电脑令牌在 `~/.agent-fleet/`。这些都**不在**项目文件夹里，不会进 git。
+每台被管理的电脑上有一个工作区，默认是 `%USERPROFILE%\AgentFleet\`，可以用 `-Workspace` 改：
+
+```
+AgentFleet\
+  main-agent\    主agent export 的工作目录
+  tasks\         每个子任务一个文件夹：日期_任务名_编号
+  shared\        子任务之间交接文件、给你的最终产出
+```
+
+内部数据（配置、令牌、任务记录、档案、通知）在 `%LOCALAPPDATA%\agent-fleet\`；管理端的登记表和各电脑令牌在 `~/.agent-fleet/`。这些都**不在**项目文件夹里，不会进 git。
 
 ## 要求
 
