@@ -235,7 +235,7 @@
       }
       const data = await api('/api/tasks');
       $('computer').textContent = data.computer || '';
-      groups = buildGroups(data.tasks);
+      groups = buildGroups(data.tasks.filter((t) => !t.archived)); // archived in the Codex app = removed by the user
       renderList();
       if (selected) await renderDetail(false);
       $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN');

@@ -205,7 +205,7 @@ async function namedSessions() {
   const { tasks } = await call("list_tasks", { limit: 100 });
   const byName = new Map();
   for (const t of tasks) {
-    if (!t.name || !t.thread_id) continue;
+    if (!t.name || !t.thread_id || t.archived) continue; // archived in the Codex app = removed by the user
     const entry = byName.get(t.name) ?? { latest: null, sessions: new Set(), status: t.status };
     entry.sessions.add(t.thread_id);
     if (!entry.latest && TERMINAL.has(t.status)) entry.latest = t;

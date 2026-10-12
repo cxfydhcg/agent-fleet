@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import time
 import uuid
 from urllib.parse import quote
 
@@ -207,6 +208,7 @@ class TaskManager:
         self.profile.setdefault('computer', {})
         self.profile.setdefault('agents', {})
         self.notices = {}  # main agent thread -> finished sub-task ids it has not been told about yet
+        self._archived_cache = None
         self.notifications_file = self.state / 'notifications.jsonl'
         self.notifications = [json.loads(line) for line in self.notifications_file.read_text(encoding='utf-8').splitlines()
                               if line.strip()] if self.notifications_file.exists() else []
@@ -229,9 +231,29 @@ class TaskManager:
             raise ValueError('Unknown task_id')
         return self.jobs[task_id]
 
+    def session_files(self):
+        """(active, archived) session ids, from Codex's session folders. Cached for a few seconds, since
+        task lists are requested often."""
+        if self._archived_cache is None or time.monotonic() - self._archived_cache[0] > 5:
+            codex_home = Path(self.config.get('codex_home') or os.environ.get('CODEX_HOME') or Path.home() / '.codex')
+            ids = lambda folder, pattern: {p.stem[-36:] for p in (codex_home / folder).glob(pattern)}
+            self._archived_cache = (time.monotonic(), ids('sessions', '*/*/*/rollout-*.jsonl'),
+                                    ids('archived_sessions', '**/rollout-*.jsonl'))
+        return self._archived_cache[1], self._archived_cache[2]
+
+    def removed(self, job):
+        """True once the user archived or deleted this task's session in the Codex app."""
+        thread = job.get('thread_id')
+        if not thread or job['status'] not in FINISHED:
+            return False
+        active, archived = self.session_files()
+        return thread in archived or thread not in active
+
     def public(self, job, include_result=False):
         fields = ('task_id', 'name', 'status', 'workspace', 'created_at', 'started_at', 'finished_at', 'thread_id', 'forked_from_thread_id', 'resume_task_id', 'parent_task_id', 'auto_wake', 'timeout_seconds', 'exit_code', 'error', 'latest_message')
         response = {k: job[k] for k in fields if k in job}
+        if self.removed(job):
+            response['archived'] = True
         if job.get('thread_id'):
             response['desktop_url'] = 'codex://threads/' + quote(job['thread_id'], safe='')
             label = (job.get('name') or 'Codex task').replace('[', '(').replace(']', ')').replace('\n', ' ')

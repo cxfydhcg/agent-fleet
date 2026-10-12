@@ -429,6 +429,22 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         await restarted.full_profile(refresh=True)
         self.assertEqual(self.detections, 2)
 
+    async def test_archived_or_deleted_sessions_are_flagged(self):
+        home = Path(self.temp.name) / 'codex-home'
+        (home / 'archived_sessions').mkdir(parents=True)
+        (home / 'sessions' / '2026' / '10' / '11').mkdir(parents=True)
+        archived_id, kept_id, deleted_id = ('01a12db1-be8e-7741-bf8b-7ea3556dc291', '01a12dcc-1a67-7400-b318-99fe00afaa34',
+                                            '01a12ddc-6372-7d00-a34f-59a669f29231')
+        (home / 'archived_sessions' / f'rollout-2026-10-11T21-19-46-{archived_id}.jsonl').write_text('{}')
+        (home / 'sessions' / '2026' / '10' / '11' / f'rollout-2026-10-11T21-48-33-{kept_id}.jsonl').write_text('{}')
+        self.manager.config['codex_home'] = str(home)
+        job = lambda thread, status='completed': {'task_id': thread[:4], 'thread_id': thread, 'status': status, 'created_at': '1'}
+        self.assertTrue(self.manager.public(job(archived_id)).get('archived'))
+        self.assertTrue(self.manager.public(job(deleted_id)).get('archived'))
+        self.assertNotIn('archived', self.manager.public(job(kept_id)))
+        # A running task whose session file isn't written yet is not mistaken for deleted.
+        self.assertNotIn('archived', self.manager.public(job(deleted_id, 'running')))
+
     async def test_profile_rejects_secrets_and_bad_input(self):
         with self.assertRaises(ValueError):
             self.manager.update_computer(accounts=[{'site': 'bilibili', 'password': 'x'}])
