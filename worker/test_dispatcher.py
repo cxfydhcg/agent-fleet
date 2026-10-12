@@ -381,7 +381,19 @@ class AppServerDispatcherTests(DispatcherTests):
     def test_worker_rules_allow_cheaper_helpers(self):
         from server import WORKER_RULES
         self.assertIn('spawn_agent', WORKER_RULES)
+        self.assertIn('gpt-6-luna', WORKER_RULES)
         self.assertIn('fork_turns', WORKER_RULES)
+
+    async def test_worker_rules_come_from_the_editable_file(self):
+        rules = self.root / 'worker-rules.md'
+        self.manager.config['worker_rules_file'] = str(rules)
+        from server import WORKER_RULES
+        self.assertEqual(self.manager.worker_rules(), WORKER_RULES)  # no file yet: built-in text
+        rules.write_text('﻿自定义规则：子 agent（worker）只做一件事。', encoding='utf-8')
+        self.assertEqual(self.manager.worker_rules(), '自定义规则：子 agent（worker）只做一件事。')
+        job = self.manager.submit('do it', None, 10, None, name='剪辑')
+        await self.wait_for(job['task_id'], {'completed'})
+        self.assertIn('worker-rules:thread/start:yes', self.call_log())  # the edited text reached the task
 
     async def test_default_policy_stays_locked_down(self):
         first = self.manager.submit('hello', None, 10, None)

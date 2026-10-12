@@ -50,9 +50,10 @@ WORKER_RULES = '''你是被派出来执行具体任务的子 agent（worker）�
 2. 不要调用本机的派任务服务（codex_tasks / Codex Task Dispatcher，地址如 127.0.0.1:8765 或 :8766/mcp）：不要派新任务，不要取消或修改别的任务，不要修改电脑档案。
 3. 不要读取、打印或使用任何访问令牌、密码或 cookie，例如 token.txt、client*.json、.codex/config.toml 里的令牌。
 4. 需要别的 agent 帮忙、需要更多信息，或档案需要更新时，在最终回复里说明，由上级安排。
-5. 你可以（用户明确允许）用 Codex 自带的 spawn_agent 开帮手，把任务里简单、机械的部分交给更便宜的模型或更低的 reasoning_effort 去做，
-   例如按清晰规格写样板代码、跑渲染或检查循环、批量处理文件。模型和 effort 由你根据活的难度自己选；设置 model 或 reasoning_effort 时
-   fork_turns 用 "none"，并给帮手写一份完整、简洁的说明。规划、创意、文案、效果判断和最终审查由你自己做。最终回复里说明这次怎么分工。'''
+5. 用户的固定要求：任务里简单、机械的部分**应当**用 Codex 自带的 spawn_agent 交给便宜模型的帮手去做，模型用 gpt-6-luna
+   （用户指定；需要时可降低 reasoning_effort）。例如：按已定好的规格改参数或写样板代码、跑渲染和检查帧、反复运行同一命令看结果、批量处理文件。
+   每批工作开一个新帮手，设置 model 时 fork_turns 用 "none"，交接说明要完整、简洁：规格、项目路径、需要读的 README 和参考文件。
+   规划、创意、文案、效果判断和最终审查由你自己做。最终回复里说明这次怎么分工。'''
 SECRET_FIELD = re.compile(r'pass|secret|token|cookie|key|otp', re.IGNORECASE)
 APPROVE_LABEL = re.compile(r'accept|allow|approve|yes|continue|同意|允许|批准|继续', re.IGNORECASE)
 
@@ -281,6 +282,16 @@ class TaskManager:
             self.profile['machine'] = await asyncio.to_thread(collect_machine_info, self.config)
             self.save_profile()
         return self.profile['machine']
+
+    def worker_rules(self):
+        """Fixed rules every sub-task gets. Read from worker_rules_file at each task start, so the user can
+        edit them without touching code or restarting; the built-in text is the fallback."""
+        path = self.config.get('worker_rules_file')
+        if path and Path(path).is_file():
+            text = Path(path).read_text(encoding='utf-8-sig').strip()
+            if text:
+                return text
+        return WORKER_RULES
 
     def is_worker(self, job):
         """Everything except a computer's main agent is a worker. Main agents are recognized by their
@@ -674,7 +685,7 @@ class TaskManager:
         policy = {'approvalPolicy': 'on-request' if auto_approve else 'never', 'sandbox': sandbox}
         if self.is_worker(job):
             # Workers have full access and could find the token on disk; tell them plainly not to use it.
-            policy['developerInstructions'] = WORKER_RULES
+            policy['developerInstructions'] = self.worker_rules()
         connection = AppServerConnection(process, log_line, auto_approve)
         turn_done = asyncio.get_running_loop().create_future()
 

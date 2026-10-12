@@ -120,6 +120,10 @@ if (-not $existing.Contains("[projects.'$trustKey']")) {
     [System.IO.File]::AppendAllText($codexConfig, "`n[projects.'$trustKey']`ntrust_level = `"trusted`"`n", (New-Object System.Text.UTF8Encoding $false))
 }
 
+# Fixed rules for every sub-task; the user can edit this file any time, no restart needed.
+$rulesFile = Join-Path $Workspace 'worker-rules.md'
+if (-not (Test-Path $rulesFile)) { Copy-Item (Join-Path $worker 'templates\worker-rules.md') $rulesFile }
+
 # 7. Service config
 Step '写入本机配置'
 $configPath = Join-Path $DataDir 'config.json'
@@ -141,6 +145,7 @@ $config = [ordered]@{
     tailscale_executable = $tailscale
     state_dir = (Join-Path $DataDir 'state')
     token_file = $tokenFile
+    worker_rules_file = (Join-Path $Workspace 'worker-rules.md')
     tasks_dir = (Join-Path $Workspace 'tasks')
     shared_dir = (Join-Path $Workspace 'shared')
     allowed_roots = @($Workspace)
