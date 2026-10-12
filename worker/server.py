@@ -49,7 +49,10 @@ WORKER_RULES = '''你是被派出来执行具体任务的子 agent（worker）�
 1. 只完成交给你的这件任务。做完后，把结果、遇到的问题和需要人处理的事写进最终回复，由派你来的上级（本机的主agent export）处理。
 2. 不要调用本机的派任务服务（codex_tasks / Codex Task Dispatcher，地址如 127.0.0.1:8765 或 :8766/mcp）：不要派新任务，不要取消或修改别的任务，不要修改电脑档案。
 3. 不要读取、打印或使用任何访问令牌、密码或 cookie，例如 token.txt、client*.json、.codex/config.toml 里的令牌。
-4. 需要别的 agent 帮忙、需要更多信息，或档案需要更新时，在最终回复里说明，由上级安排。'''
+4. 需要别的 agent 帮忙、需要更多信息，或档案需要更新时，在最终回复里说明，由上级安排。
+5. 你可以（用户明确允许）用 Codex 自带的 spawn_agent 开帮手，把任务里简单、机械的部分交给更便宜的模型或更低的 reasoning_effort 去做，
+   例如按清晰规格写样板代码、跑渲染或检查循环、批量处理文件。模型和 effort 由你根据活的难度自己选；设置 model 或 reasoning_effort 时
+   fork_turns 用 "none"，并给帮手写一份完整、简洁的说明。规划、创意、文案、效果判断和最终审查由你自己做。最终回复里说明这次怎么分工。'''
 SECRET_FIELD = re.compile(r'pass|secret|token|cookie|key|otp', re.IGNORECASE)
 APPROVE_LABEL = re.compile(r'accept|allow|approve|yes|continue|同意|允许|批准|继续', re.IGNORECASE)
 
@@ -257,7 +260,7 @@ class TaskManager:
         return thread in archived or thread not in active
 
     def public(self, job, include_result=False):
-        fields = ('task_id', 'name', 'status', 'workspace', 'created_at', 'started_at', 'finished_at', 'thread_id', 'forked_from_thread_id', 'resume_task_id', 'parent_task_id', 'auto_wake', 'timeout_seconds', 'exit_code', 'error', 'latest_message')
+        fields = ('task_id', 'name', 'model', 'effort', 'status', 'workspace', 'created_at', 'started_at', 'finished_at', 'thread_id', 'forked_from_thread_id', 'resume_task_id', 'parent_task_id', 'auto_wake', 'timeout_seconds', 'exit_code', 'error', 'latest_message')
         response = {k: job[k] for k in fields if k in job}
         if self.removed(job):
             response['archived'] = True
@@ -489,7 +492,8 @@ class TaskManager:
         self.jobs[woken['task_id']].update(auto_wake=True, wakes_for=children)
         self.save(self.jobs[woken['task_id']])
 
-    def submit(self, prompt, workspace, timeout_seconds, idempotency_key, resume_task_id=None, name=None, parent_task_id=None):
+    def submit(self, prompt, workspace, timeout_seconds, idempotency_key, resume_task_id=None, name=None,
+               parent_task_id=None, model=None, effort=None):
         if self.closing:
             raise ValueError('Service is shutting down')
         if not prompt.strip() or len(prompt) > 100_000:
@@ -531,6 +535,12 @@ class TaskManager:
             job['name'] = name.strip()
         if parent_task_id:
             job['parent_task_id'] = parent_task_id
+        # Normally unset: Codex's own default (the latest model at its configured effort), like a new window.
+        # A continuation keeps the session's earlier choice unless told otherwise.
+        for key, value in (('model', model), ('effort', effort)):
+            chosen = value or (parent or {}).get(key)
+            if chosen:
+                job[key] = chosen
         self.jobs[task_id] = job
         self.save(job)
         self.queue.put_nowait(task_id)
@@ -688,7 +698,8 @@ class TaskManager:
             if job.get('resume_task_id'):
                 await self.resume_or_fork(connection, job, policy)
             else:
-                started = await connection.request('thread/start', {'cwd': job['workspace'], **policy})
+                started = await connection.request('thread/start', {
+                    'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {})})
                 job['thread_id'] = started['thread']['id']
                 self.save(job)
                 name = job.get('name') or ' '.join(job['prompt'].split())[:40]
@@ -698,6 +709,7 @@ class TaskManager:
                     pass  # The name is cosmetic; the task can still run.
             turn_params = {'threadId': job['thread_id'], 'input': [{'type': 'text', 'text': job['prompt']}],
                            'approvalPolicy': policy['approvalPolicy']}  # turn/start takes no developerInstructions
+            turn_params.update({k: job[k] for k in ('model', 'effort') if job.get(k)})
             if sandbox == 'danger-full-access':
                 turn_params['sandboxPolicy'] = {'type': 'dangerFullAccess'}
             elif sandbox == 'workspace-write' and self.config.get('shared_dir'):
@@ -837,11 +849,13 @@ def build_app(config):
     @mcp.tool()
     async def submit_task(prompt: str, workspace: str | None = None,
                           timeout_seconds: int = 1800, idempotency_key: str | None = None,
-                          name: str | None = None, ctx: Context = None) -> dict:
-        """Dispatch work to Codex; return task_id immediately. Omit workspace for a new isolated folder. An explicit workspace must be an absolute path on the server within allowed_roots. Use a stable unique idempotency_key to avoid duplicate tasks after network retries. name is the session title shown in the Codex desktop app (defaults to the start of the prompt). When a main agent dispatches, it is woken automatically with the result once the task finishes."""
+                          name: str | None = None, model: str | None = None, effort: str | None = None,
+                          ctx: Context = None) -> dict:
+        """Dispatch work to Codex; return task_id immediately. Omit workspace for a new isolated folder. An explicit workspace must be an absolute path on the server within allowed_roots. Use a stable unique idempotency_key to avoid duplicate tasks after network retries. name is the session title shown in the Codex desktop app (defaults to the start of the prompt). When a main agent dispatches, it is woken automatically with the result once the task finishes. model / effort: normally OMIT both, so the task uses Codex's default (the latest model at high effort, same as opening a new window); set them only under specific conditions the human asked for."""
         if workspace is not None and not Path(workspace).is_absolute():
             raise ValueError('workspace must be an absolute path on the server')
-        return manager.submit(prompt, workspace, timeout_seconds, idempotency_key, name=name, parent_task_id=manager.caller(ctx))
+        return manager.submit(prompt, workspace, timeout_seconds, idempotency_key, name=name,
+                              parent_task_id=manager.caller(ctx), model=model, effort=effort)
 
     @mcp.tool()
     async def continue_task(task_id: str, prompt: str, timeout_seconds: int = 1800,

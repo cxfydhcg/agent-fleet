@@ -185,6 +185,7 @@ for line in sys.stdin:
     if method in ('thread/start', 'thread/resume', 'turn/start'):
         log('policy:%s:%s:%s' % (method, params.get('approvalPolicy'), params.get('sandbox') or (params.get('sandboxPolicy') or {}).get('type')))
         log('worker-rules:%s:%s' % (method, 'yes' if '子 agent（worker）' in (params.get('developerInstructions') or '') else 'no'))
+        if params.get('model') or params.get('effort'): log('model:%s:%s:%s' % (method, params.get('model'), params.get('effort')))
         if params.get('cwd'): log('cwd:%s:%s' % (method, params['cwd']))
         if (params.get('sandboxPolicy') or {}).get('writableRoots'): log('writable:%s' % params['sandboxPolicy']['writableRoots'][0])
     if method == 'initialize': send({'id': message['id'], 'result': {}})
@@ -362,6 +363,25 @@ class AppServerDispatcherTests(DispatcherTests):
         self.assertIn(f'cwd:thread/resume:{moved}', self.call_log())
         unnamed = self.manager.submit('x', None, 10, None)
         self.assertRegex(Path(unnamed['workspace']).name, r'^\d{4}-\d{2}-\d{2}_[0-9a-f]{8}$')
+
+    async def test_model_and_effort_default_to_codex_and_can_be_set(self):
+        plain = self.manager.submit('normal task', None, 10, None)
+        await self.wait_for(plain['task_id'], {'completed'})
+        self.assertFalse([c for c in self.call_log() if c.startswith('model:')])  # Codex's own default, like a new window
+        self.calls.unlink()
+        special = self.manager.submit('special task', None, 10, None, model='gpt-6-luna', effort='medium')
+        await self.wait_for(special['task_id'], {'completed'})
+        followup = self.manager.submit('more', None, 10, None, resume_task_id=special['task_id'])
+        await self.wait_for(followup['task_id'], {'completed'})
+        calls = self.call_log()
+        self.assertIn('model:thread/start:gpt-6-luna:None', calls)
+        self.assertEqual(calls.count('model:turn/start:gpt-6-luna:medium'), 2)  # the continuation keeps the choice
+        self.assertEqual(self.manager.public(self.manager.get(followup['task_id']))['effort'], 'medium')
+
+    def test_worker_rules_allow_cheaper_helpers(self):
+        from server import WORKER_RULES
+        self.assertIn('spawn_agent', WORKER_RULES)
+        self.assertIn('fork_turns', WORKER_RULES)
 
     async def test_default_policy_stays_locked_down(self):
         first = self.manager.submit('hello', None, 10, None)
