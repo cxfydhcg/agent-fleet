@@ -1,0 +1,544 @@
+"""Lifecycle checks without model requests: python -m unittest test_dispatcher.py."""
+import asyncio
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from server import TaskManager
+
+
+class DispatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.config = {'state_dir': str(self.root / 'state'), 'tasks_dir': str(self.root / 'tasks'),
+                       'allowed_roots': [str(self.root / 'tasks')], 'codex_executable': sys.executable,
+                       'executor': 'exec'}
+        self.manager = TaskManager(self.config)
+        self.fake = self.root / 'fake.py'
+        self.fake.write_text('''import json, pathlib, sys, time
+args = sys.argv[1:]
+result = pathlib.Path(args[args.index('--output-last-message') + 1])
+prompt = sys.stdin.buffer.read().decode('utf-8')
+print(json.dumps({'type': 'thread.started', 'thread_id': 'test-thread'}), flush=True)
+if prompt == 'slow': time.sleep(60)
+result.write_text(prompt, encoding='utf-8')
+print(json.dumps({'type': 'turn.completed'}), flush=True)
+''', encoding='utf-8')
+        original = asyncio.create_subprocess_exec
+
+        async def create(*command, **kwargs):
+            if command[0] == sys.executable:
+                return await original(sys.executable, str(self.fake), *command[1:], **kwargs)
+            return await original(*command, **kwargs)
+
+        self.patcher = patch('server.asyncio.create_subprocess_exec', side_effect=create)
+        self.patcher.start()
+        self.manager.worker = asyncio.create_task(self.manager.work())
+
+    async def asyncTearDown(self):
+        await self.manager.shutdown()
+        self.patcher.stop()
+        self.temp.cleanup()
+
+    async def wait_for(self, task_id, status, timeout=20):
+        async with asyncio.timeout(timeout):
+            while self.manager.get(task_id)['status'] not in status:
+                await asyncio.sleep(0.05)
+        return self.manager.get(task_id)
+
+    async def test_submission_retries_and_result_survives_restart(self):
+        literal = 'Unicode 中文; $(do-not-execute) `literal` "quotes"'
+        first = self.manager.submit(literal, None, 10, 'one')
+        second = self.manager.submit(literal, None, 10, 'one')
+        self.assertEqual(first['task_id'], second['task_id'])
+        with self.assertRaises(ValueError):
+            self.manager.submit('different prompt', None, 10, 'one')
+        job = await self.wait_for(first['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual(self.manager.public(job, True)['result'], literal)
+        restarted = TaskManager(self.config)
+        self.assertEqual(restarted.public(restarted.get(first['task_id']), True)['result'], literal)
+
+    async def test_outside_roots_and_directory_traversal_rejected(self):
+        for target in [self.root, self.root / 'tasks' / '..' / 'escape']:
+            with self.assertRaises(ValueError):
+                self.manager.submit('prompt', str(target), 10, None)
+
+    async def test_task_returns_desktop_link(self):
+        first = self.manager.submit('original', None, 10, None, name='Test [name]')
+        await self.wait_for(first['task_id'], {'completed'})
+        result = self.manager.public(self.manager.get(first['task_id']))
+        self.assertEqual(result['desktop_url'], 'codex://threads/test-thread')
+        self.assertEqual(result['desktop_link'], '[打开 Test (name)](codex://threads/test-thread)')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows desktop opening')
+    async def test_open_desktop_requires_known_finished_task(self):
+        with self.assertRaises(ValueError):
+            self.manager.open_desktop('unknown-task')
+        task = self.manager.submit('original', None, 10, None)
+        with self.assertRaises(ValueError):
+            self.manager.open_desktop(task['task_id'])
+        job = self.manager.get(task['task_id'])
+        job['thread_id'] = '01a12db2-2aa9-7463-a506-72de2859e732'
+        with self.assertRaises(ValueError):
+            self.manager.open_desktop(task['task_id'])
+        await self.manager.cancel(task['task_id'])
+        with patch('server.os.startfile') as launch:
+            result = self.manager.open_desktop(task['task_id'])
+        launch.assert_called_once_with('codex://threads/01a12db2-2aa9-7463-a506-72de2859e732')
+        self.assertEqual(result['desktop_open_status'], 'requested')
+        self.assertEqual(result['desktop_open_location'], 'server computer')
+
+    async def test_continuation_preserves_session_and_workspace(self):
+        first = self.manager.submit('original', None, 10, 'original')
+        with self.assertRaises(ValueError):
+            self.manager.submit('followup', None, 10, None, resume_task_id=first['task_id'])
+        await self.wait_for(first['task_id'], {'completed'})
+        followup = self.manager.submit('followup', None, 10, 'followup', resume_task_id=first['task_id'])
+        retry = self.manager.submit('followup', None, 10, 'followup', resume_task_id=first['task_id'])
+        self.assertEqual(followup['task_id'], retry['task_id'])
+        self.assertEqual(first['workspace'], followup['workspace'])
+        self.assertEqual(followup['thread_id'], self.manager.get(first['task_id'])['thread_id'])
+        with self.assertRaises(ValueError):
+            self.manager.submit('another concurrent followup', None, 10, None, resume_task_id=first['task_id'])
+        finished = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(finished['status'], 'completed')
+        events = (self.manager.jobs_dir / followup['task_id'] / 'events.jsonl').read_text()
+        self.assertIn('test-thread', events)
+        self.assertEqual(self.manager.public(finished, True)['result'], 'followup')
+
+    async def test_continuation_rechecks_revoked_workspace(self):
+        first = self.manager.submit('original', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        self.manager.roots = []
+        with self.assertRaises(ValueError):
+            self.manager.submit('followup', None, 10, None, resume_task_id=first['task_id'])
+        with self.assertRaises(ValueError):
+            self.manager.submit('unknown task', None, 10, None, resume_task_id='unknown')
+
+    async def test_queued_and_running_cancellation(self):
+        first = self.manager.submit('slow', None, 60, None)
+        await self.wait_for(first['task_id'], {'running'})
+        while first['task_id'] not in self.manager.processes:
+            await asyncio.sleep(0.05)
+        process = self.manager.processes[first['task_id']]
+        second = self.manager.submit('should not run', None, 10, None)
+        await self.manager.cancel(second['task_id'])
+        await self.manager.cancel(first['task_id'])
+        await asyncio.wait_for(self.manager.queue.join(), 10)
+        self.assertEqual(self.manager.get(first['task_id'])['status'], 'cancelled')
+        self.assertIsNotNone(process.returncode)
+        self.assertEqual(self.manager.get(second['task_id'])['status'], 'cancelled')
+        self.assertFalse((self.manager.jobs_dir / second['task_id'] / 'result.txt').exists())
+
+    async def test_timeout_and_queue_continues(self):
+        first = self.manager.submit('slow', None, 10, None)
+        second = self.manager.submit('next', None, 10, None)
+        await self.wait_for(first['task_id'], {'timed_out', 'failed'})
+        self.assertEqual(self.manager.get(first['task_id'])['status'], 'timed_out')
+        await self.wait_for(second['task_id'], {'completed', 'failed'})
+        self.assertEqual(self.manager.get(second['task_id'])['status'], 'completed')
+
+    async def test_shutdown_recovery_does_not_repeat_work(self):
+        first = self.manager.submit('slow', None, 60, None)
+        await self.wait_for(first['task_id'], {'running'})
+        second = self.manager.submit('queued', None, 10, None)
+        await self.manager.shutdown()
+        restarted = TaskManager(self.config)
+        self.assertEqual(restarted.get(first['task_id'])['status'], 'interrupted')
+        self.assertEqual(restarted.get(second['task_id'])['status'], 'interrupted')
+        self.assertEqual(restarted.queue.qsize(), 0)
+
+
+FAKE_APP_SERVER = r'''import json, pathlib, sys, time
+sys.stdin.reconfigure(encoding='utf-8'); sys.stdout.reconfigure(encoding='utf-8')
+here = pathlib.Path(__file__).parent
+calls = here / 'calls.log'
+def log(text):
+    with calls.open('a', encoding='utf-8') as f: f.write(text + '\n')
+def send(message):
+    sys.stdout.write(json.dumps(message, ensure_ascii=False) + '\n'); sys.stdout.flush()
+pending, thread = None, None
+for line in sys.stdin:
+    message = json.loads(line)
+    method, params = message.get('method'), message.get('params') or {}
+    if method is None and message.get('id') == 900:
+        log('declined' if 'error' in message else 'accepted')
+        prompt = pending
+        if prompt == 'slow': time.sleep(60)
+        if prompt == 'fail':
+            send({'method': 'turn/completed', 'params': {'threadId': thread, 'turn': {
+                'id': 'turn-1', 'status': 'failed', 'error': {'message': 'boom'}, 'items': []}}})
+        else:
+            item = {'type': 'agentMessage', 'text': prompt, 'phase': 'final_answer'}
+            send({'method': 'item/completed', 'params': {'threadId': thread, 'item': item}})
+            send({'method': 'turn/completed', 'params': {'threadId': thread, 'turn': {
+                'id': 'turn-1', 'status': 'completed', 'items': [item]}}})
+        continue
+    if method: log(method + (':' + params['name'] if method == 'thread/name/set' else ''))
+    if method in ('thread/start', 'thread/resume', 'turn/start'):
+        log('policy:%s:%s:%s' % (method, params.get('approvalPolicy'), params.get('sandbox') or (params.get('sandboxPolicy') or {}).get('type')))
+        log('worker-rules:%s:%s' % (method, 'yes' if '子 agent（worker）' in (params.get('developerInstructions') or '') else 'no'))
+    if method == 'initialize': send({'id': message['id'], 'result': {}})
+    elif method == 'thread/start': send({'id': message['id'], 'result': {'thread': {'id': 'as-thread'}}})
+    elif method == 'thread/name/set': send({'id': message['id'], 'result': {}})
+    elif method == 'thread/resume':
+        # The "busy" marker simulates the desktop app holding the original session.
+        if params['threadId'] == 'as-thread' and (here / 'busy').exists():
+            send({'id': message['id'], 'error': {'code': -32600, 'message': 'thread as-thread already has an active writer'}})
+        else:
+            send({'id': message['id'], 'result': {'thread': {'id': params['threadId']}}})
+    elif method == 'thread/fork':
+        send({'id': message['id'], 'result': {'thread': {'id': 'as-fork', 'forkedFromId': params['threadId']}}})
+    elif method == 'turn/start':
+        pending, thread = params['input'][0]['text'], params['threadId']
+        send({'id': message['id'], 'result': {'turn': {'id': 'turn-1'}}})
+        send({'id': 900, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread}})
+'''
+
+
+class AppServerDispatcherTests(DispatcherTests):
+    """Same harness, but tasks go through a fake `codex app-server` speaking JSON-RPC on stdio."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await self.manager.shutdown()
+        self.config.update(executor='app-server', writer_wait_seconds=0)
+        self.manager = TaskManager(self.config)
+        self.fake.write_text(FAKE_APP_SERVER, encoding='utf-8')
+        self.calls = self.root / 'calls.log'
+        self.manager.worker = asyncio.create_task(self.manager.work())
+
+    def call_log(self):
+        return self.calls.read_text(encoding='utf-8').splitlines() if self.calls.exists() else []
+
+    async def test_submission_names_session_and_declines_requests(self):
+        first = self.manager.submit('hello 中文 `literal`', None, 10, None, name='主agent export')
+        job = await self.wait_for(first['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertEqual(job['thread_id'], 'as-thread')
+        self.assertEqual(self.manager.public(job, True)['result'], 'hello 中文 `literal`')
+        self.assertEqual(self.manager.public(job)['name'], '主agent export')
+        self.assertIn('thread/name/set:主agent export', self.call_log())
+        self.assertIn('declined', self.call_log())
+
+    async def test_continuation_resumes_before_turn(self):
+        first = self.manager.submit('original', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        followup = self.manager.submit('followup', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertEqual(self.manager.public(job, True)['result'], 'followup')
+        calls = self.call_log()
+        self.assertEqual(calls.count('thread/start'), 1)
+        self.assertLess(calls.index('thread/resume'), len(calls) - 1 - calls[::-1].index('turn/start'))
+
+    async def test_session_open_elsewhere_is_forked_and_followed(self):
+        self.manager.config['fork_when_busy'] = True
+        first = self.manager.submit('original', None, 10, None, name='主agent export')
+        await self.wait_for(first['task_id'], {'completed'})
+        (self.root / 'busy').write_text('', encoding='utf-8')
+        followup = self.manager.submit('followup', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertEqual((job['thread_id'], job['forked_from_thread_id']), ('as-fork', 'as-thread'))
+        self.assertEqual(self.manager.public(job, True)['result'], 'followup')
+        self.assertTrue(any(c.startswith('thread/name/set:主agent export（续') for c in self.call_log()))
+        # Continuing from the ORIGINAL task id still lands in the newest copy, not a second fork.
+        home = self.root / 'codex-home'
+        day = home / 'sessions' / '2026' / '10' / '11'
+        day.mkdir(parents=True)
+        (day / 'rollout-y-as-fork.jsonl').write_text('{}', encoding='utf-8')
+        self.manager.config['codex_home'] = str(home)
+        again = self.manager.submit('again', None, 10, None, resume_task_id=first['task_id'])
+        self.assertEqual(again['thread_id'], 'as-fork')
+        job = await self.wait_for(again['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertEqual(self.call_log().count('thread/fork'), 1)
+        # Once the user archives or deletes the fork in the desktop app, continuing goes back to the original.
+        (day / 'rollout-y-as-fork.jsonl').unlink()
+        back = self.manager.submit('back', None, 10, None, resume_task_id=again['task_id'])
+        self.assertEqual(back['thread_id'], 'as-fork')  # A task id that names the fork itself keeps it.
+        self.assertEqual(self.manager.latest_thread('as-thread'), 'as-thread')
+
+    async def test_session_open_elsewhere_fails_by_default(self):
+        first = self.manager.submit('original', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        (self.root / 'busy').write_text('', encoding='utf-8')
+        followup = self.manager.submit('followup', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('held by another Codex window', job['error'])
+
+    async def test_transcript_stitches_forks_and_hides_unknown_sessions(self):
+        home = self.root / 'codex-home'
+        day = home / 'sessions' / '2026' / '10' / '11'
+        day.mkdir(parents=True)
+        self.manager.config['codex_home'] = str(home)
+        def item(kind, text, ts):
+            content = [{'type': 'text', 'text': text}]
+            return json.dumps({'timestamp': ts, 'type': 'event_msg', 'payload': {
+                'type': 'item_completed', 'item': {'type': kind, 'content': content}}}, ensure_ascii=False)
+        (day / 'rollout-x-as-thread.jsonl').write_text('\n'.join([
+            json.dumps({'type': 'session_meta', 'payload': {'id': 'as-thread'}}),
+            item('UserMessage', '第一问', 't1'), item('AgentMessage', '第一答', 't2'),
+            item('UserMessage', '分叉后才写的', 't9')]), encoding='utf-8')
+        (day / 'rollout-y-as-fork.jsonl').write_text('\n'.join([
+            json.dumps({'type': 'session_meta', 'payload': {'id': 'as-fork', 'forked_from_id': 'as-thread',
+                                                            'forked_from_ordinal_exclusive': 3}}),
+            item('UserMessage', '第二问', 't3'),
+            json.dumps({'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {
+                'type': 'McpToolCall', 'server': 'codex_tasks', 'tool': 'submit_task', 'status': 'completed'}}})]),
+            encoding='utf-8')
+        self.manager.jobs['a'] = {'task_id': 'a', 'thread_id': 'as-thread', 'created_at': '1', 'status': 'completed'}
+        self.manager.jobs['b'] = {'task_id': 'b', 'thread_id': 'as-fork', 'forked_from_thread_id': 'as-thread',
+                                  'created_at': '2', 'status': 'completed'}
+        # The original was archived in the desktop app, which moves its file.
+        (home / 'archived_sessions').mkdir()
+        (day / 'rollout-x-as-thread.jsonl').replace(home / 'archived_sessions' / 'rollout-x-as-thread.jsonl')
+        entries = self.manager.transcript('as-fork')
+        self.assertEqual([(e['kind'], e.get('text')) for e in entries if e['kind'] != 'tool'],
+                         [('user', '第一问'), ('agent', '第一答'), ('fork', entries[2]['text']), ('user', '第二问')])
+        self.assertEqual(entries[-1]['kind'], 'tool')
+        self.assertIn('submit_task', entries[-1]['text'])
+        with self.assertRaises(ValueError):
+            self.manager.transcript('someone-elses-chat')
+
+    async def test_full_access_asks_and_auto_approves(self):
+        self.manager.config.update(auto_approve=True, sandbox='danger-full-access')
+        first = self.manager.submit('open the browser', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        followup = self.manager.submit('again', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        calls = self.call_log()
+        self.assertIn('policy:thread/start:on-request:danger-full-access', calls)
+        self.assertIn('policy:thread/resume:on-request:danger-full-access', calls)
+        self.assertIn('policy:turn/start:on-request:dangerFullAccess', calls)
+        self.assertNotIn('declined', calls)
+        self.assertEqual(calls.count('accepted'), 2)
+
+    async def test_workers_get_rules_but_main_agent_does_not(self):
+        main_ws = self.root / 'tasks' / 'main-agent-export'
+        self.manager.config['main_agent_workspaces'] = [str(main_ws)]
+        worker = self.manager.submit('do the work', None, 10, None, name='剪辑视频')
+        await self.wait_for(worker['task_id'], {'completed'})
+        followup = self.manager.submit('more', None, 10, None, resume_task_id=worker['task_id'])
+        await self.wait_for(followup['task_id'], {'completed'})
+        self.assertIn('worker-rules:thread/start:yes', self.call_log())
+        self.assertIn('worker-rules:thread/resume:yes', self.call_log())
+        self.calls.unlink()
+        main = self.manager.submit('coordinate', str(main_ws), 10, None, name='主agent export')
+        await self.wait_for(main['task_id'], {'completed'})
+        self.assertIn('worker-rules:thread/start:no', self.call_log())
+        # A main agent registered in the profile is recognized even without the workspace setting.
+        self.manager.config['main_agent_workspaces'] = []
+        self.manager.register_agent('总管', '主 Agent', agent_type='main')
+        self.assertFalse(self.manager.is_worker({'workspace': str(self.root / 'tasks' / 'x'), 'name': '总管'}))
+        self.assertTrue(self.manager.is_worker({'workspace': str(self.root / 'tasks' / 'x'), 'name': '剪辑视频'}))
+
+    async def test_default_policy_stays_locked_down(self):
+        first = self.manager.submit('hello', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        self.assertIn('policy:thread/start:never:workspace-write', self.call_log())
+
+    def test_approval_answers(self):
+        from server import approval_response
+        self.assertEqual(approval_response('item/commandExecution/requestApproval', {}), {'decision': 'accept'})
+        self.assertEqual(approval_response('item/fileChange/requestApproval', {}), {'decision': 'accept'})
+        self.assertEqual(approval_response('execCommandApproval', {}), {'decision': 'approved'})
+        self.assertEqual(approval_response('mcpServer/elicitation/request', {})['action'], 'accept')
+        granted = approval_response('item/permissions/requestApproval', {'permissions': {'network': {'enabled': True}}})
+        self.assertEqual(granted['permissions'], {'network': {'enabled': True}})
+        question = {'id': 'q1', 'header': 'h', 'question': 'Run it?',
+                    'options': [{'label': 'Decline'}, {'label': 'Accept'}, {'label': 'Cancel'}]}
+        self.assertEqual(approval_response('item/tool/requestUserInput', {'questions': [question]}),
+                         {'answers': {'q1': {'answers': ['Accept']}}})
+        secret = dict(question, isSecret=True)
+        self.assertIsNone(approval_response('item/tool/requestUserInput', {'questions': [secret]}))
+        self.assertIsNone(approval_response('account/chatgptAuthTokens/refresh', {}))
+
+    async def test_failed_turn_reports_error(self):
+        first = self.manager.submit('fail', None, 10, None)
+        job = await self.wait_for(first['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('boom', job['error'])
+
+    async def test_timeout_and_queue_continues(self):
+        await super().test_timeout_and_queue_continues()
+
+    async def test_queued_and_running_cancellation(self):
+        await super().test_queued_and_running_cancellation()
+
+    # Exec-specific checks that do not apply to the app-server path.
+    test_submission_retries_and_result_survives_restart = None
+    test_continuation_preserves_session_and_workspace = None
+    test_continuation_rechecks_revoked_workspace = None
+    test_outside_roots_and_directory_traversal_rejected = None
+    test_shutdown_recovery_does_not_repeat_work = None
+    test_task_returns_desktop_link = None  # Asserts the exec fake's thread id.
+
+
+class ProfileTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.config = {'state_dir': str(root / 'state'), 'tasks_dir': str(root / 'tasks'),
+                       'allowed_roots': [str(root / 'tasks')], 'computer_name': 'pc-test'}
+        self.detections = 0
+
+        def fake_detect(config):
+            self.detections += 1
+            return {'hostname': 'PC', 'cpu': 'Test CPU', 'ram_gb': 32, 'nvidia': [{'name': 'RTX', 'vram_total_mb': '8192'}],
+                    'checked_at': datetime.now(timezone.utc).isoformat()}
+        self.patcher = patch('server.collect_machine_info', side_effect=fake_detect)
+        self.patcher.start()
+        self.manager = TaskManager(self.config)
+
+    async def asyncTearDown(self):
+        self.patcher.stop()
+        self.temp.cleanup()
+
+    async def test_profile_combines_detected_and_written_facts(self):
+        self.manager.update_computer(role='视频剪辑机', software=['剪映 6.0', 'Chrome'],
+                                     accounts=[{'site': 'bilibili', 'account': 'me', 'status': 'logged_in'}])
+        self.manager.register_agent('主agent export', '总负责', ['调度'], 'main')
+        self.manager.register_agent('B站发布员', '上传视频到 B站', ['网页', 'bilibili', 'bilibili'])
+        self.manager.jobs['t1'] = {'task_id': 't1', 'name': 'B站发布员', 'status': 'completed',
+                                   'created_at': '2026-10-11T00:00:00', 'finished_at': '2026-10-11T00:01:00'}
+        profile = await self.manager.full_profile()
+        self.assertEqual(profile['computer_name'], 'pc-test')
+        self.assertEqual(profile['machine']['nvidia'][0]['vram_total_mb'], '8192')
+        self.assertEqual(profile['computer']['role'], '视频剪辑机')
+        agents = {a['name']: a for a in profile['agents']}
+        self.assertEqual(agents['B站发布员']['tags'], ['bilibili', '网页'])
+        self.assertEqual((agents['B站发布员']['status'], agents['B站发布员']['tasks']), ('completed', 1))
+        self.assertEqual(agents['主agent export']['type'], 'main')
+        # Everything, including the detected hardware, survives a restart; detection runs only on request.
+        restarted = TaskManager(self.config)
+        self.assertEqual(restarted.profile['computer']['software'], ['剪映 6.0', 'Chrome'])
+        await restarted.full_profile()
+        await self.manager.full_profile()
+        self.assertEqual(self.detections, 1)
+        await restarted.full_profile(refresh=True)
+        self.assertEqual(self.detections, 2)
+
+    async def test_profile_rejects_secrets_and_bad_input(self):
+        with self.assertRaises(ValueError):
+            self.manager.update_computer(accounts=[{'site': 'bilibili', 'password': 'x'}])
+        with self.assertRaises(ValueError):
+            self.manager.update_computer(accounts=[{'account': 'no site'}])
+        with self.assertRaises(ValueError):
+            self.manager.register_agent('', 'role')
+        with self.assertRaises(ValueError):
+            self.manager.register_agent('x', 'role', agent_type='boss')
+        with self.assertRaises(ValueError):
+            self.manager.remove_agent('nobody')
+        self.manager.register_agent('临时', '测试')
+        self.manager.remove_agent('临时')
+        self.assertNotIn('临时', self.manager.profile['agents'])
+
+
+class WakeTests(unittest.IsolatedAsyncioTestCase):
+    """Callbacks: a finished sub-task wakes the main agent that dispatched it. No worker loop runs here,
+    so submitted wake-ups simply stay queued for inspection."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.main_ws = root / 'tasks' / 'main-agent-export'
+        self.config = {'state_dir': str(root / 'state'), 'tasks_dir': str(root / 'tasks'),
+                       'allowed_roots': [str(root / 'tasks')], 'main_agent_workspaces': [str(self.main_ws)]}
+        self.manager = TaskManager(self.config)
+        self.main = self.add('main-1', 'P', 'completed', workspace=self.main_ws, name='主agent export')
+
+    async def asyncTearDown(self):
+        self.temp.cleanup()
+
+    def add(self, task_id, thread, status, workspace=None, **extra):
+        job = {'task_id': task_id, 'thread_id': thread, 'status': status, 'created_at': f'2026-10-11T00:00:{len(self.manager.jobs):02d}',
+               'workspace': str(workspace or Path(self.config['tasks_dir']) / task_id), 'timeout_seconds': 60, **extra}
+        Path(job['workspace']).mkdir(parents=True, exist_ok=True)
+        self.manager.jobs[task_id] = job
+        return job
+
+    def finish(self, task_id, result):
+        folder = self.manager.jobs_dir / task_id
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'result.txt').write_text(result, encoding='utf-8')
+        self.manager.jobs[task_id]['status'] = 'completed'
+        self.manager.after_job(self.manager.jobs[task_id])
+
+    def queued_wakes(self):
+        return [j for j in self.manager.jobs.values() if j.get('auto_wake') and j['status'] == 'queued']
+
+    async def test_caller_comes_from_codex_metadata(self):
+        self.main['status'] = 'running'
+        class Meta:
+            def __init__(self, extra): self.model_extra = extra
+        def ctx(extra):
+            return type('Ctx', (), {'request_context': type('RC', (), {'meta': Meta(extra)})()})()
+        self.assertEqual(self.manager.caller(ctx({'x-codex-turn-metadata': {'thread_id': 'P', 'turn_id': 't'}})), 'main-1')
+        self.assertEqual(self.manager.caller(ctx({'x-codex-turn-metadata': json.dumps({'thread_id': 'P'})})), 'main-1')
+        self.assertIsNone(self.manager.caller(ctx({'x-codex-turn-metadata': {'thread_id': 'other'}})))
+        self.assertIsNone(self.manager.caller(ctx({})))  # e.g. the orchestrator calling directly
+        self.manager.config['caller_fallback'] = True
+        self.assertEqual(self.manager.caller(ctx({})), 'main-1')
+
+    async def test_finished_subtask_wakes_parent_with_result(self):
+        self.add('child-1', 'C1', 'running', name='剪辑视频', parent_task_id='main-1')
+        self.finish('child-1', '导出完成：D:/out.mp4')
+        [wake] = self.queued_wakes()
+        self.assertEqual((wake['thread_id'], wake['resume_task_id'], wake['wakes_for']), ('P', 'main-1', ['child-1']))
+        self.assertIn('【自动通知', wake['prompt'])
+        self.assertIn('「剪辑视频」', wake['prompt'])
+        self.assertIn('导出完成：D:/out.mp4', wake['prompt'])
+        # Tasks without a parent (e.g. the orchestrator's direct ones) wake nobody.
+        self.add('solo', 'S', 'running')
+        self.finish('solo', 'x')
+        self.assertEqual(len(self.queued_wakes()), 1)
+
+    async def test_results_wait_while_parent_is_busy_and_are_batched(self):
+        self.add('child-1', 'C1', 'running', name='甲', parent_task_id='main-1')
+        self.add('child-2', 'C2', 'running', name='乙', parent_task_id='main-1')
+        self.add('busy', 'P', 'queued', workspace=self.main_ws)  # e.g. the orchestrator's message is queued
+        self.finish('child-1', 'A 完成')
+        self.finish('child-2', 'B 完成')
+        self.assertEqual(self.queued_wakes(), [])
+        self.manager.jobs['busy']['status'] = 'completed'
+        self.manager.after_job(self.manager.jobs['busy'])
+        [wake] = self.queued_wakes()
+        self.assertEqual(wake['wakes_for'], ['child-1', 'child-2'])
+        self.assertIn('A 完成', wake['prompt'])
+        self.assertIn('B 完成', wake['prompt'])
+
+    async def test_notifications_are_numbered_and_survive_restart(self):
+        first = self.manager.notify('两步网页检查完成', '标题分别是 A 和 B', task_ids=['t1'], sender='主agent export')
+        second = self.manager.notify('需要登录小红书', '请扫码登录', needs_human=True)
+        self.assertEqual((first['id'], second['id']), (1, 2))
+        restarted = TaskManager(self.config)
+        self.assertEqual([n['title'] for n in restarted.notifications], ['两步网页检查完成', '需要登录小红书'])
+        self.assertTrue(restarted.notifications[1]['needs_human'])
+        self.assertEqual(restarted.notify('再一条', '内容')['id'], 3)
+        for bad in [('', 'x'), ('x', ''), ('x' * 201, 'y')]:
+            with self.assertRaises(ValueError):
+                self.manager.notify(*bad)
+
+    async def test_back_to_back_wakes_are_capped(self):
+        self.manager.config['max_auto_wakes'] = 2
+        for i in range(2):
+            self.add(f'wake-{i}', 'P', 'completed', workspace=self.main_ws, auto_wake=True)
+        self.add('child-1', 'C1', 'running', name='甲', parent_task_id='main-1')
+        self.finish('child-1', 'done')
+        self.assertEqual(self.queued_wakes(), [])
+        self.assertIn('paused', self.manager.jobs['wake-1']['latest_message'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,12 @@
+# Per-computer data and secrets never go into the repo.
+config.json
+config.json.bak
+connection.json
+computers.json
+token.txt
+tokens/
+state/
+venv/
+__pycache__/
+*.pyc
+*.log
