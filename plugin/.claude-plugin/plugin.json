@@ -1,0 +1,11 @@
+{
+  "name": "agent-fleet",
+  "version": "0.1.0",
+  "description": "Orchestrate Codex agents across your computers: message any computer's agents, view the fleet overview, and receive their completion notifications.",
+  "author": {
+    "name": "Xufeng Ce"
+  },
+  "repository": "https://github.com/cxfydhcg/agent-fleet",
+  "license": "MIT",
+  "keywords": ["agents", "codex", "orchestration", "multi-computer", "tailscale", "mcp"]
+}

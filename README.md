@@ -20,8 +20,9 @@
 |---|---|---|
 | `worker/` | 每台被管理的电脑 | 派任务服务（MCP over HTTP）、只读看板、主agent export 的说明模板 |
 | `install-worker.ps1` | 每台被管理的电脑 | 一键安装 worker |
-| `orchestrator/` | 管理端电脑 | `fleet.mjs` 命令行客户端、`/call-agent` skill 模板 |
-| `install-orchestrator.ps1` | 管理端电脑 | 安装 skill，创建登记表目录 |
+| `plugin/` | 管理端电脑 | Claude Code 插件：`/call-agent` skill 和它自带的 `fleet.mjs` 命令行客户端 |
+| `install-orchestrator.ps1` | 管理端电脑 | 不用插件市场时，手动安装 skill（也可以装到 Codex） |
+| `AGENTS.md` / `CLAUDE.md` | — | 写给 AI 的安装和开发说明 |
 
 每台电脑自己的配置、令牌和数据在 `%LOCALAPPDATA%\agent-fleet\`；管理端的登记表和各电脑令牌在 `~/.agent-fleet/`。这些都**不在**项目文件夹里，不会进 git。
 
@@ -31,6 +32,14 @@
 - [Tailscale](https://tailscale.com)：所有电脑登录同一个账号，组成内网
 - Codex：用你的 ChatGPT 账号登录（`codex login`）
 - 管理端需要 [Claude Code](https://claude.com/claude-code) 和 Node.js
+
+## 最省事的方法：让 AI 帮你装
+
+克隆本项目后，在项目文件夹里打开 Claude Code 或 Codex，说：
+
+> 帮我把这台电脑装成 agent-fleet 的 worker（或管理端）。
+
+AI 会按 `AGENTS.md` 里的步骤一步步做，遇到登录 Tailscale、登录 Codex 这些必须你本人操作的地方会停下来提醒你。下面是手动步骤。
 
 ## 安装一台被管理的电脑
 
@@ -50,11 +59,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-worker.ps1 -FullAc
 
 ## 安装管理端
 
-在运行 Claude Code 的电脑上：
+在运行 Claude Code 的电脑上，从插件市场安装（推荐）：
+
+```
+/plugin marketplace add cxfydhcg/agent-fleet
+/plugin install agent-fleet@agent-fleet
+```
+
+装好后 skill 叫 `/agent-fleet:call-agent`。也可以不用插件市场，克隆项目后运行 `install-orchestrator.ps1`，装成 `/call-agent`；加 `-Codex` 同时装到 Codex 里，Codex 也能用同一个 skill。
+
+然后接入每台被管理的电脑，可以让 Claude 帮你运行，也可以自己运行 skill 文件夹里的客户端：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-orchestrator.ps1
-node orchestrator\fleet.mjs add-computer <那台电脑的 connection.json>
+node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>
 ```
 
 接入后，`connection.json` 可以删掉，令牌已经保存在 `~/.agent-fleet/tokens/`。如果管理端自己也是一台被管理的电脑，加 `--local=1`，让它走本机地址。
@@ -64,13 +81,13 @@ node orchestrator\fleet.mjs add-computer <那台电脑的 connection.json>
 在 Claude Code 里：
 
 ```
-/call-agent 【pc-1】【主agent export】帮我看看 B站有没有新私信
-/call-agent 【pc-1】                         列出这台电脑上的 Agent
+/agent-fleet:call-agent 【pc-1】【主agent export】帮我看看 B站有没有新私信
+/agent-fleet:call-agent 【pc-1】              列出这台电脑上的 Agent
 ```
 
-或者直接说“列出所有电脑和 Agent”“找一台有 GPU 的电脑剪视频”。
+（手动安装的话命令是 `/call-agent`。）也可以直接说“列出所有电脑和 Agent”“找一台有 GPU 的电脑剪视频”。
 
-常用命令（`node orchestrator\fleet.mjs …`）：
+常用命令（`node <skill 文件夹>\fleet.mjs …`）：
 
 | 命令 | 作用 |
 |---|---|
@@ -95,4 +112,11 @@ node orchestrator\fleet.mjs add-computer <那台电脑的 connection.json>
 ```powershell
 cd worker
 <python> -m unittest test_dispatcher.py
+claude plugin validate ..
 ```
+
+更多约定见 `AGENTS.md`。
+
+## 许可证
+
+MIT

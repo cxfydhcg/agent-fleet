@@ -1,0 +1,14 @@
+{
+  "name": "agent-fleet",
+  "description": "Manage AI agents (Codex) running on many computers from one Claude Code session",
+  "owner": {
+    "name": "Xufeng Ce"
+  },
+  "plugins": [
+    {
+      "name": "agent-fleet",
+      "source": "./plugin",
+      "description": "/call-agent: talk to the agents on your computers, see every computer's hardware, role and agents, and get notified when work is done"
+    }
+  ]
+}

@@ -183,7 +183,7 @@ Write-Utf8 $connectionFile ($connection | ConvertTo-Json)
 Write-Host ''
 Write-Host "完成：$Name 已接入。" -ForegroundColor Green
 Write-Host "接入信息：$connectionFile（含令牌，只发给你自己的管理端电脑）"
-Write-Host "在管理端电脑上运行：node <agent-fleet>\orchestrator\fleet.mjs add-computer <connection.json 的路径>"
+Write-Host "在管理端电脑上接入：让 Claude 运行 add-computer，或 node <call-agent skill 文件夹>\fleet.mjs add-computer <connection.json 的路径>"
 Write-Host "只读看板：$($connection.dashboard)"
 if (-not $FullAccess) { Write-Host '当前子任务只能写自己的工作目录。要操作桌面和浏览器，用 -FullAccess 重新运行。' -ForegroundColor Yellow }
 foreach ($w in $warnings) { Write-Warning $w }

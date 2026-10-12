@@ -10,8 +10,10 @@ You are the **orchestrator agent**. Each computer in the fleet runs a dispatcher
 All calls go through one client:
 
 ```
-node "{{FLEET}}" <command> ...
+node "${CLAUDE_SKILL_DIR}/fleet.mjs" <command> ...
 ```
+
+`fleet.mjs` sits next to this SKILL.md. If your agent doesn't substitute `${CLAUDE_SKILL_DIR}` (e.g. Codex), use the absolute path of this skill's folder instead. If no computers are registered yet, run `overview`; it prints an empty list. Then help the user set up a computer as described in this project's README (`install-worker.ps1`, then `add-computer`).
 
 ## 1. Parse the arguments
 
@@ -25,7 +27,7 @@ The expected form is `【电脑名】【Agent名】消息`. Brackets are optiona
 ## 2. Send and wait
 
 ```bash
-node "{{FLEET}}" agent <电脑> "<Agent名>" "$(cat <<'MSG'
+node "${CLAUDE_SKILL_DIR}/fleet.mjs" agent <电脑> "<Agent名>" "$(cat <<'MSG'
 <消息原文>
 MSG
 )"
@@ -54,4 +56,4 @@ Talking to an agent other than 主agent export is the **special case** of bypass
 
 ## Adding a computer
 
-Run `install-worker.ps1` on the new computer, copy the `connection.json` it prints to this computer, then run `node "{{FLEET}}" add-computer <path to connection.json>`. The registry lives in `~/.agent-fleet/computers.json`.
+Run `install-worker.ps1` on the new computer, copy the `connection.json` it prints to this computer, then run `node "${CLAUDE_SKILL_DIR}/fleet.mjs" add-computer <path to connection.json>`. The registry lives in `~/.agent-fleet/computers.json`.
