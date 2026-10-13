@@ -7,7 +7,8 @@
 //   node fleet.mjs describe-computer <电脑> [--role=用途] [--notes=备注] [--software=软件1,软件2]
 //   node fleet.mjs describe-agent <电脑> <Agent名> --role=职责 [--tags=gpu,网页] [--type=main|resident]
 //   node fleet.mjs remove-agent <电脑> <Agent名>       从档案里去掉（会话和历史保留）
-//   node fleet.mjs watch                              持续盯着所有电脑的新通知，每条输出一行（给后台监视用；从上次看到的位置继续）
+//   node fleet.mjs watch                              持续盯着所有电脑的新通知，每条输出一行（给后台监视用；从上次看到的位置继续，
+//                                                     位置记在 ~/.agent-fleet/watch-state.json）
 //   node fleet.mjs notifications <电脑> [--after=编号] 读通知全文（默认最近 10 条）
 //   node fleet.mjs add-computer <connection.json>      接入一台新电脑（文件由那台电脑的 install-worker.ps1 生成）
 //   node fleet.mjs computers                          列出已登记的电脑和 Agent
@@ -93,22 +94,28 @@ async function fetchNotifications(target, after) {
 }
 
 if (cmd === "watch") {
-  // First run starts from "now" so old notifications are not replayed.
-  for (const target of Object.values(registry.computers)) {
-    if (target.last_notification_id == null) {
-      try { target.last_notification_id = (await fetchNotifications(target, 0)).latest_id; } catch { /* offline: start at 0 later */ }
+  // The cursor has its own file and watch never writes computers.json: other commands (e.g. a long agent
+  // call) load the registry early and save it late, which used to put an old position back and replay.
+  const statePath = join(fleetHome, "watch-state.json");
+  const seen = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
+  const saveSeen = () => writeFileSync(statePath, JSON.stringify(seen, null, 2) + "\n");
+  for (const [name, target] of Object.entries(registry.computers)) {
+    seen[name] ??= target.last_notification_id; // older versions kept it in the registry
+    // First run starts from "now" so old notifications are not replayed.
+    if (seen[name] == null) {
+      try { seen[name] = (await fetchNotifications(target, 0)).latest_id; } catch { /* offline: start at 0 later */ }
     }
   }
-  saveRegistry();
+  saveSeen();
   for (;;) {
     for (const [name, target] of Object.entries(registry.computers)) {
       try {
-        const { notifications } = await fetchNotifications(target, target.last_notification_id ?? 0);
+        const { notifications } = await fetchNotifications(target, seen[name] ?? 0);
         for (const n of notifications) {
           console.log(`[${name}] #${n.id} ${n.needs_human ? "【需要人处理】" : ""}${n.sender || "agent"}：${n.title}`);
-          target.last_notification_id = n.id;
+          seen[name] = n.id;
         }
-        if (notifications.length) saveRegistry();
+        if (notifications.length) saveSeen();
       } catch { /* computer offline or restarting: try again next round */ }
     }
     await sleep(15000);
