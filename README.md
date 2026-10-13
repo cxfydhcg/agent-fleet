@@ -114,7 +114,17 @@ node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>
 - **令牌等于这台电脑的控制权**。用 `-FullAccess` 时，持有令牌并能连到服务的人可以让电脑做任何事。令牌只放在自己的电脑上，不要发给别人；Tailscale 账号也不要共享。
 - **不要在 Codex 桌面 App 里点开 Agent 正在用的会话**。App 会一直锁住它打开过的会话，直到 Codex 完全退出，这期间 Agent 无法继续那个会话。想看进度，用只读看板。
 - **派任务服务一次只运行一个任务**，避免多个任务同时抢鼠标键盘。主agent export 派完任务就结束本轮，等子 agent 做完的自动通知。
+- **Codex 额度用完时不开始任务**。每个任务开始前先查 Codex 的 5 小时和每周额度，任一已用完，整个队列按原顺序暂停到额度重置后约 1 分钟（一次最多等 6 小时再查），任务的最新消息和看板上会显示预计时间，并给 orchestrator 发一条通知。查询失败或返回格式看不懂时照常运行。
 - **子 agent 被明确要求不碰派任务服务和令牌**。这是写给它们的规则，不是技术上做不到，因为 `-FullAccess` 下子 agent 能读到电脑上的任何文件。
+
+## 可选设置：Codex 额度保护
+
+改 `%LOCALAPPDATA%\agent-fleet\config.json`，重启派任务服务后生效。只对默认的 app-server 方式有效。
+
+| 配置项 | 默认 | 作用 |
+|---|---|---|
+| `quota_guard` | `true` | 任务开始前查 Codex 额度（app-server 的 `account/rateLimits/read`），用完就让队列等到重置。设成 `false` 关闭。 |
+| `quota_guard_threshold` | `100` | 5 小时或每周额度的已用百分比达到这个值就算用完，例如 `95` 留一点余量。 |
 
 ## 可选设置：会话在 Codex 桌面 App 里怎么显示
 

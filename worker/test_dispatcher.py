@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -192,6 +193,12 @@ for line in sys.stdin:
     if method == 'initialize':
         if params.get('capabilities'): log('capabilities:%s' % json.dumps(params['capabilities'], sort_keys=True))
         send({'id': message['id'], 'result': {}})
+    elif method == 'account/rateLimits/read':
+        # A test writes the answer to rate-limits.json ("error" for a JSON-RPC error); the default has quota left.
+        file = here / 'rate-limits.json'
+        answer = file.read_text(encoding='utf-8') if file.exists() else '{"rateLimits": {"primary": {"usedPercent": 5}}}'
+        if answer == 'error': send({'id': message['id'], 'error': {'code': -32601, 'message': 'unknown method'}})
+        else: send({'id': message['id'], 'result': json.loads(answer)})
     elif method == 'thread/start': send({'id': message['id'], 'result': {'thread': {'id': 'as-thread'}}})
     elif method == 'thread/name/set': send({'id': message['id'], 'result': {}})
     elif method == 'thread/resume':
@@ -493,6 +500,100 @@ class AppServerDispatcherTests(DispatcherTests):
         job = await self.wait_for(first['task_id'], {'completed', 'failed'})
         self.assertEqual(job['status'], 'failed')
         self.assertIn('boom', job['error'])
+
+    def set_rate_limits(self, answer):
+        text = answer if isinstance(answer, str) else json.dumps(answer)
+        (self.root / 'rate-limits.json').write_text(text, encoding='utf-8')
+
+    async def test_used_up_quota_pauses_the_whole_queue_in_order(self):
+        import server
+        resets = int(time.time()) + 3600
+        self.set_rate_limits({'rateLimits': {'primary': {'usedPercent': 100, 'windowDurationMins': 300, 'resetsAt': resets},
+                                             'secondary': {'usedPercent': 76, 'resetsAt': resets + 86400}}})
+        # The reset is an hour away; a tiny cap on one wait makes the dispatcher re-check quickly.
+        with patch.object(server, 'QUOTA_MAX_WAIT_SECONDS', 0.2):
+            first = self.manager.submit('first', None, 10, None, name='甲')
+            second = self.manager.submit('second', None, 10, None, name='乙')
+            async with asyncio.timeout(20):
+                while self.call_log().count('account/rateLimits/read') < 3:
+                    await asyncio.sleep(0.05)
+            job = self.manager.get(first['task_id'])
+            self.assertEqual(job['status'], 'queued')
+            self.assertNotIn('started_at', job)
+            self.assertEqual(job['latest_message'],
+                             f'等待 Codex 额度重置：5 小时额度已用完，预计 {server.local_clock(resets)}（本地时间）后自动开始')
+            self.assertEqual(self.manager.get(second['task_id'])['status'], 'queued')
+            self.assertFalse([c for c in self.call_log() if c in ('thread/start', 'turn/start', 'thread/resume')])
+            self.assertEqual(self.manager.quota_wait['task_id'], first['task_id'])
+            [paused] = self.manager.notifications  # once, not on every re-check
+            self.assertTrue(paused['title'].startswith('Codex 额度用完，任务暂停到 '))
+            self.assertEqual((paused['needs_human'], paused['sender'], paused['task_ids']), (False, 'dispatcher', [first['task_id']]))
+            self.set_rate_limits({'rateLimits': {'primary': {'usedPercent': 0}, 'secondary': {'usedPercent': 76}}})
+            done = await self.wait_for(second['task_id'], {'completed', 'failed'})
+        self.assertEqual(done['status'], 'completed', done.get('error'))
+        job = self.manager.get(first['task_id'])
+        self.assertEqual((job['status'], job['latest_message']), ('completed', 'first'))
+        names = [c for c in self.call_log() if c.startswith('thread/name/set')]
+        self.assertEqual(names, ['thread/name/set:甲', 'thread/name/set:乙'])  # the waiting job went first
+        self.assertEqual([n['title'] for n in self.manager.notifications][1:], ['Codex 额度已恢复，任务继续'])
+        self.assertIsNone(self.manager.quota_wait)
+
+    async def test_waiting_for_quota_can_be_cancelled_and_shut_down(self):
+        import server
+        self.set_rate_limits({'rateLimits': {'secondary': {'usedPercent': 100, 'resetsAt': int(time.time()) + 6 * 86400}}})
+        first = self.manager.submit('first', None, 10, None)
+        second = self.manager.submit('second', None, 10, None)
+        async with asyncio.timeout(20):
+            while self.manager.quota_wait is None:
+                await asyncio.sleep(0.05)
+        self.assertIn('每周额度已用完', self.manager.get(first['task_id'])['latest_message'])
+        async with asyncio.timeout(5):  # the wait (capped at 6 h) ends at once
+            await self.manager.cancel(first['task_id'])
+            while (self.manager.quota_wait or {}).get('task_id') != second['task_id']:
+                await asyncio.sleep(0.05)
+        self.assertEqual(self.manager.get(first['task_id'])['status'], 'cancelled')
+        self.assertEqual(self.manager.get(second['task_id'])['status'], 'queued')
+        self.assertEqual(len(self.manager.notifications), 1)  # still the same pause
+        async with asyncio.timeout(5):
+            await self.manager.shutdown()
+        self.assertEqual(self.manager.get(second['task_id'])['status'], 'interrupted')
+        self.assertFalse([c for c in self.call_log() if c in ('thread/start', 'turn/start')])
+
+    async def test_quota_check_errors_and_odd_answers_do_not_block(self):
+        for answer in ['error', '{"weird": true}', '[1]', '{"rateLimits": {"primary": {"usedPercent": "lots"}}}',
+                       '{"rateLimits": {"primary": null, "secondary": {"usedPercent": 99}}}']:
+            self.set_rate_limits(answer)
+            task = self.manager.submit('go', None, 10, None)
+            job = await self.wait_for(task['task_id'], {'completed', 'failed'})
+            self.assertEqual(job['status'], 'completed', (answer, job.get('error')))
+            if answer == 'error':
+                events = (self.manager.jobs_dir / task['task_id'] / 'events.jsonl').read_text(encoding='utf-8')
+                self.assertIn('quota check skipped', events)
+        self.assertEqual(self.manager.notifications, [])
+        # A lower threshold blocks earlier; the guard can be turned off entirely.
+        self.manager.config.update(quota_guard_threshold=90)
+        blocked = self.manager.submit('blocked', None, 10, None)
+        async with asyncio.timeout(20):
+            while self.manager.quota_wait is None:
+                await asyncio.sleep(0.05)
+        await self.manager.cancel(blocked['task_id'])
+        self.calls.unlink()
+        self.manager.config.update(quota_guard=False)
+        task = self.manager.submit('unguarded', None, 10, None)
+        job = await self.wait_for(task['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertNotIn('account/rateLimits/read', self.call_log())
+
+    def test_quota_answers_are_read_tolerantly(self):
+        from server import quota_exhausted
+        limits = lambda **windows: {'rateLimits': windows}
+        self.assertIsNone(quota_exhausted(limits(primary={'usedPercent': 99.9}), 100))
+        self.assertEqual(quota_exhausted(limits(primary={'usedPercent': 100, 'resetsAt': 5}), 100), (['5 小时'], 5))
+        self.assertEqual(quota_exhausted(limits(primary={'usedPercent': 100, 'resetsAt': 5},
+                                                secondary={'usedPercent': 100, 'resetsAt': 9}), 100), (['5 小时', '每周'], 9))
+        self.assertEqual(quota_exhausted(limits(secondary={'usedPercent': 80}), 80), (['每周'], None))
+        for odd in [None, [], {}, {'rateLimits': None}, limits(primary={'usedPercent': True}), limits(primary='full')]:
+            self.assertIsNone(quota_exhausted(odd, 100))
 
     async def test_timeout_and_queue_continues(self):
         await super().test_timeout_and_queue_continues()

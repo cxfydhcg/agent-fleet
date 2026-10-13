@@ -146,7 +146,11 @@
     const m = profile.machine || {}, c = profile.computer || {};
     const title = el('div', 'title'); title.append(el('span', null, profile.computer_name || m.hostname || '本机'));
     if (profile.busy && profile.busy.running.length) title.append(el('span', 'badge s-running', '忙：' + profile.busy.running.join('、')));
-    else title.append(el('span', 'badge s-completed', '空闲'));
+    else if (!profile.quota_wait) title.append(el('span', 'badge s-completed', '空闲'));
+    if (profile.quota_wait) { // the queue is paused until the Codex quota resets
+      const until = profile.quota_wait.until ? ' ' + new Date(profile.quota_wait.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+      const badge = el('span', 'badge s-queued', '等待额度' + until); badge.title = profile.quota_wait.message || ''; title.append(badge);
+    }
     const gpu = (m.nvidia && m.nvidia.length) ? m.nvidia.map((g) => g.name + ' ' + Math.round(g.vram_total_mb / 1024) + 'GB').join('、')
       : (m.gpus || []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join('、') || '无独立显卡';
     const facts = [m.cpu, m.ram_gb && (m.ram_gb + 'GB 内存'), gpu, m.os, m.egress_country && ('出口 ' + m.egress_country)].filter(Boolean).join(' · ');

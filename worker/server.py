@@ -30,6 +30,47 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def local_clock(timestamp):
+    """A unix time as local HH:MM, with the date when it is not today."""
+    moment = datetime.fromtimestamp(timestamp)
+    return moment.strftime('%H:%M' if moment.date() == datetime.now().date() else '%m-%d %H:%M')
+
+
+# Quota guard: wait this long after the reported reset, at most this long in one go, and re-check this often
+# when Codex does not say when the window resets. Module constants, so tests can shrink them.
+QUOTA_SLACK_SECONDS, QUOTA_MAX_WAIT_SECONDS, QUOTA_RECHECK_SECONDS, QUOTA_CHECK_TIMEOUT = 60, 6 * 3600, 600, 15
+QUOTA_NOTE = '等待 Codex 额度重置：'
+QUOTA_WINDOWS = (('primary', '5 小时'), ('secondary', '每周'))
+
+
+def quota_exhausted(result, threshold):
+    """Read an account/rateLimits/read answer: (labels of the windows at or over threshold percent, unix time
+    the last of them resets or None). None when nothing is used up or the shape is unknown, so an
+    unexpected answer never blocks work."""
+    limits = result.get('rateLimits') if isinstance(result, dict) else None
+    if not isinstance(limits, dict):
+        return None
+    number = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool)
+    labels, resets = [], []
+    for key, label in QUOTA_WINDOWS:
+        window = limits.get(key) if isinstance(limits.get(key), dict) else {}
+        if number(window.get('usedPercent')) and window['usedPercent'] >= threshold:
+            labels.append(label)
+            if number(window.get('resetsAt')):
+                resets.append(window['resetsAt'])
+    return (labels, max(resets) if resets else None) if labels else None
+
+
+class QuotaExhausted(Exception):
+    """The Codex quota is used up; raised before any session is started, so the job can simply wait its turn."""
+
+    def __init__(self, labels, resets_at):
+        self.labels, self.resets_at = labels, resets_at
+        when = (f'预计 {local_clock(resets_at)}（本地时间）后自动开始' if resets_at else
+                f'每 {max(1, round(QUOTA_RECHECK_SECONDS / 60))} 分钟检查一次，恢复后自动开始')
+        super().__init__(f"{QUOTA_NOTE}{'和'.join(labels)}额度已用完，{when}")
+
+
 class AppServerError(RuntimeError):
     def __init__(self, error):
         super().__init__(error.get('message') or json.dumps(error, ensure_ascii=False))
@@ -93,11 +134,12 @@ class AppServerConnection:
         self.process.stdin.write((json.dumps(message, ensure_ascii=False) + '\n').encode('utf-8'))
         await self.process.stdin.drain()
 
-    async def request(self, method, params):
+    async def request(self, method, params=None):
         request_id, self.next_id = self.next_id, self.next_id + 1
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
-        await self.send({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
+        await self.send({'jsonrpc': '2.0', 'id': request_id, 'method': method,
+                         **({'params': params} if params is not None else {})})
         return await future
 
     async def notify(self, method, params=None):
@@ -214,6 +256,9 @@ class TaskManager:
         self.queue = asyncio.Queue()
         self.worker = None
         self.closing = False
+        # Quota guard: what the queue is waiting for (shown in the profile), whether the orchestrator was
+        # told about this pause yet, and a nudge that ends the wait early, e.g. when the waiting job is cancelled.
+        self.quota_wait, self.quota_paused, self.quota_wake = None, False, asyncio.Event()
         self.profile_file = self.state / 'profile.json'
         self.profile = json.loads(self.profile_file.read_text(encoding='utf-8')) if self.profile_file.exists() else {}
         self.profile.setdefault('computer', {})
@@ -359,7 +404,7 @@ class TaskManager:
                            'last_active': (latest.get('finished_at') or latest.get('started_at') or latest['created_at']) if latest else None})
         machine = await self.machine_info(refresh)
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
-                'machine': machine, 'computer': self.profile['computer'], 'agents': agents,
+                'machine': machine, 'computer': self.profile['computer'], 'agents': agents, 'quota_wait': self.quota_wait,
                 'busy': {'running': [j.get('name') or j['task_id'] for j in self.jobs.values() if j['status'] == 'running'],
                          'queued': sum(j['status'] == 'queued' for j in self.jobs.values())}}
 
@@ -590,6 +635,7 @@ class TaskManager:
         if job['status'] in ('queued', 'running'):
             job.update(status='cancelled', finished_at=now())
             self.save(job)
+            self.quota_wake.set()  # A job waiting for the Codex quota stops waiting at once.
             if task_id in self.processes:
                 await self.kill(self.processes[task_id])
         return self.public(job)
@@ -672,6 +718,12 @@ class TaskManager:
                     await self.kill(process)
                     if job['status'] == 'running':
                         job.update(status='timed_out', error='Task exceeded timeout_seconds')
+                except QuotaExhausted as paused:
+                    if job['status'] == 'running':
+                        # Back in line untouched: no session was started or resumed.
+                        job.update(status='queued', latest_message=str(paused))
+                        job.pop('started_at', None)
+                    raise
                 if job['status'] == 'running':
                     success = job.get('exit_code') == 0 and not job.get('error') and (folder / 'result.txt').exists()
                     job['status'] = 'completed' if success else 'failed'
@@ -681,7 +733,8 @@ class TaskManager:
             finally:
                 await self.kill(process)
                 self.processes.pop(job['task_id'], None)
-                job.setdefault('finished_at', now())
+                if job['status'] != 'queued':
+                    job.setdefault('finished_at', now())
                 self.save(job)
 
     async def drive_app_server(self, job, process, event_log, folder):
@@ -712,7 +765,7 @@ class TaskManager:
                 turn_done.set_result(params.get('turn') or {})
 
         connection.notification_handlers.append(on_notification)
-        turn = None
+        turn, quiet = None, False
         try:
             # Optional: file new sessions under a Codex project. projectId is part of app-server's experimental API.
             project = self.config.get('codex_project_id')
@@ -720,6 +773,11 @@ class TaskManager:
                 'name': 'codex_task_dispatcher', 'title': 'Codex Task Dispatcher', 'version': '2.0'},
                 **({'capabilities': {'experimentalApi': True}} if project else {})})
             await connection.notify('initialized')
+            try:
+                await self.check_quota(connection, job, log_line)
+            except QuotaExhausted:
+                quiet = True  # Nothing was started, so let the app-server exit normally.
+                raise
             suffix = self.title_suffix(job)
             if job.get('resume_task_id'):
                 forked = await self.resume_or_fork(connection, job, policy)
@@ -756,7 +814,7 @@ class TaskManager:
             # is already released when the caller continues it or the user opens it in the desktop app.
             # On timeout, cancellation or errors, stop it at once instead.
             try:
-                if turn is None:
+                if turn is None and not quiet:
                     raise OSError
                 process.stdin.close()
                 await asyncio.wait_for(process.wait(), 10)
@@ -770,6 +828,53 @@ class TaskManager:
             job['error'] = str(error.get('message') or error or f"Turn ended with status {turn.get('status')}")[-2000:]
             return 1
         return 0
+
+    async def check_quota(self, connection, job, log_line):
+        """The owner's rule: don't start a task while the Codex 5-hour (or weekly) quota is used up. Raises
+        QuotaExhausted before any session is touched. A failed call or an unknown answer never blocks."""
+        if not self.config.get('quota_guard', True):
+            return
+        try:
+            result = await asyncio.wait_for(connection.request('account/rateLimits/read'), QUOTA_CHECK_TIMEOUT)
+            if not isinstance(result, dict) or not isinstance(result.get('rateLimits'), dict):
+                raise ValueError('unexpected answer: ' + json.dumps(result, ensure_ascii=False)[:500])
+        except (AppServerError, RuntimeError, ValueError, asyncio.TimeoutError) as error:
+            log_line((json.dumps({'dispatcher': 'quota check skipped', 'error': str(error) or type(error).__name__},
+                                 ensure_ascii=False) + '\n').encode('utf-8'))
+            result = None
+        blocked = quota_exhausted(result, self.config.get('quota_guard_threshold', 100))
+        if blocked:
+            raise QuotaExhausted(*blocked)
+        if (job.get('latest_message') or '').startswith(QUOTA_NOTE):
+            job.pop('latest_message')
+            self.save(job)
+        if self.quota_paused:
+            self.quota_paused = False
+            self.notify('Codex 额度已恢复，任务继续',
+                        f"排队的任务按原顺序继续运行，先从「{job.get('name') or job['task_id'][:8]}」开始。",
+                        task_ids=[job['task_id']], sender='dispatcher')
+
+    async def wait_for_quota(self, job, paused):
+        """Hold the whole queue behind this job until the quota should be back. The orchestrator hears about
+        the pause once, not on every re-check. Cancelling the job or stopping the service ends the wait at once."""
+        if job['status'] != 'queued':
+            return
+        until = datetime.fromtimestamp(paused.resets_at, timezone.utc).isoformat() if paused.resets_at else None
+        self.quota_wait = {'until': until, 'message': str(paused), 'task_id': job['task_id']}
+        if not self.quota_paused:
+            self.quota_paused = True
+            queued = sum(j['status'] == 'queued' for j in self.jobs.values())
+            self.notify('Codex 额度用完，任务暂停' + (f'到 {local_clock(paused.resets_at)}' if paused.resets_at else ''),
+                        f'{paused}。排队中的 {queued} 个任务会按原顺序等到那时再开始，不需要人处理。',
+                        task_ids=[job['task_id']], sender='dispatcher')
+        delay = QUOTA_RECHECK_SECONDS if paused.resets_at is None else max(paused.resets_at - time.time(), 0) + QUOTA_SLACK_SECONDS
+        deadline = time.monotonic() + min(delay, QUOTA_MAX_WAIT_SECONDS)
+        while job['status'] == 'queued' and not self.closing and deadline > time.monotonic():
+            self.quota_wake.clear()
+            try:
+                await asyncio.wait_for(self.quota_wake.wait(), deadline - time.monotonic())
+            except asyncio.TimeoutError:
+                break
 
     async def resume_or_fork(self, connection, job, policy):
         """Load an existing session. The desktop app keeps every chat it has opened locked until it fully
@@ -811,7 +916,13 @@ class TaskManager:
             task_id = await self.queue.get()
             job = self.get(task_id)
             try:
-                await self.run_job(job)
+                while not self.closing:
+                    try:
+                        await self.run_job(job)
+                        break
+                    except QuotaExhausted as paused:
+                        # Retry this same job before taking the next, so the order holds and nothing else burns quota.
+                        await self.wait_for_quota(job, paused)
             except asyncio.CancelledError:
                 if job['status'] in ('running', 'queued'):
                     job.update(status='interrupted', finished_at=now(), error='Service shut down')
@@ -822,6 +933,7 @@ class TaskManager:
                     job.update(status='failed', finished_at=now(), error=str(error)[-2000:])
                     self.save(job)
             finally:
+                self.quota_wait = None
                 self.queue.task_done()
             try:
                 self.after_job(job)
@@ -949,7 +1061,8 @@ def build_app(config):
 
     @mcp.custom_route('/health', methods=['GET'])
     async def health(request):
-        return JSONResponse({'service': 'codex-task-mcp', 'status': 'ok', 'pid': os.getpid()})
+        return JSONResponse({'service': 'codex-task-mcp', 'status': 'ok', 'pid': os.getpid(),
+                             'quota_wait_until': (manager.quota_wait or {}).get('until')})
 
     # Read-only dashboard. Viewing never loads a session into Codex, so it takes no writer lock.
     @mcp.custom_route('/dashboard', methods=['GET'])
