@@ -270,6 +270,35 @@ class AppServerDispatcherTests(DispatcherTests):
         self.assertEqual(back['thread_id'], 'as-fork')  # A task id that names the fork itself keeps it.
         self.assertEqual(self.manager.latest_thread('as-thread'), 'as-thread')
 
+    async def test_resident_agents_get_a_title_suffix(self):
+        self.manager.register_agent('发布员', '发布视频')
+        self.manager.register_agent('主agent export', '总负责', agent_type='main')
+        first = self.manager.submit('original', None, 10, None, name='发布员')
+        await self.wait_for(first['task_id'], {'completed'})
+        followup = self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertEqual(self.call_log().count('thread/name/set:发布员 - 固定'), 2)  # set again when resumed
+        self.assertEqual(job['name'], '发布员')  # the dispatch name stays plain
+        # Main agents and unregistered tasks keep their plain title; an empty suffix turns it off.
+        self.calls.unlink()
+        main = self.manager.submit('coordinate', None, 10, None, name='主agent export')
+        await self.wait_for(main['task_id'], {'completed'})
+        again = self.manager.submit('again', None, 10, None, resume_task_id=main['task_id'])
+        await self.wait_for(again['task_id'], {'completed'})
+        self.manager.config['resident_title_suffix'] = ''
+        plain = self.manager.submit('x', None, 10, None, name='发布员')
+        await self.wait_for(plain['task_id'], {'completed'})
+        names = [c for c in self.call_log() if c.startswith('thread/name/set')]
+        self.assertEqual(names, ['thread/name/set:主agent export', 'thread/name/set:发布员'])
+        # A fork of a resident session keeps its "（续 …）" title, with the suffix at the end.
+        self.manager.config.update(resident_title_suffix=' - 固定', fork_when_busy=True)
+        (self.root / 'busy').write_text('', encoding='utf-8')
+        forked = self.manager.submit('fork', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(forked['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        self.assertTrue(any(c.startswith('thread/name/set:发布员（续') and c.endswith(' - 固定') for c in self.call_log()))
+
     async def test_session_open_elsewhere_fails_by_default(self):
         first = self.manager.submit('original', None, 10, None)
         await self.wait_for(first['task_id'], {'completed'})

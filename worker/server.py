@@ -301,6 +301,13 @@ class TaskManager:
             return False
         return (self.profile['agents'].get(job.get('name') or '') or {}).get('type') != 'main'
 
+    def title_suffix(self, job):
+        """Registered resident agents get a marker in their desktop-app title (config resident_title_suffix,
+        default " - 固定"; "" turns it off), so they stand out from one-off tasks. Only the title changes."""
+        suffix = self.config.get('resident_title_suffix', ' - 固定')
+        agent = self.profile['agents'].get(job.get('name') or '') or {}
+        return suffix if suffix and agent.get('type') == 'resident' else ''
+
     def save_profile(self):
         temporary = self.profile_file.with_suffix('.tmp')
         temporary.write_text(json.dumps(self.profile, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -710,14 +717,18 @@ class TaskManager:
             await connection.request('initialize', {'clientInfo': {
                 'name': 'codex_task_dispatcher', 'title': 'Codex Task Dispatcher', 'version': '2.0'}})
             await connection.notify('initialized')
+            suffix = self.title_suffix(job)
             if job.get('resume_task_id'):
-                await self.resume_or_fork(connection, job, policy)
+                forked = await self.resume_or_fork(connection, job, policy)
+                # A resumed resident session gets its marked title even if it was registered later.
+                name = job['name'] + suffix if suffix and not forked else None
             else:
                 started = await connection.request('thread/start', {
                     'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {})})
                 job['thread_id'] = started['thread']['id']
                 self.save(job)
-                name = job.get('name') or ' '.join(job['prompt'].split())[:40]
+                name = (job.get('name') or ' '.join(job['prompt'].split())[:40]) + suffix
+            if name:
                 try:
                     await connection.request('thread/name/set', {'threadId': job['thread_id'], 'name': name})
                 except AppServerError:
@@ -758,14 +769,14 @@ class TaskManager:
 
     async def resume_or_fork(self, connection, job, policy):
         """Load an existing session. The desktop app keeps every chat it has opened locked until it fully
-        exits; if the session stays held, fail, or fork it when fork_when_busy is on."""
+        exits; if the session stays held, fail, or fork it when fork_when_busy is on. Returns True if forked."""
         deadline = asyncio.get_running_loop().time() + self.config.get('writer_wait_seconds', 10)
         while True:
             try:
                 # Re-apply the current permissions and folder, so older sessions pick up config changes
                 # and sessions whose folder was moved continue in the new place.
                 await connection.request('thread/resume', {'threadId': job['thread_id'], 'cwd': job['workspace'], **policy})
-                return
+                return False
             except AppServerError as error:
                 if 'active writer' not in str(error):
                     raise
@@ -786,9 +797,10 @@ class TaskManager:
         base = job.get('name') or 'Codex task'
         try:
             await connection.request('thread/name/set', {
-                'threadId': job['thread_id'], 'name': f"{base}（续 {datetime.now().strftime('%m-%d %H:%M')}）"})
+                'threadId': job['thread_id'], 'name': f"{base}（续 {datetime.now().strftime('%m-%d %H:%M')}）{self.title_suffix(job)}"})
         except AppServerError:
             pass
+        return True
 
     async def work(self):
         while True:
