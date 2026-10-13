@@ -572,6 +572,24 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.finish('solo', 'x')
         self.assertEqual(len(self.queued_wakes()), 1)
 
+    async def test_failed_subtask_notice_carries_its_last_progress(self):
+        self.add('child-1', 'C1', 'running', name='发布', parent_task_id='main-1')
+        job = self.manager.jobs['child-1']
+        job.update(status='failed', error='Selected model is at capacity', latest_message='x' * 2000 + '已保存 B站和小红书草稿')
+        self.manager.after_job(job)
+        [wake] = self.queued_wakes()
+        self.assertIn('Selected model is at capacity', wake['prompt'])
+        self.assertIn('最后进度：', wake['prompt'])
+        self.assertIn('已保存 B站和小红书草稿', wake['prompt'])
+        self.assertLess(len(wake['prompt']), 1500)  # truncated
+        # A normal completion with a result does not repeat the progress line.
+        wake['status'] = 'completed'
+        self.add('child-2', 'C2', 'running', name='检查', parent_task_id='main-1', latest_message='中间过程')
+        self.finish('child-2', '检查完成')
+        prompt = self.queued_wakes()[-1]['prompt']
+        self.assertIn('检查完成', prompt)
+        self.assertNotIn('最后进度', prompt)
+
     async def test_results_wait_while_parent_is_busy_and_are_batched(self):
         self.add('child-1', 'C1', 'running', name='甲', parent_task_id='main-1')
         self.add('child-2', 'C2', 'running', name='乙', parent_task_id='main-1')

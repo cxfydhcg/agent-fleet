@@ -494,8 +494,12 @@ class TaskManager:
             child = self.jobs[child_id]
             result_file = self.jobs_dir / child_id / 'result.txt'
             text = result_file.read_text(encoding='utf-8')[:1500] if result_file.exists() else ''
-            lines.append(f"- 「{child.get('name') or '未命名'}」 task_id={child_id} 状态={child['status']}\n"
-                         f"  结果：{text or child.get('error') or '（无）'}")
+            line = (f"- 「{child.get('name') or '未命名'}」 task_id={child_id} 状态={child['status']}\n"
+                    f"  结果：{text or child.get('error') or '（无）'}")
+            # A failure can come after real work (e.g. drafts saved, then "model at capacity"); say how far it got.
+            if (child['status'] != 'completed' or not text) and child.get('latest_message'):
+                line += f"\n  最后进度：{child['latest_message'][-800:]}"
+            lines.append(line)
         prompt = (WAKE_HEADER + '你派出的子任务已结束：\n' + '\n'.join(lines) +
                   '\n\n请根据结果决定下一步：还有工作就继续派任务（派完立即结束本轮）；全部完成就写一份简短汇报作为本轮回复；'
                   '需要人处理就在汇报里说明。这条消息由派任务服务自动发送，不是 orchestrator 的新指令。')
