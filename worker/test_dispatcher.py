@@ -378,6 +378,32 @@ class AppServerDispatcherTests(DispatcherTests):
         self.assertEqual(calls.count('model:turn/start:gpt-6-luna:medium'), 2)  # the continuation keeps the choice
         self.assertEqual(self.manager.public(self.manager.get(followup['task_id']))['effort'], 'medium')
 
+    async def test_continue_task_tool_can_switch_model(self):
+        # e.g. the session keeps failing with "Selected model is at capacity".
+        import server
+        created = []
+
+        class Recording(server.FastMCP):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                created.append(self)
+        token = self.root / 'token.txt'
+        token.write_text('t' * 40, encoding='utf-8')
+        await self.manager.shutdown()
+        with patch('server.FastMCP', Recording):
+            _, self.manager = server.build_app({**self.config, 'token_file': str(token), 'allowed_hosts': []})
+        self.manager.worker = asyncio.create_task(self.manager.work())
+        first = self.manager.submit('original', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        await created[0].call_tool('continue_task', {'task_id': first['task_id'], 'prompt': 'more',
+                                                     'model': 'gpt-6-luna', 'effort': 'low'})
+        [followup] = [j for j in self.manager.jobs.values() if j.get('resume_task_id') == first['task_id']]
+        self.assertEqual((followup['model'], followup['effort']), ('gpt-6-luna', 'low'))
+        await self.wait_for(followup['task_id'], {'completed'})
+        self.assertIn('model:turn/start:gpt-6-luna:low', self.call_log())
+        later = self.manager.submit('later', None, 10, None, resume_task_id=followup['task_id'])
+        self.assertEqual((later['model'], later['effort']), ('gpt-6-luna', 'low'))  # inherited
+
     def test_worker_rules_allow_cheaper_helpers(self):
         from server import WORKER_RULES
         self.assertIn('spawn_agent', WORKER_RULES)

@@ -874,9 +874,11 @@ def build_app(config):
 
     @mcp.tool()
     async def continue_task(task_id: str, prompt: str, timeout_seconds: int = 1800,
-                            idempotency_key: str | None = None, ctx: Context = None) -> dict:
-        """Continue the Codex session of a finished dispatched task, preserving its conversation history and workspace. Return a new task_id for this turn. You can reference any finished task in that session; continuation uses its latest saved history. A session the human has opened in the desktop app stays locked until Codex fully exits (see the server instructions for what happens then). Wait until the session has no pending task. Only sessions created by this service can be continued."""
-        return manager.submit(prompt, None, timeout_seconds, idempotency_key, resume_task_id=task_id, parent_task_id=manager.caller(ctx))
+                            idempotency_key: str | None = None, model: str | None = None, effort: str | None = None,
+                            ctx: Context = None) -> dict:
+        """Continue the Codex session of a finished dispatched task, preserving its conversation history and workspace. Return a new task_id for this turn. You can reference any finished task in that session; continuation uses its latest saved history. A session the human has opened in the desktop app stays locked until Codex fully exits (see the server instructions for what happens then). Wait until the session has no pending task. Only sessions created by this service can be continued. model / effort: normally OMIT both; set them only when the session keeps failing with "Selected model is at capacity" or the human asks. The override applies to this turn, and later continuations of the session inherit it."""
+        return manager.submit(prompt, None, timeout_seconds, idempotency_key, resume_task_id=task_id,
+                              parent_task_id=manager.caller(ctx), model=model, effort=effort)
 
     @mcp.tool()
     async def get_task(task_id: str, include_result: bool = True) -> dict:

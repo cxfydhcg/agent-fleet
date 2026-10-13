@@ -16,8 +16,10 @@
 //                                                     和指定 Agent 对话：续接它的会话，等待并输出回复。
 //                                                     --new：找不到这个名字时，新建一个这样命名的 Agent。
 //   node fleet.mjs export   <电脑> <消息>              等同于 agent <电脑> "主agent export" <消息>
-//   node fleet.mjs submit   <电脑> <prompt> [--name=会话名] [--wait]   直接开新任务（特殊情况用）
-//   node fleet.mjs continue <电脑> <task_id> <prompt>
+//   node fleet.mjs submit   <电脑> <prompt> [--name=会话名] [--wait] [--model=模型] [--effort=档位]   直接开新任务（特殊情况用）
+//   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
+//                                                     --model/--effort 平时不加；只在会话一直报 "Selected model is at capacity"
+//                                                     或用户要求时用。本轮生效，之后的续接沿用。
 //   node fleet.mjs get      <电脑> <task_id>
 //   node fleet.mjs wait     <电脑> <task_id>
 //   node fleet.mjs list     <电脑> [数量]
@@ -264,6 +266,8 @@ async function talk(agentName, prompt) {
 
 await connect(pc);
 const list = (value) => value?.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+// Normally unset: Codex's default model, like a new window.
+const modelChoice = () => Object.fromEntries(["model", "effort"].filter((k) => option(k)).map((k) => [k, option(k)]));
 
 switch (cmd) {
   case "agents": {
@@ -302,12 +306,12 @@ switch (cmd) {
     break;
   case "submit": {
     const name = option("name");
-    const started = await call("submit_task", { prompt: rest.join(" "), ...(name ? { name } : {}) });
+    const started = await call("submit_task", { prompt: rest.join(" "), ...(name ? { name } : {}), ...modelChoice() });
     out(flag("--wait") ? await wait(started.task_id) : started);
     break;
   }
   case "continue":
-    out(await call("continue_task", { task_id: rest[0], prompt: rest.slice(1).join(" ") }));
+    out(await call("continue_task", { task_id: rest[0], prompt: rest.slice(1).join(" "), ...modelChoice() }));
     break;
   case "get":
     out(await call("get_task", { task_id: rest[0] }));
