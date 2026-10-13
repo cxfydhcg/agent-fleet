@@ -187,8 +187,11 @@ for line in sys.stdin:
         log('worker-rules:%s:%s' % (method, 'yes' if '子 agent（worker）' in (params.get('developerInstructions') or '') else 'no'))
         if params.get('model') or params.get('effort'): log('model:%s:%s:%s' % (method, params.get('model'), params.get('effort')))
         if params.get('cwd'): log('cwd:%s:%s' % (method, params['cwd']))
+        if 'projectId' in params: log('project:%s:%s' % (method, params['projectId']))
         if (params.get('sandboxPolicy') or {}).get('writableRoots'): log('writable:%s' % params['sandboxPolicy']['writableRoots'][0])
-    if method == 'initialize': send({'id': message['id'], 'result': {}})
+    if method == 'initialize':
+        if params.get('capabilities'): log('capabilities:%s' % json.dumps(params['capabilities'], sort_keys=True))
+        send({'id': message['id'], 'result': {}})
     elif method == 'thread/start': send({'id': message['id'], 'result': {'thread': {'id': 'as-thread'}}})
     elif method == 'thread/name/set': send({'id': message['id'], 'result': {}})
     elif method == 'thread/resume':
@@ -432,6 +435,20 @@ class AppServerDispatcherTests(DispatcherTests):
         self.assertIn('model:turn/start:gpt-6-luna:low', self.call_log())
         later = self.manager.submit('later', None, 10, None, resume_task_id=followup['task_id'])
         self.assertEqual((later['model'], later['effort']), ('gpt-6-luna', 'low'))  # inherited
+
+    async def test_codex_project_is_optional(self):
+        plain = self.manager.submit('normal', None, 10, None)
+        await self.wait_for(plain['task_id'], {'completed'})
+        self.assertFalse([c for c in self.call_log() if c.startswith(('capabilities:', 'project:'))])
+        self.calls.unlink()
+        self.manager.config['codex_project_id'] = 'proj-123'
+        first = self.manager.submit('in project', None, 10, None)
+        await self.wait_for(first['task_id'], {'completed'})
+        followup = self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])
+        await self.wait_for(followup['task_id'], {'completed'})
+        calls = self.call_log()
+        self.assertEqual(calls.count('capabilities:{"experimentalApi": true}'), 2)
+        self.assertEqual([c for c in calls if c.startswith('project:')], ['project:thread/start:proj-123'])
 
     def test_worker_rules_allow_cheaper_helpers(self):
         from server import WORKER_RULES

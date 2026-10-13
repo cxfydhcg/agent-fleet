@@ -714,8 +714,11 @@ class TaskManager:
         connection.notification_handlers.append(on_notification)
         turn = None
         try:
+            # Optional: file new sessions under a Codex project. projectId is part of app-server's experimental API.
+            project = self.config.get('codex_project_id')
             await connection.request('initialize', {'clientInfo': {
-                'name': 'codex_task_dispatcher', 'title': 'Codex Task Dispatcher', 'version': '2.0'}})
+                'name': 'codex_task_dispatcher', 'title': 'Codex Task Dispatcher', 'version': '2.0'},
+                **({'capabilities': {'experimentalApi': True}} if project else {})})
             await connection.notify('initialized')
             suffix = self.title_suffix(job)
             if job.get('resume_task_id'):
@@ -724,7 +727,8 @@ class TaskManager:
                 name = job['name'] + suffix if suffix and not forked else None
             else:
                 started = await connection.request('thread/start', {
-                    'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {})})
+                    'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {}),
+                    **({'projectId': project} if project else {})})
                 job['thread_id'] = started['thread']['id']
                 self.save(job)
                 name = (job.get('name') or ' '.join(job['prompt'].split())[:40]) + suffix
