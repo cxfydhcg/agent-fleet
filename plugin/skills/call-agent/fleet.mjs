@@ -21,6 +21,7 @@
 //   node fleet.mjs get      <电脑> <task_id>
 //   node fleet.mjs wait     <电脑> <task_id>
 //   node fleet.mjs list     <电脑> [数量]
+//   node fleet.mjs cancel   <电脑> <task_id>...       取消排队中或运行中的任务（已做的改动保留）
 //   node fleet.mjs tools    <电脑>
 // 每台电脑用登记表里的 url（没有就用 local_url）；加 --remote 强制走 Tailscale 地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
@@ -316,6 +317,9 @@ switch (cmd) {
     break;
   case "list":
     out(await call("list_tasks", { limit: Number(rest[0] ?? 20) }));
+    break;
+  case "cancel":
+    for (const taskId of rest) out(await call("cancel_task", { task_id: taskId }));
     break;
   default:
     console.error("未知命令，见文件开头的用法说明");
