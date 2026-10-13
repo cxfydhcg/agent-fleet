@@ -514,12 +514,13 @@ class AppServerDispatcherTests(DispatcherTests):
         with patch.object(server, 'QUOTA_MAX_WAIT_SECONDS', 0.2):
             first = self.manager.submit('first', None, 10, None, name='甲')
             second = self.manager.submit('second', None, 10, None, name='乙')
+            job = self.manager.get(first['task_id'])
+            seen = set()
             async with asyncio.timeout(20):
                 while self.call_log().count('account/rateLimits/read') < 3:
-                    await asyncio.sleep(0.05)
-            job = self.manager.get(first['task_id'])
-            self.assertEqual(job['status'], 'queued')
-            self.assertNotIn('started_at', job)
+                    seen.add((job['status'], 'started_at' in job))
+                    await asyncio.sleep(0.01)
+            self.assertEqual(seen, {('queued', False)})  # never shown as running during the re-checks
             self.assertEqual(job['latest_message'],
                              f'等待 Codex 额度重置：5 小时额度已用完，预计 {server.local_clock(resets)}（本地时间）后自动开始')
             self.assertEqual(self.manager.get(second['task_id'])['status'], 'queued')

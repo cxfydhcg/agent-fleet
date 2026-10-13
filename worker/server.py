@@ -640,18 +640,26 @@ class TaskManager:
                 await self.kill(self.processes[task_id])
         return self.public(job)
 
+    def mark_running(self, job):
+        """The turn is really about to start. Until then the task shows as queued, so a quota check that
+        sends it back in line doesn't make the dashboard or the busy list flicker."""
+        if job['status'] != 'queued':
+            raise RuntimeError('The task was cancelled before it started')
+        job.update(status='running', started_at=now())
+        self.save(job)
+
     async def run_job(self, job):
         if job['status'] != 'queued':
             return
-        job.update(status='running', started_at=now())
-        self.save(job)
+        use_app_server = self.config.get('executor', 'app-server') == 'app-server'
+        if not use_app_server:
+            self.mark_running(job)  # app-server tasks stay queued until the quota check passes
         folder = self.jobs_dir / job['task_id']
         executable = self.config.get('codex_executable') or shutil.which('codex')
         if not executable:
             raise RuntimeError('Codex CLI executable not found')
         launcher = self.config.get('codex_launcher_executable', executable)
         launcher_args = self.config.get('codex_launcher_args', [])
-        use_app_server = self.config.get('executor', 'app-server') == 'app-server'
         if use_app_server:
             # One app-server per task: it creates sessions the desktop app lists, and exiting after the
             # turn releases the session's writer lock so the user can open and continue it there.
@@ -683,7 +691,7 @@ class TaskManager:
                 raise
             self.processes[job['task_id']] = process
             try:
-                if job['status'] != 'running' or self.closing:
+                if job['status'] not in ('queued', 'running') or self.closing:
                     return
 
                 async def consume():
@@ -716,13 +724,11 @@ class TaskManager:
                     job['exit_code'] = await asyncio.wait_for(runner, job['timeout_seconds'])
                 except asyncio.TimeoutError:
                     await self.kill(process)
-                    if job['status'] == 'running':
+                    if job['status'] in ('queued', 'running'):
                         job.update(status='timed_out', error='Task exceeded timeout_seconds')
                 except QuotaExhausted as paused:
-                    if job['status'] == 'running':
-                        # Back in line untouched: no session was started or resumed.
-                        job.update(status='queued', latest_message=str(paused))
-                        job.pop('started_at', None)
+                    if job['status'] == 'queued':
+                        job['latest_message'] = str(paused)  # Still in line untouched: no session was started.
                     raise
                 if job['status'] == 'running':
                     success = job.get('exit_code') == 0 and not job.get('error') and (folder / 'result.txt').exists()
@@ -778,6 +784,7 @@ class TaskManager:
             except QuotaExhausted:
                 quiet = True  # Nothing was started, so let the app-server exit normally.
                 raise
+            self.mark_running(job)
             suffix = self.title_suffix(job)
             if job.get('resume_task_id'):
                 forked = await self.resume_or_fork(connection, job, policy)
@@ -929,7 +936,7 @@ class TaskManager:
                     self.save(job)
                 raise
             except Exception as error:
-                if job['status'] == 'running':
+                if job['status'] in ('queued', 'running'):  # app-server tasks are still queued before their turn
                     job.update(status='failed', finished_at=now(), error=str(error)[-2000:])
                     self.save(job)
             finally:
