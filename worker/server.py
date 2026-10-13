@@ -24,6 +24,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import HTMLResponse, JSONResponse
 import uvicorn
+import claude_executor
 
 
 def now():
@@ -91,10 +92,7 @@ WORKER_RULES = '''你是被派出来执行具体任务的子 agent（worker）�
 2. 不要调用本机的派任务服务（codex_tasks / Codex Task Dispatcher，地址如 127.0.0.1:8765 或 :8766/mcp）：不要派新任务，不要取消或修改别的任务，不要修改电脑档案。
 3. 不要读取、打印或使用任何访问令牌、密码或 cookie，例如 token.txt、client*.json、.codex/config.toml 里的令牌。
 4. 需要别的 agent 帮忙、需要更多信息，或档案需要更新时，在最终回复里说明，由上级安排。
-5. 用户的固定要求：任务里简单、机械的部分**应当**用 Codex 自带的 spawn_agent 交给便宜模型的帮手去做，模型用 gpt-6-luna
-   （用户指定；需要时可降低 reasoning_effort）。例如：按已定好的规格改参数或写样板代码、跑渲染和检查帧、反复运行同一命令看结果、批量处理文件。
-   每批工作开一个新帮手，设置 model 时 fork_turns 用 "none"，交接说明要完整、简洁：规格、项目路径、需要读的 README 和参考文件。
-   规划、创意、文案、效果判断和最终审查由你自己做。最终回复里说明这次怎么分工。'''
+'''
 SECRET_FIELD = re.compile(r'pass|secret|token|cookie|key|otp', re.IGNORECASE)
 APPROVE_LABEL = re.compile(r'accept|allow|approve|yes|continue|同意|允许|批准|继续', re.IGNORECASE)
 
@@ -299,6 +297,8 @@ class TaskManager:
 
     def removed(self, job):
         """True once the user archived or deleted this task's session in the Codex app."""
+        if job.get('engine') == 'claude':
+            return False
         thread = job.get('thread_id')
         if not thread or job['status'] not in FINISHED:
             return False
@@ -306,11 +306,11 @@ class TaskManager:
         return thread in archived or thread not in active
 
     def public(self, job, include_result=False):
-        fields = ('task_id', 'name', 'model', 'effort', 'status', 'workspace', 'created_at', 'started_at', 'finished_at', 'thread_id', 'forked_from_thread_id', 'resume_task_id', 'parent_task_id', 'auto_wake', 'timeout_seconds', 'exit_code', 'error', 'latest_message')
+        fields = ('task_id', 'name', 'engine', 'model', 'effort', 'status', 'workspace', 'created_at', 'started_at', 'finished_at', 'thread_id', 'forked_from_thread_id', 'resume_task_id', 'parent_task_id', 'auto_wake', 'timeout_seconds', 'exit_code', 'error', 'latest_message')
         response = {k: job[k] for k in fields if k in job}
         if self.removed(job):
             response['archived'] = True
-        if job.get('thread_id'):
+        if job.get('thread_id') and job.get('engine') != 'claude':
             response['desktop_url'] = 'codex://threads/' + quote(job['thread_id'], safe='')
             label = (job.get('name') or 'Codex task').replace('[', '(').replace(']', ')').replace('\n', ' ')
             response['desktop_link'] = f"[打开 {label}]({response['desktop_url']})"
@@ -410,6 +410,8 @@ class TaskManager:
 
     def open_desktop(self, task_id):
         job = self.get(task_id)
+        if job.get('engine') == 'claude':
+            raise ValueError('Claude Code sessions have no Codex desktop link; use the dashboard or claude --resume')
         if not job.get('thread_id'):
             raise ValueError('The task has not created a session yet; query get_task again later')
         # Opening a session while a dispatcher turn owns it can contend for its writer lease.
@@ -453,6 +455,30 @@ class TaskManager:
         """Read-only view of a session: user messages, agent replies and tool calls, oldest first."""
         if thread_id not in self.known_threads():
             raise ValueError('Only sessions created by this dispatcher can be viewed')
+        jobs = sorted((j for j in self.jobs.values() if j.get('thread_id') == thread_id and j.get('engine') == 'claude'),
+                      key=lambda j: j['created_at'])
+        if jobs:
+            entries = []
+            for job in jobs:
+                entries.append({'kind': 'user', 'time': job['created_at'], 'text': job['prompt']})
+                events = self.jobs_dir / job['task_id'] / 'events.jsonl'
+                last_text = None
+                for line in events.read_text(encoding='utf-8', errors='replace').splitlines() if events.exists() else []:
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if event.get('type') == 'assistant':
+                        for item in event.get('message', {}).get('content', []):
+                            if item.get('type') == 'text':
+                                last_text = item.get('text', '')
+                                entries.append({'kind': 'agent', 'time': job.get('started_at'), 'text': last_text})
+                            elif item.get('type') == 'tool_use':
+                                entries.append({'kind': 'tool', 'time': job.get('started_at'), 'type': item.get('name'),
+                                                'text': json.dumps(item.get('input'), ensure_ascii=False)})
+                    elif event.get('type') == 'result' and event.get('result') and event['result'] != last_text:
+                        entries.append({'kind': 'agent', 'time': job.get('finished_at'), 'text': event['result']})
+            return entries
         path = self.rollout_path(thread_id)
         if path is None:
             return []
@@ -503,6 +529,14 @@ class TaskManager:
         metadata. Calls without it (the orchestrator, scripts) have no parent unless caller_fallback is on,
         which guesses the single running main-agent turn for clients that don't send metadata."""
         thread = None
+        try:
+            request = ctx.request_context.request
+            task_id = request.headers.get('x-agent-fleet-task') if request else None
+            job = self.jobs.get(task_id or '')
+            if task_id:
+                return task_id if job and job['status'] == 'running' and not self.is_worker(job) else None
+        except (AttributeError, LookupError, ValueError):
+            pass
         try:
             meta = ctx.request_context.meta if ctx is not None else None
             turn = (meta.model_extra or {}).get('x-codex-turn-metadata') if meta is not None else None
@@ -580,7 +614,10 @@ class TaskManager:
         if sum(j['status'] in ('queued', 'running') for j in self.jobs.values()) >= 32:
             raise ValueError('Task queue is full; retry after a task finishes')
         parent = self.get(resume_task_id) if resume_task_id else None
+        engine = 'claude' if self.config.get('executor') == 'claude' else 'codex'
         if parent:
+            if parent.get('engine', 'codex') != engine:
+                raise ValueError('Cannot resume a session with a different agent engine; create a new session')
             if parent['status'] in ('queued', 'running') or not parent.get('thread_id'):
                 raise ValueError('Wait for the task to finish and receive a thread_id before continuing')
             if any(j['status'] in ('queued', 'running') and j.get('thread_id') == parent['thread_id'] for j in self.jobs.values()):
@@ -594,12 +631,18 @@ class TaskManager:
         if not target.is_dir():
             raise ValueError('workspace must be a directory')
         job = dict(task_id=task_id, prompt=prompt, requested_workspace=workspace,
+                   engine=engine,
                    workspace=str(target), timeout_seconds=timeout_seconds,
                    idempotency_key=idempotency_key, status='queued', created_at=now())
         if parent:
             job.update(resume_task_id=resume_task_id, thread_id=self.latest_thread(parent['thread_id']), name=parent.get('name'))
         elif name is not None:
             job['name'] = name.strip()
+        # Renaming the configured main agent changes its title while preserving
+        # the existing engine session and workspace on continuation.
+        mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
+        if str(target).lower() in mains and self.config.get('main_agent_name'):
+            job['name'] = self.config['main_agent_name']
         if parent_task_id:
             job['parent_task_id'] = parent_task_id
         # Normally unset: Codex's own default (the latest model at its configured effort), like a new window.
@@ -650,6 +693,9 @@ class TaskManager:
 
     async def run_job(self, job):
         if job['status'] != 'queued':
+            return
+        if job.get('engine') == 'claude':
+            await claude_executor.run(self, job)
             return
         use_app_server = self.config.get('executor', 'app-server') == 'app-server'
         if not use_app_server:
@@ -756,6 +802,10 @@ class TaskManager:
         if self.is_worker(job):
             # Workers have full access and could find the token on disk; tell them plainly not to use it.
             policy['developerInstructions'] = self.worker_rules()
+        else:
+            policy['developerInstructions'] = ('This turn runs Codex with sandbox=' + sandbox +
+                '. Current main agent name: ' + json.dumps(self.config.get('main_agent_name') or job.get('name'), ensure_ascii=False) +
+                '. These runtime settings override older name/engine/permission descriptions in preserved workspace instructions.')
         connection = AppServerConnection(process, log_line, auto_approve)
         turn_done = asyncio.get_running_loop().create_future()
 
@@ -789,7 +839,7 @@ class TaskManager:
             if job.get('resume_task_id'):
                 forked = await self.resume_or_fork(connection, job, policy)
                 # A resumed resident session gets its marked title even if it was registered later.
-                name = job['name'] + suffix if suffix and not forked else None
+                name = job['name'] + suffix if not forked and (suffix or (self.config.get('main_agent_name') and not self.is_worker(job))) else None
             else:
                 started = await connection.request('thread/start', {
                     'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {}),
@@ -802,7 +852,12 @@ class TaskManager:
                     await connection.request('thread/name/set', {'threadId': job['thread_id'], 'name': name})
                 except AppServerError:
                     pass  # The name is cosmetic; the task can still run.
-            turn_params = {'threadId': job['thread_id'], 'input': [{'type': 'text', 'text': job['prompt']}],
+            turn_input = job['prompt']
+            if self.config.get('main_agent_name') and not self.is_worker(job):
+                turn_input = ('[Agent Fleet runtime: your current main-agent name is ' +
+                              json.dumps(self.config['main_agent_name'], ensure_ascii=False) +
+                              '. This replaces any older name in the conversation or workspace instructions.]\n\n' + turn_input)
+            turn_params = {'threadId': job['thread_id'], 'input': [{'type': 'text', 'text': turn_input}],
                            'approvalPolicy': policy['approvalPolicy']}  # turn/start takes no developerInstructions
             turn_params.update({k: job[k] for k in ('model', 'effort') if job.get(k)})
             if sandbox == 'danger-full-access':

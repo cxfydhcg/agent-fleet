@@ -1,5 +1,7 @@
 # agent-fleet
 
+**Agent Fleet 是一个插件**，可安装到 Codex 或 Claude Code。运行 setup 后选择这台电脑的角色：orchestrator、worker 或 both；worker 可选择 Codex 或 Claude Code 引擎。安装、权限与验证说明见 [PLUGINS.md](PLUGINS.md)。
+
 用一个 AI Agent 管理多台电脑上的 AI Agent。不重新开发 Agent，而是在现成的 Codex 之上，加一层跨电脑的通信、调度和管理。
 
 ```

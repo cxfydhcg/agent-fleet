@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agent-fleet",
+  "version": "0.5.1",
+  "description": "Set up this computer as an orchestrator, worker, or both in Codex or Claude Code.",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md",
+      "interface": {
+        "displayName": "Agent Fleet",
+        "shortDescription": "Set up this computer as an orchestrator, worker, or both in Codex or Claude Code.",
+        "developerName": "Agent Fleet",
+        "category": "Productivity"
+      }
+    }
+  }
+}

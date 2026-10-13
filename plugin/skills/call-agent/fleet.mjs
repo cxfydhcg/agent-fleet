@@ -16,7 +16,7 @@
 //   node fleet.mjs agent    <电脑> <Agent名> <消息> [--new] [--workspace=绝对路径]
 //                                                     和指定 Agent 对话：续接它的会话，等待并输出回复。
 //                                                     --new：找不到这个名字时，新建一个这样命名的 Agent。
-//   node fleet.mjs export   <电脑> <消息>              等同于 agent <电脑> "主agent export" <消息>
+//   node fleet.mjs export   <电脑> <消息>              Send to that computer's configured main agent.
 //   node fleet.mjs submit   <电脑> <prompt> [--name=会话名] [--wait] [--model=模型] [--effort=档位]   直接开新任务（特殊情况用）
 //   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
 //                                                     --model/--effort 平时不加；只在会话一直报 "Selected model is at capacity"
@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const MAIN_AGENT = "主agent export";
+const validAgentName = (name) => typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 100 && !/[\u0000-\u001f\u007f]/.test(name) && !name.trim().startsWith('--') && !['__proto__', 'constructor', 'prototype'].includes(name.trim());
 const fleetHome = process.env.AGENT_FLEET_HOME || join(homedir(), ".agent-fleet");
 const registryPath = join(fleetHome, "computers.json");
 mkdirSync(join(fleetHome, "tokens"), { recursive: true });
@@ -43,9 +44,11 @@ for (const pc of Object.values(registry.computers)) {
   if (pc.main_agent_export) {
     const { name, ...rest } = pc.main_agent_export;
     pc.agents[name || MAIN_AGENT] ??= rest;
+    pc.main_agent_name ??= name || MAIN_AGENT;
     delete pc.main_agent_export;
   }
 }
+const mainAgentName = (pc) => pc.main_agent_name || MAIN_AGENT;
 const saveRegistry = () => writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
 
 const argv = process.argv.slice(2);
@@ -131,26 +134,54 @@ if (cmd === "notifications") {
 if (cmd === "add-computer") {
   // connection.json comes from install-worker.ps1 on the new computer: { name, tailscale_url, local_url, token, description }
   const info = JSON.parse(readFileSync(computer, "utf8").replace(/^﻿/, ""));
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || "")) {
+    console.error("Computer name must use letters, numbers, dots, underscores or hyphens, beginning with a letter or number.");
+    process.exit(2);
+  }
   if (!info.name || !info.token || !(info.tailscale_url || info.local_url)) {
     console.error("connection.json 缺少 name、token 或地址");
     process.exit(2);
   }
+  if (info.main_agent_name !== undefined && !validAgentName(info.main_agent_name)) {
+    console.error('Main agent name must contain 1 to 100 printable characters, without a leading --.');
+    process.exit(2);
+  }
+  const existing = registry.computers[info.name] ?? {};
+  const oldMain = mainAgentName(existing);
+  const chosenMain = info.main_agent_name?.trim() || oldMain;
+  if (chosenMain !== oldMain && Object.hasOwn(existing.agents ?? {}, chosenMain)) {
+    console.error('An agent already uses the requested main agent name; choose another name.');
+    process.exit(2);
+  }
   const tokenFile = join(fleetHome, "tokens", `${info.name}.txt`);
   writeFileSync(tokenFile, info.token.trim() + "\n");
-  const existing = registry.computers[info.name] ?? {};
+  const engine = info.engine || 'codex';
+  const agents = { ...(existing.agents ?? {}) };
+  if (engine !== (existing.engine || 'codex')) {
+    // History remains on the worker, but a different CLI cannot resume those sessions.
+    for (const [name, value] of Object.entries(agents)) {
+      const { last_task_id, thread_id, ...metadata } = value;
+      agents[name] = metadata;
+    }
+  }
+  if (chosenMain !== oldMain && Object.hasOwn(agents, oldMain)) {
+    agents[chosenMain] = agents[oldMain];
+    delete agents[oldMain];
+  }
+  agents[chosenMain] = { ...(agents[chosenMain] ?? {}), ...(info.main_agent_workspace ? { workspace: info.main_agent_workspace } : {}) };
   const isThisComputer = option("local") === "1";
   registry.computers[info.name] = {
-    ...existing, description: info.description ?? existing.description ?? "",
+    ...existing, engine, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
     url: isThisComputer ? info.local_url : info.tailscale_url,
     local_url: info.local_url, tailscale_url: info.tailscale_url, token_file: tokenFile,
-    agents: existing.agents ?? { [MAIN_AGENT]: { workspace: info.main_agent_workspace } },
+    agents,
   };
   saveRegistry();
   console.error(`已接入 ${info.name}（${registry.computers[info.name].url}）。可以删除这份 connection.json 了，令牌已保存在 ${tokenFile}。`);
   process.exit(0);
 }
 if (cmd === "computers") {
-  out(Object.fromEntries(Object.entries(registry.computers).map(([n, pc]) => [n, { description: pc.description, agents: Object.keys(pc.agents) }])));
+  out(Object.fromEntries(Object.entries(registry.computers).map(([n, pc]) => [n, { description: pc.description, main_agent_name: mainAgentName(pc), agents: Object.keys(pc.agents) }])));
   process.exit(0);
 }
 if (cmd === "overview") {
@@ -281,7 +312,7 @@ switch (cmd) {
     const sessions = await namedSessions();
     const described = Object.fromEntries((await call("get_profile", {})).agents.map((a) => [a.name, a]));
     const names = [...new Set([...Object.keys(described), ...Object.keys(pc.agents), ...sessions.keys()])];
-    out(names.map((n) => ({ agent: n, default: n === MAIN_AGENT, role: described[n]?.role ?? null, tags: described[n]?.tags ?? [],
+    out(names.map((n) => ({ agent: n, default: n === mainAgentName(pc), role: described[n]?.role ?? null, tags: described[n]?.tags ?? [],
                             long_lived: n in described, status: sessions.get(n)?.status ?? null, sessions: sessions.get(n)?.sessions.size ?? 0 })));
     saveRegistry();
     break;
@@ -297,7 +328,7 @@ switch (cmd) {
     out(await call("update_computer_profile", { role: option("role"), notes: option("notes"), software: list(option("software")) }));
     break;
   case "describe-agent":
-    out(await call("register_agent", { name: rest[0], role: option("role"), tags: list(option("tags")), agent_type: option("type") ?? (rest[0] === MAIN_AGENT ? "main" : "resident") }));
+    out(await call("register_agent", { name: rest[0], role: option("role"), tags: list(option("tags")), agent_type: option("type") ?? (rest[0] === mainAgentName(pc) ? "main" : "resident") }));
     break;
   case "remove-agent":
     out(await call("remove_agent", { name: rest[0] }));
@@ -306,7 +337,7 @@ switch (cmd) {
     await talk(rest[0], rest.slice(1).join(" "));
     break;
   case "export":
-    await talk(MAIN_AGENT, rest.join(" "));
+    await talk(mainAgentName(pc), rest.join(" "));
     break;
   case "tools":
     out((await rpc("tools/list", {})).tools.map((t) => t.name));
