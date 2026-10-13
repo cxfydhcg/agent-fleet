@@ -116,6 +116,25 @@ node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>
 - **派任务服务一次只运行一个任务**，避免多个任务同时抢鼠标键盘。主agent export 派完任务就结束本轮，等子 agent 做完的自动通知。
 - **子 agent 被明确要求不碰派任务服务和令牌**。这是写给它们的规则，不是技术上做不到，因为 `-FullAccess` 下子 agent 能读到电脑上的任何文件。
 
+## 可选设置：会话在 Codex 桌面 App 里怎么显示
+
+改 `%LOCALAPPDATA%\agent-fleet\config.json`，重启派任务服务后生效。重新运行 `install-worker.ps1` 会重写这个文件（旧的留在 `config.json.bak`），需要再加一次。
+
+| 配置项 | 默认 | 作用 |
+|---|---|---|
+| `resident_title_suffix` | `" - 固定"` | 登记为常驻（resident）的 Agent，会话标题后面加这个后缀，和一次性任务区分开；主agent export 不加。只改 App 里显示的标题，派任务时还用原名。设成 `""` 关闭。 |
+| `codex_project_id` | 不设 | 新会话放进这个 Codex 项目（用 app-server 的实验接口 `projectId`）。不设时行为不变。 |
+
+目前的桌面 App（26.1007）还不显示 app-server 的项目，所以另有一个辅助脚本，把派任务服务的会话放进 App 侧边栏的一个文件夹：
+
+```powershell
+# 先彻底退出 Codex 桌面 App（ChatGPT.exe），App 运行时会覆盖这个文件；脚本检测到它在运行会拒绝执行
+python worker\tools\codex_app_folder.py --config "$env:LOCALAPPDATA\agent-fleet\config.json" --dry-run
+python worker\tools\codex_app_folder.py --config "$env:LOCALAPPDATA\agent-fleet\config.json" [--folder-name AgentFleet] [--root <文件夹根路径>]
+```
+
+它修改 App 的**内部文件** `~/.codex/.codex-global-state.json`：没有以 `--root`（默认是工作区，即 `tasks_dir` 的上一级）为根的文件夹就新建一个，再把任务记录里还没归到任何文件夹的会话放进去；用户自己归过类的会话不动。写之前备份为 `.codex-global-state.json.bak-agent-fleet-<时间>`。这个文件格式不公开，App 更新后随时可能变，脚本可能失效。以后派出的新会话不会自动进去，需要再运行一次。
+
 ## 开发
 
 ```powershell

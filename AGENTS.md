@@ -35,6 +35,7 @@ Ask the user which role this computer should have; it can have both:
 
 - `worker/server.py`: the dispatcher (FastMCP over Streamable HTTP; runs Codex through `codex app-server`). Per-computer config is passed with `--config`; nothing machine-specific belongs in the repo.
 - `worker/test_dispatcher.py`: run it from `worker/` with `python -m unittest test_dispatcher.py`. Keep it passing and add tests for new behavior. Tests use a fake app-server and never call a real model.
+- `worker/tools/codex_app_folder.py`: optional, stdlib-only helper that files the dispatcher's sessions into a Codex desktop app sidebar folder by editing the app's internal `~/.codex/.codex-global-state.json` (undocumented; may break with app updates). Keep its JSON transform in `add_to_folder` pure so it stays testable. Optional config keys `resident_title_suffix` and `codex_project_id` are described in `README.md`.
 - `worker/templates/main-agent/AGENTS.md`: the main agent's instructions; `{{COMPUTER_NAME}}` and `{{WORKSPACE}}` are filled in at install time.
 - `plugin/skills/call-agent/`: the orchestrator skill and its client `fleet.mjs` (Node 18+, no dependencies).
 - PowerShell scripts must run on Windows PowerShell 5.1: no `&&`, `??` or ternaries. Save them as UTF-8 **with BOM**, because they contain Chinese text. Variable names are case-insensitive: a `$Config` parameter would clobber a `$config` variable.

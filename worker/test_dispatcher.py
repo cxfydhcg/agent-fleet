@@ -698,5 +698,35 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('paused', self.manager.jobs['wake-1']['latest_message'])
 
 
+class CodexAppFolderTests(unittest.TestCase):
+    """The JSON transform of tools/codex_app_folder.py, without touching real files or processes."""
+
+    def test_creates_folder_and_assigns_only_unfiled_threads(self):
+        from tools.codex_app_folder import add_to_folder
+        state = {'other-key': 1, 'local-projects': {'p1': {'id': 'p1', 'name': 'memora', 'rootPaths': ['C:\\memora']}},
+                 'project-order': ['p1'], 'thread-project-assignments': {'t-user': {'projectKind': 'local', 'projectId': 'p1'}},
+                 'projectless-thread-ids': ['t1', 't-other']}
+        updated, report = add_to_folder(state, 'AgentFleet', 'C:\\AgentFleet', ['t1', 't2', 't-user', 't1'], 123, 'new-id')
+        self.assertEqual(state['project-order'], ['p1'])  # the input is not modified
+        self.assertEqual(updated['local-projects']['new-id'], {'id': 'new-id', 'name': 'AgentFleet',
+                         'rootPaths': ['C:\\AgentFleet'], 'createdAt': 123, 'updatedAt': 123})
+        self.assertEqual(updated['project-order'], ['new-id', 'p1'])
+        self.assertEqual(updated['thread-project-assignments']['t2'], {'projectKind': 'local', 'projectId': 'new-id'})
+        self.assertEqual(updated['thread-project-assignments']['t-user']['projectId'], 'p1')  # the user's choice stays
+        self.assertEqual(updated['projectless-thread-ids'], ['t-other'])
+        self.assertEqual(updated['other-key'], 1)
+        self.assertEqual((report['created'], report['assigned'], report['already_assigned']), (True, ['t1', 't2'], 1))
+        # A second run reuses the folder that has this root and has nothing left to do.
+        again, report = add_to_folder(updated, 'AgentFleet', 'C:\\AgentFleet\\', ['t1', 't3'], 456, 'other-id')
+        self.assertEqual((report['project_id'], report['created'], report['assigned']), ('new-id', False, ['t3']))
+        self.assertEqual(again['project-order'], ['new-id', 'p1'])
+
+    def test_empty_state_gets_the_keys(self):
+        from tools.codex_app_folder import add_to_folder
+        updated, report = add_to_folder({}, 'AgentFleet', '/home/u/AgentFleet', ['t1'], 1, 'id')
+        self.assertEqual((updated['project-order'], updated['projectless-thread-ids']), (['id'], []))
+        self.assertEqual(report['assigned'], ['t1'])
+
+
 if __name__ == '__main__':
     unittest.main()
