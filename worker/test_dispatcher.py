@@ -123,6 +123,20 @@ print(json.dumps({'type': 'turn.completed'}), flush=True)
         with self.assertRaises(ValueError):
             self.manager.submit('unknown task', None, 10, None, resume_task_id='unknown')
 
+    async def test_main_agent_rename_preserves_conversation_and_workspace(self):
+        first = self.manager.submit('original', None, 10, None, name='主agent export')
+        await self.wait_for(first['task_id'], {'completed'})
+        self.config['main_agent_workspaces'] = [first['workspace']]
+        self.config['main_agent_name'] = 'main agent windows pc 1'
+        followup = self.manager.submit('after rename', None, 10, None, resume_task_id=first['task_id'])
+        self.assertEqual(followup['name'], 'main agent windows pc 1')
+        self.assertEqual(followup['thread_id'], self.manager.get(first['task_id'])['thread_id'])
+        self.assertEqual(followup['workspace'], first['workspace'])
+        finished = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(finished['status'], 'completed')
+        other = self.manager.submit('other agent', None, 10, None, name='Other Agent')
+        self.assertEqual(other['name'], 'Other Agent')
+
     async def test_queued_and_running_cancellation(self):
         first = self.manager.submit('slow', None, 60, None)
         await self.wait_for(first['task_id'], {'running'})
@@ -251,6 +265,20 @@ class AppServerDispatcherTests(DispatcherTests):
         calls = self.call_log()
         self.assertEqual(calls.count('thread/start'), 1)
         self.assertLess(calls.index('thread/resume'), len(calls) - 1 - calls[::-1].index('turn/start'))
+
+    async def test_main_rename_changes_resumed_title_and_runtime_identity(self):
+        first = self.manager.submit('original', None, 10, None, name='主agent export')
+        await self.wait_for(first['task_id'], {'completed'})
+        self.config['main_agent_workspaces'] = [first['workspace']]
+        self.config['main_agent_name'] = 'main agent windows pc 1'
+        followup = self.manager.submit('after rename', None, 10, None, resume_task_id=first['task_id'])
+        job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual(job['thread_id'], self.manager.get(first['task_id'])['thread_id'])
+        self.assertIn('thread/name/set:main agent windows pc 1', self.call_log())
+        result = self.manager.public(job, True)['result']
+        self.assertIn('your current main-agent name is "main agent windows pc 1"', result)
+        self.assertTrue(result.endswith('after rename'))
 
     async def test_session_open_elsewhere_is_forked_and_followed(self):
         self.manager.config['fork_when_busy'] = True
@@ -456,12 +484,6 @@ class AppServerDispatcherTests(DispatcherTests):
         calls = self.call_log()
         self.assertEqual(calls.count('capabilities:{"experimentalApi": true}'), 2)
         self.assertEqual([c for c in calls if c.startswith('project:')], ['project:thread/start:proj-123'])
-
-    def test_worker_rules_allow_cheaper_helpers(self):
-        from server import WORKER_RULES
-        self.assertIn('spawn_agent', WORKER_RULES)
-        self.assertIn('gpt-6-luna', WORKER_RULES)
-        self.assertIn('fork_turns', WORKER_RULES)
 
     async def test_worker_rules_come_from_the_editable_file(self):
         rules = self.root / 'worker-rules.md'

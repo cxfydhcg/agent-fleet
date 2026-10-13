@@ -33,6 +33,10 @@ Ask the user which role this computer should have; it can have both:
 
 ## Working on the code
 
+- The unified plugin is in `plugin/`; read `PLUGINS.md`. Its setup skill lets the user choose orchestrator, worker or both, and it packages skills for Codex and Claude Code. Run `python tools/build_plugins.py` after shared runtime/client edits to rebuild the bundled worker runtime and fleet client. Older generated role directories are not published in the catalogs or exports.
+- `worker/claude_executor.py` adapts Claude Code print-mode sessions. It uses per-turn MCP task headers for callback attribution, preserves session IDs, and defaults to restricted file tools. Claude's tool permissions are not a Windows OS sandbox. Never add permission bypass flags unless the owner chose full access.
+- Run the dispatcher and Claude adapter tests plus `tests/test_plugins.py`. Claude fixtures never call a model. Validate each plugin and the marketplace with `claude plugin validate`; source distribution must exclude machine data and credentials.
+
 - `worker/server.py`: the dispatcher (FastMCP over Streamable HTTP; runs Codex through `codex app-server`). Per-computer config is passed with `--config`; nothing machine-specific belongs in the repo.
 - Quota guard: before each app-server turn the dispatcher calls `account/rateLimits/read`; if the 5-hour (`primary`) or weekly (`secondary`) window is at `quota_guard_threshold` percent (default 100), the job goes back to `queued` and the whole queue waits for the reset. Config keys `quota_guard` and `quota_guard_threshold` are described in `README.md`. Errors and unknown answers must never block.
 - `worker/test_dispatcher.py`: run it from `worker/` with `python -m unittest test_dispatcher.py`. Keep it passing and add tests for new behavior. Tests use a fake app-server and never call a real model.

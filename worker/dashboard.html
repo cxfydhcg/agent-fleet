@@ -202,7 +202,7 @@
     info.append(document.createTextNode(g.tasks.length + ' 轮 · 工作目录 ' + (g.latest.workspace || '') + ' · 会话 '), el('code', null, g.thread || '尚未创建'));
     const note = el('div', 'note');
     note.append(document.createTextNode('这里只读查看，不会占用会话。'));
-    if (g.thread) {
+    if (g.thread && g.latest.engine !== 'claude') {
       const open = el('a', 'link', '在 Codex App 中打开'); open.href = 'codex://threads/' + encodeURIComponent(g.thread);
       note.append(document.createTextNode(' 想亲自接着聊时可以 '), open, document.createTextNode('。注意：打开后这个会话就归你了，在 Codex 完全退出之前，Agent 不能再往里面派任务。只想看进度的话，留在这个页面就好。'));
     }
@@ -216,7 +216,7 @@
             const d = el('details', 'tool'); d.append(el('summary', null, '工具调用 · ' + e.type + ' · ' + time(e.time)), el('pre', null, e.text)); body.append(d);
           } else {
             const m = el('div', 'msg ' + e.kind);
-            const who = { user: '收到的指令', agent: 'Codex 回复', fork: '分叉' }[e.kind] || e.kind;
+            const who = { user: '收到的指令', agent: 'Agent 回复', fork: '分叉' }[e.kind] || e.kind;
             m.append(el('div', 'who', who + ' · ' + time(e.time)), document.createTextNode(e.text));
             body.append(m);
           }

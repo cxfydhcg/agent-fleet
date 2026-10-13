@@ -14,11 +14,10 @@ try {
     $healthy = $health.service -eq 'codex-task-mcp'
 } catch {}
 if (-not $healthy) {
-    $serverPath = Join-Path $PSScriptRoot 'server.py'
-    $argsList = @('-u', ('"' + $serverPath + '"'), '--config', ('"' + $configPath + '"'))
-    $process = Start-Process -FilePath $config.python_executable -ArgumentList $argsList -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput (Join-Path $config.state_dir 'server.stdout.log') `
-        -RedirectStandardError (Join-Path $config.state_dir 'server.stderr.log')
+    $launcher = Join-Path $PSScriptRoot 'start_service.py'
+    $servicePidText = (& $config.python_executable $launcher --config $configPath | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $servicePidText -notmatch '^\d+$') { throw 'Service launcher failed.' }
+    $process = [System.Diagnostics.Process]::GetProcessById([int]$servicePidText)
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         Start-Sleep -Milliseconds 250
         if ($process.HasExited) { throw 'Service exited. Check server.stderr.log in state_dir.' }
@@ -33,7 +32,7 @@ if (-not $healthy) {
     }
 }
 Write-Output "Local MCP: http://127.0.0.1:$($config.port)/mcp"
-if (-not $LocalOnly) {
+if (-not $LocalOnly -and -not $config.local_only) {
     if (-not (Test-Path -LiteralPath $config.tailscale_executable)) { throw 'Tailscale executable not found. Local service is ready.' }
     $serveStatus = & $config.tailscale_executable serve status --json | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw 'Could not read Tailscale Serve configuration.' }

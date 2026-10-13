@@ -1,0 +1,10 @@
+{
+  "name": "fleet-worker",
+  "version": "0.2.0",
+  "description": "Set up a Windows worker with a Codex or Claude Code main agent.",
+  "author": {
+    "name": "Agent Fleet"
+  },
+  "license": "MIT",
+  "skills": "./skills/"
+}

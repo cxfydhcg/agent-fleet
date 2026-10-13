@@ -4,6 +4,7 @@
 # 可以重复运行：令牌、主agent export 的说明文件和已有数据会保留。
 param(
     [string]$Name = $env:COMPUTERNAME.ToLower(),
+    [string]$MainAgentName = '主agent export',
     [string]$Description = '',
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),      # 内部数据：配置、令牌、任务记录
     [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-agent\、tasks\、shared\
@@ -12,9 +13,20 @@ param(
     [switch]$FullAccess,          # 子任务不设沙箱并自动同意权限请求，才能操作桌面、浏览器和其他程序
     [string]$CodexVersion = '0.162.1',
     [switch]$SkipPrerequisites,   # 不用 winget 安装 Node.js、Python、Tailscale
-    [switch]$NoAutostart
+    [switch]$NoAutostart,
+    [ValidateSet('codex','claude')][string]$Engine = 'codex',
+    [switch]$LocalOnly,
+    [switch]$NoStart,
+    [string]$ClaudeExecutable = '',
+    [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex')
 )
 $ErrorActionPreference = 'Stop'
+if (-not $PSBoundParameters.ContainsKey('MainAgentName') -and (Test-Path -LiteralPath (Join-Path $DataDir 'config.json'))) {
+    $priorSettings = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $DataDir 'config.json') -Raw | ConvertFrom-Json
+    if ($priorSettings.main_agent_name) { $MainAgentName = $priorSettings.main_agent_name }
+}
+$MainAgentName = $MainAgentName.Trim()
+if ($MainAgentName.Length -lt 1 -or $MainAgentName.Length -gt 100 -or $MainAgentName -match '[\x00-\x1f\x7f]' -or $MainAgentName.StartsWith('--') -or $MainAgentName -in @('__proto__','constructor','prototype')) { throw 'Main agent name must contain 1 to 100 printable characters, without a leading --.' }
 $repo = $PSScriptRoot
 $worker = Join-Path $repo 'worker'
 
@@ -39,11 +51,15 @@ if (-not $SkipPrerequisites) {
     if (-not (Have 'node')) { Winget-Install 'OpenJS.NodeJS.LTS' }
     $hasPython = (Have 'py') -or (Have 'python')
     if (-not $hasPython) { Winget-Install 'Python.Python.3.12' }
-    if (-not (Test-Path $tailscale)) { Winget-Install 'Tailscale.Tailscale' }
+    if (-not $LocalOnly -and -not (Test-Path $tailscale)) { Winget-Install 'Tailscale.Tailscale' }
+    if ($Engine -eq 'claude' -and -not (Have 'git')) { Winget-Install 'Git.Git' }
 }
 if (-not (Have 'node')) { throw '找不到 Node.js' }
 
-# 2. Codex CLI
+# 2. Agent CLI
+$nodeExe = (Get-Command node).Source
+$codexJs = $null
+if ($Engine -eq 'codex') {
 Step "安装 Codex 命令行 $CodexVersion"
 $npmRoot = (& npm root -g).Trim()
 $codexJs = Join-Path $npmRoot '@openai\codex\bin\codex.js'
@@ -53,9 +69,43 @@ if ($installed -ne $CodexVersion) {
     & npm install -g "@openai/codex@$CodexVersion"
     if ($LASTEXITCODE -ne 0) { throw '安装 Codex 命令行失败' }
 }
-& node $codexJs login status *> $null
-if ($LASTEXITCODE -ne 0) { $warnings.Add('Codex 还没有登录：运行 codex login 用你的 ChatGPT 账号登录，否则任务会失败。') }
-$nodeExe = (Get-Command node).Source
+# Windows PowerShell treats native stderr as errors even when login succeeds.
+$loginErrorPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    & node $codexJs login status *> $null
+    $loginExitCode = $LASTEXITCODE
+} finally { $ErrorActionPreference = $loginErrorPreference }
+if ($loginExitCode -ne 0) { $warnings.Add('Codex 还没有登录：运行 codex login 用你的 ChatGPT 账号登录，否则任务会失败。') }
+} else {
+    Step '准备 Claude Code 命令行'
+    if (-not $ClaudeExecutable) {
+        $nativeClaude = Get-Command claude.exe -ErrorAction SilentlyContinue
+        if ($nativeClaude) { $ClaudeExecutable = $nativeClaude.Source }
+        elseif (Test-Path (Join-Path $env:USERPROFILE '.local\bin\claude.exe')) {
+            $ClaudeExecutable = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
+        } else {
+            New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+            $claudeInstaller = Join-Path $DataDir 'install-claude.ps1'
+            Invoke-WebRequest -Uri 'https://claude.ai/install.ps1' -OutFile $claudeInstaller -UseBasicParsing
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $claudeInstaller
+            if ($LASTEXITCODE -ne 0) { throw 'Claude Code 安装失败' }
+            $ClaudeExecutable = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
+        }
+    }
+    if (-not (Test-Path -LiteralPath $ClaudeExecutable)) { throw '找不到原生 claude.exe；可用 -ClaudeExecutable 指定路径' }
+    $claudeVersionText = (& $ClaudeExecutable --version | Out-String).Trim()
+    if ($claudeVersionText -notmatch '(\d+\.\d+\.\d+)') { throw '无法确认 Claude Code 版本' }
+    $claudeVersion = $Matches[1]
+    if ([version]$claudeVersion -lt [version]'2.1.248') { throw 'Claude Code 需要 2.1.248 或更新版本以支持 restricted 模式，请先升级' }
+    $loginErrorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $ClaudeExecutable auth status *> $null
+        $loginExitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $loginErrorPreference }
+    if ($loginExitCode -ne 0) { $warnings.Add('Claude Code 还没有登录：请本人运行 claude auth login，然后重新运行安装。') }
+}
 
 # 3. Python environment for the service
 Step '准备 Python 环境'
@@ -72,7 +122,7 @@ if ($LASTEXITCODE -ne 0) { throw '安装 Python 依赖失败' }
 # 4. Token
 $tokenFile = Join-Path $DataDir 'token.txt'
 if (Test-Path $tokenFile) {
-    $token = (Get-Content -LiteralPath $tokenFile -Raw).Trim()
+    $token = (Get-Content -Encoding UTF8 -LiteralPath $tokenFile -Raw).Trim()
 } else {
     $bytes = New-Object byte[] 48
     [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -82,7 +132,7 @@ if (Test-Path $tokenFile) {
 
 # 5. Tailscale address
 $tsName = $null; $tsIp = $null
-if (Test-Path $tailscale) {
+if (-not $LocalOnly -and (Test-Path $tailscale)) {
     try {
         $status = & $tailscale status --json | ConvertFrom-Json
         if ($status.Self -and $status.BackendState -eq 'Running') {
@@ -91,17 +141,20 @@ if (Test-Path $tailscale) {
         }
     } catch {}
 }
-if (-not $tsName) { $warnings.Add('Tailscale 还没有登录：登录后重新运行本脚本，其他电脑才能连到这台。') }
+if (-not $LocalOnly -and -not $tsName) { $warnings.Add('Tailscale 还没有登录：登录后重新运行本脚本，其他电脑才能连到这台。') }
 
 # 6. This computer's main agent
-Step '创建主agent export'
+Step "创建主 Agent：$MainAgentName"
 $mainWorkspace = Join-Path $Workspace 'main-agent'
 New-Item -ItemType Directory -Force -Path (Join-Path $mainWorkspace '.codex') | Out-Null
 $agentsFile = Join-Path $mainWorkspace 'AGENTS.md'
 if (-not (Test-Path $agentsFile)) {
     $template = [System.IO.File]::ReadAllText((Join-Path $worker 'templates\main-agent\AGENTS.md'))
-    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace))
+    $permissionNote = if ($FullAccess) { '子任务以完整权限运行，可操作桌面、浏览器和其他应用；所有权限请求自动批准。' } elseif ($Engine -eq 'claude') { '子任务使用 Claude Code restricted 模式：文件工具限于工作目录和 shared 文件夹，命令执行关闭；这不是操作系统级沙箱。' } else { '子任务使用 Codex workspace-write 沙箱，不自动批准额外权限。' }
+    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace).Replace('{{AGENT_ENGINE}}', $Engine).Replace('{{MAIN_AGENT_NAME}}', $MainAgentName).Replace('{{PERMISSION_NOTE}}', $permissionNote))
 }
+if (-not (Test-Path (Join-Path $mainWorkspace 'CLAUDE.md'))) { Copy-Item -LiteralPath $agentsFile -Destination (Join-Path $mainWorkspace 'CLAUDE.md') }
+if ($Engine -eq 'codex') {
 Write-Utf8 (Join-Path $mainWorkspace '.codex\config.toml') @"
 # 主agent export 专用：只在本项目里启用派任务服务，子任务不会加载它。文件里含有访问令牌，不要分享。
 [mcp_servers.codex_tasks]
@@ -112,12 +165,13 @@ tool_timeout_sec = 120
 default_tools_approval_mode = "approve"
 "@
 # Codex only loads a project's own config when the project is trusted.
-$codexConfig = Join-Path $env:USERPROFILE '.codex\config.toml'
+$codexConfig = Join-Path $CodexHome 'config.toml'
 New-Item -ItemType Directory -Force -Path (Split-Path $codexConfig) | Out-Null
 $trustKey = $mainWorkspace.ToLower()
 $existing = if (Test-Path $codexConfig) { [System.IO.File]::ReadAllText($codexConfig) } else { '' }
 if (-not $existing.Contains("[projects.'$trustKey']")) {
     [System.IO.File]::AppendAllText($codexConfig, "`n[projects.'$trustKey']`ntrust_level = `"trusted`"`n", (New-Object System.Text.UTF8Encoding $false))
+}
 }
 
 # Fixed rules for every sub-task; the user can edit this file any time, no restart needed.
@@ -134,6 +188,7 @@ if ($tsIp) { $allowedHosts += "${tsIp}:$TailscalePort" }
 $remoteUrl = if ($tsName) { "http://${tsName}:$TailscalePort/mcp" } else { '' }
 $config = [ordered]@{
     computer_name = $Name
+    main_agent_name = $MainAgentName
     port = $Port
     tailscale_port = $TailscalePort
     remote_url = $remoteUrl
@@ -151,12 +206,23 @@ $config = [ordered]@{
     allowed_roots = @($Workspace)
     allowed_hosts = $allowedHosts
     main_agent_workspaces = @($mainWorkspace)
-    executor = 'app-server'
+    executor = $(if ($Engine -eq 'claude') { 'claude' } else { 'app-server' })
+    engine = $Engine
+    claude_executable = $ClaudeExecutable
+    local_only = [bool]$LocalOnly
     sandbox = $(if ($FullAccess) { 'danger-full-access' } else { 'workspace-write' })
     auto_approve = [bool]$FullAccess
     max_timeout_seconds = 7200
     writer_wait_seconds = 10
     fork_when_busy = $false
+}
+if ($Engine -eq 'claude') { $config['claude_version'] = $claudeVersion }
+# Keep user-added options on repeated setup (including quota and display preferences).
+if (Test-Path $configPath) {
+    $oldConfig = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
+    foreach ($property in $oldConfig.PSObject.Properties) {
+        if (-not $config.Contains($property.Name)) { $config[$property.Name] = $property.Value }
+    }
 }
 Write-Utf8 $configPath ($config | ConvertTo-Json -Depth 5)
 
@@ -164,24 +230,29 @@ Write-Utf8 $configPath ($config | ConvertTo-Json -Depth 5)
 if (-not $NoAutostart) {
     Step '设置登录后自动启动'
     $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'agent-fleet-worker.cmd'
-    Write-Utf8 $startup "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $worker 'start.ps1')`" -ConfigPath `"$configPath`"`r`n"
+    $localFlag = if ($LocalOnly) { ' -LocalOnly' } else { '' }
+    Write-Utf8 $startup "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $worker 'start.ps1')`" -ConfigPath `"$configPath`"$localFlag`r`n"
 }
 
 # 9. Start now
+if (-not $NoStart) {
 Step '启动服务'
 $startArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $worker 'start.ps1'), '-ConfigPath', $configPath)
-if (-not $tsName) { $startArgs += '-LocalOnly' }
+if ($LocalOnly -or -not $tsName) { $startArgs += '-LocalOnly' }
 & powershell @startArgs
 if ($LASTEXITCODE -ne 0) { $warnings.Add('服务没有正常启动，看 state\server.stderr.log。') }
+}
 
 # 10. Connection info for the orchestrator
 $connection = [ordered]@{
     name = $Name
+    engine = $Engine
     description = $Description
     local_url = "http://127.0.0.1:$Port/mcp"
     tailscale_url = $remoteUrl
     token = $token
     main_agent_workspace = $mainWorkspace
+    main_agent_name = $MainAgentName
     dashboard = $(if ($tsName) { "http://${tsName}:$TailscalePort/dashboard" } else { "http://127.0.0.1:$Port/dashboard" })
 }
 $connectionFile = Join-Path $DataDir 'connection.json'
