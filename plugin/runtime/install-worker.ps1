@@ -16,6 +16,7 @@ param(
     [switch]$NoAutostart,
     [ValidateSet('codex','claude')][string]$Engine = 'codex',
     [switch]$LocalOnly,
+    [string]$LanAddress = '',     # 局域网 IPv4 地址：服务对局域网开放（明文 HTTP，只在可信网络使用）
     [switch]$NoStart,
     [string]$ClaudeExecutable = '',
     [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex')
@@ -27,6 +28,11 @@ if (-not $PSBoundParameters.ContainsKey('MainAgentName') -and (Test-Path -Litera
 }
 $MainAgentName = $MainAgentName.Trim()
 if ($MainAgentName.Length -lt 1 -or $MainAgentName.Length -gt 100 -or $MainAgentName -match '[\x00-\x1f\x7f]' -or $MainAgentName.StartsWith('--') -or $MainAgentName -in @('__proto__','constructor','prototype')) { throw 'Main agent name must contain 1 to 100 printable characters, without a leading --.' }
+if ($LanAddress) {
+    $parsedLan = $null
+    if (-not [System.Net.IPAddress]::TryParse($LanAddress, [ref]$parsedLan) -or $parsedLan.AddressFamily -ne 'InterNetwork' -or [System.Net.IPAddress]::IsLoopback($parsedLan)) { throw 'LanAddress must be this computer''s IPv4 address on the local network.' }
+    $LanAddress = $parsedLan.ToString()
+}
 $repo = $PSScriptRoot
 $worker = Join-Path $repo 'worker'
 
@@ -186,12 +192,17 @@ $allowedHosts = @("127.0.0.1:$Port", "localhost:$Port")
 if ($tsName) { $allowedHosts += "${tsName}:$TailscalePort" }
 if ($tsIp) { $allowedHosts += "${tsIp}:$TailscalePort" }
 $remoteUrl = if ($tsName) { "http://${tsName}:$TailscalePort/mcp" } else { '' }
+$lanUrl = if ($LanAddress) { "http://${LanAddress}:$Port/mcp" } else { '' }
+if ($LanAddress) { $allowedHosts += "${LanAddress}:$Port" }
 $config = [ordered]@{
     computer_name = $Name
     main_agent_name = $MainAgentName
     port = $Port
     tailscale_port = $TailscalePort
     remote_url = $remoteUrl
+    bind_host = $(if ($LanAddress) { '0.0.0.0' } else { '127.0.0.1' })
+    lan_address = $LanAddress
+    lan_url = $lanUrl
     python_executable = $venvPython
     codex_executable = $codexJs
     codex_launcher_executable = $nodeExe
@@ -250,10 +261,11 @@ $connection = [ordered]@{
     description = $Description
     local_url = "http://127.0.0.1:$Port/mcp"
     tailscale_url = $remoteUrl
+    lan_url = $lanUrl
     token = $token
     main_agent_workspace = $mainWorkspace
     main_agent_name = $MainAgentName
-    dashboard = $(if ($tsName) { "http://${tsName}:$TailscalePort/dashboard" } else { "http://127.0.0.1:$Port/dashboard" })
+    dashboard = $(if ($tsName) { "http://${tsName}:$TailscalePort/dashboard" } elseif ($LanAddress) { "http://${LanAddress}:$Port/dashboard" } else { "http://127.0.0.1:$Port/dashboard" })
 }
 $connectionFile = Join-Path $DataDir 'connection.json'
 Write-Utf8 $connectionFile ($connection | ConvertTo-Json)
@@ -263,5 +275,6 @@ Write-Host "完成：$Name 已接入。" -ForegroundColor Green
 Write-Host "接入信息：$connectionFile（含令牌，只发给你自己的管理端电脑）"
 Write-Host "在管理端电脑上接入：让 Claude 运行 add-computer，或 node <call-agent skill 文件夹>\fleet.mjs add-computer <connection.json 的路径>"
 Write-Host "只读看板：$($connection.dashboard)"
+if ($LanAddress) { Write-Host "局域网地址：$lanUrl（明文 HTTP，只在可信网络使用；需要在 Windows 防火墙放行 TCP $Port 端口）" -ForegroundColor Yellow }
 if (-not $FullAccess) { Write-Host '当前子任务只能写自己的工作目录。要操作桌面和浏览器，用 -FullAccess 重新运行。' -ForegroundColor Yellow }
 foreach ($w in $warnings) { Write-Warning $w }

@@ -87,8 +87,8 @@ No connection-file transfer is needed for that step. Remote workers still use
 private connection-file transfer. --registry-home selects the orchestrator
 registry, and --data-dir selects private worker data; these remain separate.
 
-Worker settings include --engine codex|claude, --connectivity local|tailscale,
---workspace, --name, --description, --port, --tailscale-port, --claude-executable,
+Worker settings include --engine codex|claude, --connectivity local|tailscale|lan,
+--lan-address, --workspace, --name, --description, --port, --tailscale-port, --claude-executable,
 --skip-prerequisites and --no-autostart. --full-access requires explicit agreement.
 Use --reconfigure for an intentional worker repair/change. Role-specific setup
 scripts remain available for advanced use.
@@ -130,6 +130,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<repository>\plugin\scripts
 The selected CLI must be signed in by the owner (`codex login` or
 `claude auth login`). Claude Code requires 2.1.248 or newer. For remote workers,
 choose `-Connectivity Tailscale`, then sign in to the same Tailscale network.
+On a trusted local network you can choose `-Connectivity Lan` instead (setup.mjs:
+`--connectivity lan`). The worker then listens on its local IPv4 address (auto-detected,
+or `-LanAddress`) and `connection.json` carries a `lan_url`. LAN traffic is plain
+HTTP, so the token is readable by anyone capturing traffic on that network. The owner
+must allow inbound TCP on the worker port for Private networks in Windows Firewall.
 Sign-in is a human step; the plugin never exports credentials or creates API keys.
 
 Codex uses its workspace-write sandbox. Claude uses restricted mode with file

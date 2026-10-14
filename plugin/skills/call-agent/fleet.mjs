@@ -26,7 +26,7 @@
 //   node fleet.mjs list     <电脑> [数量]
 //   node fleet.mjs cancel   <电脑> <task_id>...       取消排队中或运行中的任务（已做的改动保留）
 //   node fleet.mjs tools    <电脑>
-// 每台电脑用登记表里的 url（没有就用 local_url）；加 --remote 强制走 Tailscale 地址。
+// 每台电脑用登记表里的 url（没有就用 local_url）；加 --remote 强制走 Tailscale（或局域网）地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -62,8 +62,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextId = 1;
 let url, token;
 
-// This computer's own worker is reached locally; others over Tailscale.
-const endpoint = (target) => (flag("--remote") ? target.tailscale_url : target.url || target.local_url || target.tailscale_url);
+// This computer's own worker is reached locally; others over Tailscale or the LAN.
+const endpoint = (target) => (flag("--remote") ? target.tailscale_url || target.lan_url : target.url || target.local_url || target.tailscale_url || target.lan_url);
 
 function connect(target) {
   url = endpoint(target);
@@ -132,13 +132,13 @@ if (cmd === "notifications") {
   process.exit(0);
 }
 if (cmd === "add-computer") {
-  // connection.json comes from install-worker.ps1 on the new computer: { name, tailscale_url, local_url, token, description }
+  // connection.json comes from install-worker.ps1 on the new computer: { name, tailscale_url, lan_url, local_url, token, description }
   const info = JSON.parse(readFileSync(computer, "utf8").replace(/^﻿/, ""));
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || "")) {
     console.error("Computer name must use letters, numbers, dots, underscores or hyphens, beginning with a letter or number.");
     process.exit(2);
   }
-  if (!info.name || !info.token || !(info.tailscale_url || info.local_url)) {
+  if (!info.name || !info.token || !(info.tailscale_url || info.lan_url || info.local_url)) {
     console.error("connection.json 缺少 name、token 或地址");
     process.exit(2);
   }
@@ -172,8 +172,8 @@ if (cmd === "add-computer") {
   const isThisComputer = option("local") === "1";
   registry.computers[info.name] = {
     ...existing, engine, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
-    url: isThisComputer ? info.local_url : info.tailscale_url,
-    local_url: info.local_url, tailscale_url: info.tailscale_url, token_file: tokenFile,
+    url: isThisComputer ? info.local_url : info.tailscale_url || info.lan_url,
+    local_url: info.local_url, tailscale_url: info.tailscale_url, lan_url: info.lan_url, token_file: tokenFile,
     agents,
   };
   saveRegistry();

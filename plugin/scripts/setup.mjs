@@ -10,7 +10,7 @@ const values = new Map();
 const flags = new Set();
 const booleans = new Set(['plan', 'local', 'full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop']);
 const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'description',
-  'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port']);
+  'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
 const argv = process.argv.slice(2);
 
 function fail(message) { console.error(message); process.exit(2); }
@@ -23,9 +23,10 @@ for (let i = 0; i < argv.length; i++) {
 const role = values.get('role');
 if (!['orchestrator', 'worker', 'both'].includes(role)) fail('Choose a role: orchestrator, worker, or both.');
 if (values.has('engine') && !['codex', 'claude'].includes(values.get('engine'))) fail('Engine must be codex or claude.');
-if (values.has('connectivity') && !['local', 'tailscale'].includes(values.get('connectivity'))) fail('Connectivity must be local or tailscale.');
+if (values.has('connectivity') && !['local', 'tailscale', 'lan'].includes(values.get('connectivity'))) fail('Connectivity must be local, tailscale or lan.');
+if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--lan-address requires --connectivity lan.');
 if (role === 'worker' && (values.has('connection') || values.has('registry-home') || flags.has('local'))) fail('Connection/registry options require orchestrator or both.');
-const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'description', 'claude-executable', 'port', 'tailscale-port'];
+const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'description', 'claude-executable', 'port', 'tailscale-port', 'lan-address'];
 if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
 if (flags.has('local') && !values.has('connection')) fail('--local requires --connection.');
 if (role !== 'orchestrator' && process.platform !== 'win32') fail('Worker setup currently requires Windows.');
@@ -37,7 +38,7 @@ if (values.has('connection')) {
   let info;
   try { info = JSON.parse(readFileSync(resolve(values.get('connection')), 'utf8').replace(/^\uFEFF/, '')); }
   catch { fail('Could not read a valid connection file.'); }
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || '') || !info.token || !(flags.has('local') ? info.local_url : info.tailscale_url)) fail('Connection is invalid for the selected local/remote mode.');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || '') || !info.token || !(flags.has('local') ? info.local_url : (info.tailscale_url || info.lan_url))) fail('Connection is invalid for the selected local/remote mode.');
 }
 function run(executable, args, env = process.env) {
   const child = spawnSync(executable, args, { env, encoding: 'utf8', windowsHide: true });
@@ -59,7 +60,7 @@ let worker;
 if (role !== 'orchestrator') {
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/setup-worker.ps1'), '-NoDesktop'];
   const mappings = { engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
-    name: 'Name', 'main-agent-name': 'MainAgentName', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort' };
+    name: 'Name', 'main-agent-name': 'MainAgentName', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };
   for (const [key, parameter] of Object.entries(mappings)) if (values.has(key)) args.push('-' + parameter, values.get(key));
   const switches = { plan: 'Plan', 'full-access': 'FullAccess', 'skip-prerequisites': 'SkipPrerequisites', 'no-autostart': 'NoAutostart', reconfigure: 'Reconfigure' };
   for (const [key, parameter] of Object.entries(switches)) if (flags.has(key)) args.push('-' + parameter);

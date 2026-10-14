@@ -76,6 +76,15 @@ class PluginSetupTests(unittest.TestCase):
         value = json.loads((self.home / 'computers.json').read_text())['computers']['fixture-pc']
         self.assertEqual(value['url'], url)
 
+    def test_lan_registration_uses_lan_address(self):
+        url = 'http://192.0.2.10:8765/mcp'
+        result = self.orchestrator('--connection', str(self.connection(lan_url=url)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads((self.home / 'computers.json').read_text())['computers']['fixture-pc']
+        self.assertEqual(value['url'], url)
+        self.assertEqual(value['lan_url'], url)
+        self.assertNotIn('fixture-only-token', result.stdout + result.stderr)
+
     def test_engine_switch_updates_workspace_and_drops_incompatible_session_pointer(self):
         self.assertEqual(self.orchestrator('--connection', str(self.connection(engine='codex')), '--local').returncode, 0)
         registry = self.home / 'computers.json'
@@ -185,6 +194,20 @@ class PluginSetupTests(unittest.TestCase):
         self.assertEqual(value['engine'], 'claude')
         self.assertEqual(value['connectivity'], 'Local')
         self.assertFalse(value['full_access'])
+        self.assertFalse(data.exists())
+        self.assertFalse(workspace.exists())
+
+    def test_lan_worker_plan_reports_address_without_writes(self):
+        data, workspace = self.root / 'private', self.root / 'workspace'
+        run = lambda *extra: subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(WORKER),
+            '-Plan', '-DataDir', str(data), '-Workspace', str(workspace), *extra],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+        result = run('-Connectivity', 'Lan', '-LanAddress', '192.0.2.10')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value['connectivity'], 'Lan')
+        self.assertEqual(value['lan_address'], '192.0.2.10')
+        self.assertNotEqual(run('-Connectivity', 'Local', '-LanAddress', '192.0.2.10').returncode, 0)
         self.assertFalse(data.exists())
         self.assertFalse(workspace.exists())
 

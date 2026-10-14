@@ -233,7 +233,9 @@ HTTPServer(('127.0.0.1',c['port']),H).serve_forever()
         self.assertEqual((self.data/'config.json').read_text(encoding='utf-8'),before)
 
     def test_wrong_role_options_are_rejected_before_writes(self):
-        for args in (('--role','orchestrator','--engine','claude'), ('--role','worker','--registry-home',str(self.home))):
+        for args in (('--role','orchestrator','--engine','claude'), ('--role','worker','--registry-home',str(self.home)),
+                     ('--role','worker','--connectivity','lan','--lan-address'), ('--role','worker','--lan-address','192.0.2.10'),
+                     ('--role','worker','--connectivity','wifi'), ('--role','orchestrator','--connectivity','lan')):
             self.assertEqual(self.run_setup(*args).returncode, 2)
             self.assertFalse(self.home.exists())
 

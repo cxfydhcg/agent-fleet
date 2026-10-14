@@ -1,6 +1,7 @@
 ﻿param(
     [ValidateSet('codex','claude')][string]$Engine = 'codex',
-    [ValidateSet('Local','Tailscale')][string]$Connectivity = 'Local',
+    [ValidateSet('Local','Tailscale','Lan')][string]$Connectivity = 'Local',
+    [string]$LanAddress = '',
     [string]$Workspace = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'AgentFleet'),
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),
     [string]$Name = $env:COMPUTERNAME.ToLower(),
@@ -23,16 +24,26 @@ function Ensure-DesktopProject {
 }
 $previous = $null
 if (Test-Path -LiteralPath $configPath) { $previous = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json }
+$oldConnectivity = $null
 if ($previous) {
     $oldEngine = if ($previous.executor -eq 'claude') { 'claude' } else { 'codex' }
+    $oldConnectivity = if ($previous.lan_url) { 'Lan' } elseif ($previous.remote_url -and -not $previous.local_only) { 'Tailscale' } else { 'Local' }
     if (-not $PSBoundParameters.ContainsKey('Engine')) { $Engine = $oldEngine }
-    if (-not $PSBoundParameters.ContainsKey('Connectivity')) { $Connectivity = $(if ($previous.remote_url -and -not $previous.local_only) { 'Tailscale' } else { 'Local' }) }
+    if (-not $PSBoundParameters.ContainsKey('Connectivity')) { $Connectivity = $oldConnectivity }
+    if (-not $PSBoundParameters.ContainsKey('LanAddress') -and $Connectivity -eq 'Lan' -and $previous.lan_address) { $LanAddress = $previous.lan_address }
     if (-not $PSBoundParameters.ContainsKey('Workspace')) { $Workspace = Split-Path $previous.tasks_dir }
     if (-not $PSBoundParameters.ContainsKey('Name')) { $Name = $previous.computer_name }
     if (-not $PSBoundParameters.ContainsKey('MainAgentName') -and $previous.main_agent_name) { $MainAgentName = $previous.main_agent_name }
     if (-not $PSBoundParameters.ContainsKey('FullAccess')) { $FullAccess = $previous.sandbox -eq 'danger-full-access' }
     if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = $previous.port }
     if (-not $PSBoundParameters.ContainsKey('TailscalePort')) { $TailscalePort = $previous.tailscale_port }
+}
+if ($LanAddress -and $Connectivity -ne 'Lan') { throw '-LanAddress requires -Connectivity Lan.' }
+if ($Connectivity -eq 'Lan' -and -not $LanAddress) {
+    # The adapter with a default gateway is the one other computers on the network can reach.
+    $LanAddress = @(Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
+        ForEach-Object { @($_.IPv4Address)[0].IPAddress } | Where-Object { $_ -and $_ -notlike '169.254.*' })[0]
+    if (-not $LanAddress) { throw 'Could not detect this computer''s local network address; pass -LanAddress.' }
 }
 $MainAgentName = $MainAgentName.Trim()
 if ($MainAgentName.Length -lt 1 -or $MainAgentName.Length -gt 100 -or $MainAgentName -match '[\x00-\x1f\x7f]' -or $MainAgentName.StartsWith('--') -or $MainAgentName -in @('__proto__','constructor','prototype')) { throw 'Main agent name must contain 1 to 100 printable characters, without a leading --.' }
@@ -44,12 +55,12 @@ if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $existingRegis
     if ($registeredComputer -and @($registeredComputer.Value.agents.PSObject.Properties | Where-Object { $_.Name -ceq $MainAgentName }).Count) { throw 'An agent already uses the requested main agent name; choose another name.' }
 }
 if ($Plan) {
-    [ordered]@{engine=$Engine;connectivity=$Connectivity;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
+    [ordered]@{engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
     return
 }
 if ($previous -and -not $Reconfigure) {
     if ($Engine -ne $oldEngine -or ($FullAccess -and $previous.sandbox -ne 'danger-full-access') -or
-        (($Connectivity -eq 'Tailscale') -ne [bool]($previous.remote_url -and -not $previous.local_only)) -or
+        $Connectivity -ne $oldConnectivity -or ($Connectivity -eq 'Lan' -and $LanAddress -ne $previous.lan_address) -or
         $Workspace -ne (Split-Path $previous.tasks_dir) -or $Name -ne $previous.computer_name -or $MainAgentName -cne $oldMainName -or
         $Port -ne $previous.port -or $TailscalePort -ne $previous.tailscale_port) {
         throw 'Requested settings differ from the installation. Use -Reconfigure after confirming the change.'
@@ -63,7 +74,7 @@ if ($previous -and -not $Reconfigure) {
         $existingStartScript = Join-Path $Workspace 'service\worker\start.ps1'
         if (-not (Test-Path -LiteralPath $existingStartScript)) { throw 'Existing worker runtime is missing. Use -Reconfigure to redeploy it.' }
         $existingStartArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$existingStartScript,'-ConfigPath',$configPath)
-        if ($Connectivity -eq 'Local' -or -not $previous.remote_url) { $existingStartArgs += '-LocalOnly' }
+        if ($Connectivity -ne 'Tailscale' -or -not $previous.remote_url) { $existingStartArgs += '-LocalOnly' }
         & powershell @existingStartArgs
         if ($LASTEXITCODE -ne 0) { throw 'Existing worker could not start; inspect its private service logs.' }
         $existingHealth = Invoke-RestMethod -Uri "http://127.0.0.1:$($previous.port)/health" -Headers $existingHeaders -TimeoutSec 5
@@ -73,7 +84,7 @@ if ($previous -and -not $Reconfigure) {
     [ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'existing-worker' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;
         data_dir=$existingData;client_home=(Join-Path $existingData 'local-client');
         connection_file=(Join-Path $existingData 'connection.json');
-        dashboard="http://127.0.0.1:$($previous.port)/dashboard";remote_url=$previous.remote_url;
+        dashboard="http://127.0.0.1:$($previous.port)/dashboard";remote_url=$previous.remote_url;lan_url=$previous.lan_url;
         full_access=[bool]$FullAccess;desktop=$desktop;service_status=$existingHealth.status} | ConvertTo-Json -Depth 5
     return
 }
@@ -102,7 +113,8 @@ Copy-Item -LiteralPath (Join-Path $runtime 'install-worker.ps1'),(Join-Path $run
 $installArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $deployment 'install-worker.ps1'),
     '-Engine',$Engine,'-Workspace',$Workspace,'-DataDir',$DataDir,'-Name',$Name,'-MainAgentName',$MainAgentName,'-Port',"$Port",'-TailscalePort',"$TailscalePort",'-NoStart','-NoAutostart')
 if ($Description) { $installArgs += @('-Description',$Description) }
-if ($Connectivity -eq 'Local') { $installArgs += '-LocalOnly' }
+if ($Connectivity -ne 'Tailscale') { $installArgs += '-LocalOnly' }
+if ($Connectivity -eq 'Lan') { $installArgs += @('-LanAddress',$LanAddress) }
 if ($FullAccess) { $installArgs += '-FullAccess' }
 if ($SkipPrerequisites) { $installArgs += '-SkipPrerequisites' }
 if ($ClaudeExecutable) { $installArgs += @('-ClaudeExecutable',$ClaudeExecutable) }
@@ -126,7 +138,7 @@ if ($health -and $health.service -eq 'codex-task-mcp') {
     & taskkill.exe /PID $health.pid /T /F | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not restart the idle worker.' }
 }
-if ($Connectivity -eq 'Local' -and $previous -and $previous.remote_url -and (Test-Path -LiteralPath $previous.tailscale_executable)) {
+if ($Connectivity -ne 'Tailscale' -and $previous -and $previous.remote_url -and (Test-Path -LiteralPath $previous.tailscale_executable)) {
     $serveStatus = & $previous.tailscale_executable serve status --json | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw 'Could not check the previous Tailscale route.' }
     if ($serveStatus.TCP -and $serveStatus.TCP.PSObject.Properties.Name -contains "$($previous.tailscale_port)") {
@@ -140,13 +152,13 @@ if ($Connectivity -eq 'Local' -and $previous -and $previous.remote_url -and (Tes
 }
 $startScript = Join-Path $deployment 'worker\start.ps1'
 $startArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$startScript,'-ConfigPath',$configPath)
-if ($Connectivity -eq 'Local') { $startArgs += '-LocalOnly' }
+if ($Connectivity -ne 'Tailscale') { $startArgs += '-LocalOnly' }
 elseif (-not $config.remote_url) { $startArgs += '-LocalOnly' }
 & powershell @startArgs
 if ($LASTEXITCODE -ne 0) { throw 'Worker startup failed; inspect the private state/server.stderr.log.' }
 if (-not $NoAutostart) {
     $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'agent-fleet-worker.cmd'
-    $localFlag = if ($Connectivity -eq 'Local') { ' -LocalOnly' } else { '' }
+    $localFlag = if ($Connectivity -ne 'Tailscale') { ' -LocalOnly' } else { '' }
     [System.IO.File]::WriteAllText($startup,"@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startScript`" -ConfigPath `"$configPath`"$localFlag`r`n",(New-Object System.Text.UTF8Encoding $false))
 }
 $resolvedData = Split-Path $configPath
@@ -168,4 +180,6 @@ try {
     }
 } finally { $env:AGENT_FLEET_HOME = $savedFleetHome }
 $desktop = Ensure-DesktopProject
-[ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'service-ready' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$resolvedData;client_home=$clientHome;connection_file=(Join-Path $resolvedData 'connection.json');dashboard="http://127.0.0.1:$($config.port)/dashboard";remote_url=$config.remote_url;full_access=[bool]$FullAccess;desktop=$desktop} | ConvertTo-Json -Depth 5
+[ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'service-ready' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$resolvedData;client_home=$clientHome;connection_file=(Join-Path $resolvedData 'connection.json');dashboard="http://127.0.0.1:$($config.port)/dashboard";remote_url=$config.remote_url;lan_url=$config.lan_url;
+    firewall_note=$(if ($config.lan_url) { "Allow inbound TCP $($config.port) on Private networks in Windows Firewall (administrator)." } else { '' });
+    full_access=[bool]$FullAccess;desktop=$desktop} | ConvertTo-Json -Depth 5

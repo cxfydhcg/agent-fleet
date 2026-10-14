@@ -28,8 +28,8 @@ if (connection) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || '')) {
     console.error('Computer name must be an ASCII identifier, without path separators.'); process.exit(2);
   }
-  if (!info.name || !info.token || !(local ? info.local_url : info.tailscale_url)) {
-    console.error(local ? 'Connection needs name, token and local_url.' : 'Remote connection needs a Tailscale URL; set up that worker for remote access first.');
+  if (!info.name || !info.token || !(local ? info.local_url : (info.tailscale_url || info.lan_url))) {
+    console.error(local ? 'Connection needs name, token and local_url.' : 'Remote connection needs a Tailscale or LAN URL; set up that worker for remote access first.');
     process.exit(2);
   }
   if (info.main_agent_name !== undefined && (typeof info.main_agent_name !== 'string' || !info.main_agent_name.trim() || info.main_agent_name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(info.main_agent_name) || info.main_agent_name.trim().startsWith('--') || ['__proto__','constructor','prototype'].includes(info.main_agent_name.trim()))) {

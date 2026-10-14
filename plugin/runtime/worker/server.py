@@ -1186,4 +1186,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding='utf-8-sig'))
     app, manager = build_app(config)
-    uvicorn.run(app, host='127.0.0.1', port=config.get('port', 8765), access_log=False)
+    # LAN mode binds all interfaces; the bearer token and allowed_hosts still gate every request.
+    uvicorn.run(app, host=config.get('bind_host', '127.0.0.1'), port=config.get('port', 8765), access_log=False)

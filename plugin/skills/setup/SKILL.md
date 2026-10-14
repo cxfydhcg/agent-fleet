@@ -34,7 +34,7 @@ For **control** (orchestrator):
   `--registry-home` names an existing one. Preserve existing workers and tokens.
 - If the user has a worker's `connection.json`, pass `--connection PATH`. Add
   `--local` only when that worker is this computer. A local-only worker cannot be
-  reached from another computer; set it up with Tailscale there first.
+  reached from another computer; set it up with Tailscale or LAN there first.
 
 For **be controlled** or **both** (worker, Windows only):
 - Respect an existing installation's engine, workspace, data directory and
@@ -57,11 +57,24 @@ For **be controlled** or **both** (worker, Windows only):
   these restrictions and auto-approves agent permissions, including shell,
   desktop and browser actions. Explain that and pass it only with the user's
   explicit agreement; installing the plugin does not authorize it.
+- Connectivity: `local` (default) listens on 127.0.0.1 only. `tailscale` is
+  reachable from the user's Tailscale devices, encrypted. `lan` listens on the
+  local network at the auto-detected IPv4 address (or `--lan-address`) so
+  computers on the same network can connect without Tailscale. LAN traffic is
+  plain HTTP: anyone on that network who captures it can read the token, so
+  explain this and use `lan` only on a network the user trusts. Every request
+  still needs the token. The owner must allow inbound TCP on the worker port
+  for Private networks in Windows Firewall as administrator, e.g.
+  `New-NetFirewallRule -DisplayName "Agent Fleet worker" -Direction Inbound
+  -Protocol TCP -LocalPort 8765 -Profile Private -RemoteAddress LocalSubnet
+  -Action Allow`; never change firewall settings yourself. Suggest reserving
+  the IP in the router; if it changes, rerun setup with `--reconfigure` and
+  register the new connection file again.
 - For **both**, setup registers this computer's worker with its own orchestrator
   over localhost; don't ask the user to transfer its connection file to itself.
 
 Other options: `--workspace` (also the orchestrator's public project folder),
-`--data-dir`, `--connectivity local|tailscale`, `--description`,
+`--data-dir`, `--connectivity local|tailscale|lan`, `--lan-address`, `--description`,
 `--claude-executable`, `--port`, `--tailscale-port`, `--skip-prerequisites`,
 `--no-autostart`, and `--no-desktop` for headless or Claude Code-only use.
 
