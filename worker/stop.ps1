@@ -10,7 +10,7 @@ if ($health -and $health.service -eq 'codex-task-mcp') {
     & taskkill.exe /PID $health.pid /T /F
     if ($LASTEXITCODE -ne 0) { throw 'Could not stop the service process tree.' }
 }
-if (Test-Path -LiteralPath $config.tailscale_executable) {
+if (-not $config.local_only -and (Test-Path -LiteralPath $config.tailscale_executable)) {
     & $config.tailscale_executable serve --http=$($config.tailscale_port) off
     if ($LASTEXITCODE -ne 0) { throw 'Could not disable the Tailscale Serve port.' }
 }
