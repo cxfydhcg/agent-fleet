@@ -119,6 +119,9 @@ function summarize(name, profile, online) {
               m.tailscale?.offers_exit_node && T("提供出口节点", "offers an exit node")].filter(Boolean).join(" · ") || null,
     role: c.role ?? null, notes: c.notes ?? null, software: c.software ?? [], accounts: c.accounts ?? [],
     busy: profile?.busy ?? null,
+    // Older workers don't report it; null means unknown, not restricted.
+    permissions: profile?.permissions ? (profile.permissions.full_access ? T("完全访问（可操作桌面和应用）", "full access (can operate the desktop and apps)")
+      : T(`受限（${profile.permissions.sandbox}，需要批准的操作如 Computer Use 会被拒绝）`, `restricted (${profile.permissions.sandbox}; anything needing approval, such as Computer Use, is refused)`)) : null,
     agents: (profile?.agents ?? []).map((a) => ({ name: a.name, type: a.type, role: a.role, tags: a.tags, status: a.status })),
   };
 }

@@ -67,7 +67,7 @@ function setupMacWorker() {
   const args = ['--data-dir', dataDir, '--workspace', workspace, '--json'];
   for (const key of ['engine', 'connectivity', 'name', 'main-agent-name', 'manager-name', 'language', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'])
     if (values.has(key)) args.push('--' + key, values.get(key));
-  for (const key of ['full-access', 'skip-prerequisites', 'no-autostart', 'plan']) if (flags.has(key)) args.push('--' + key);
+  for (const key of ['full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'plan']) if (flags.has(key)) args.push('--' + key);
   if (flags.has('plan')) return lastObject(run('bash', [join(root, 'runtime', 'install-worker.sh'), ...args]));
   const deployment = join(workspace, 'service');
   mkdirSync(deployment, { recursive: true });

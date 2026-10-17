@@ -672,6 +672,10 @@ class TaskManager:
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
                 'language': self.language, 'main_agent_name': self.config.get('main_agent_name'), 'main_agent': self.main_agent(),
                 'machine': machine, 'computer': self.profile['computer'], 'agents': agents, 'quota_wait': self.quota_wait,
+                # What dispatched turns may do, so the orchestrator can explain refusals (e.g. Computer Use).
+                'permissions': {'sandbox': self.config.get('sandbox', 'workspace-write'),
+                                'auto_approve': bool(self.config.get('auto_approve', False)),
+                                'full_access': self.config.get('sandbox') == 'danger-full-access' and bool(self.config.get('auto_approve'))},
                 **({'codex_app_folders': self.folders_status} if self.app_folders() else {}),
                 'busy': {'running': [j.get('name') or j['task_id'] for j in self.jobs.values() if j['status'] == 'running'],
                          'queued': sum(j['status'] == 'queued' for j in self.jobs.values())}}

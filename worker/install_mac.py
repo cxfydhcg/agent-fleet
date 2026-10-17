@@ -387,6 +387,12 @@ class Setup:
         if self.lan_address:
             print(self.t(f'局域网地址：{self.lan_url}（明文 HTTP，只在可信网络使用）。如果 macOS 问是否允许 Python 接受传入连接，请点"允许"。',
                          f'LAN address: {self.lan_url} (plain HTTP, trusted networks only). If macOS asks whether Python may accept incoming connections, click Allow.'))
+        was_full = (self.prior or {}).get('sandbox') == 'danger-full-access'
+        mode = self.t('完全访问', 'full access') if self.full_access else self.t('受限', 'restricted')
+        if self.prior and was_full != self.full_access:
+            print(self.t(f'子任务权限：已改为{mode}（{self.config_path}）', f'Sub-task permissions: changed to {mode} ({self.config_path})'))
+        else:
+            print(self.t(f'子任务权限：{mode}', f'Sub-task permissions: {mode}'))
         if self.full_access:
             print(self.t('要让子任务操作桌面，macOS 会要求给 Codex/终端"辅助功能"和"屏幕录制"权限，请在 系统设置 → 隐私与安全性 里允许。',
                          'For sub-tasks to operate the desktop, macOS asks for Accessibility and Screen Recording permission for Codex/Terminal; allow them in System Settings → Privacy & Security.'))
@@ -449,6 +455,8 @@ def main():
     parser.add_argument('--description', default='')
     parser.add_argument('--full-access', action='store_true', help='sub-tasks run without a sandbox and every permission request is approved')
     parser.add_argument('--restricted', action='store_true', help='turn full access off again on a rerun')
+    # Accepted so the same command works on Windows and macOS; on macOS a rerun always applies the options given.
+    parser.add_argument('--reconfigure', action='store_true', help='apply changed settings to an existing worker')
     parser.add_argument('--port', type=int)
     parser.add_argument('--tailscale-port', type=int)
     parser.add_argument('--codex-version', default='0.162.1')
