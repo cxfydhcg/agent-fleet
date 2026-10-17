@@ -53,6 +53,8 @@
   #profile .role { margin-top: 6px; }
   #profile .agent { margin-top: 8px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
   #profile .agent .tags { color: var(--muted); }
+  #profile .fold { margin-top: 10px; cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
+  #profile .fold:hover { color: inherit; }
   .section { padding: 8px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
   #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 5; }
   #login form { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; width: 100%; max-width: 420px; }
@@ -140,6 +142,22 @@
   }
 
   let profile = null;
+  // Collapsible parts of the profile panel. The computer facts start folded: they list accounts and software,
+  // which nobody needs on screen while watching tasks (or in a screen recording).
+  const folds = (() => { try { return JSON.parse(localStorage.getItem('dashboardFolds')) || {}; } catch { return {}; } })();
+  const isOpen = (key, byDefault) => (key in folds ? folds[key] : byDefault);
+  function fold(key, label, byDefault, fill) {
+    const open = isOpen(key, byDefault), wrap = el('div');
+    const head = el('div', 'fold', (open ? '▾ ' : '▸ ') + label);
+    head.addEventListener('click', () => {
+      folds[key] = !open;
+      try { localStorage.setItem('dashboardFolds', JSON.stringify(folds)); } catch {}
+      renderList();
+    });
+    wrap.append(head);
+    if (open) fill(wrap);
+    return wrap;
+  }
   function renderProfile() {
     const box = el('div'); box.id = 'profile';
     if (!profile) return box;
@@ -154,14 +172,16 @@
     const gpu = (m.nvidia && m.nvidia.length) ? m.nvidia.map((g) => g.name + ' ' + Math.round(g.vram_total_mb / 1024) + 'GB').join('、')
       : (m.gpus || []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join('、') || '无独立显卡';
     const facts = [m.cpu, m.ram_gb && (m.ram_gb + 'GB 内存'), gpu, m.os, m.egress_country && ('出口 ' + m.egress_country)].filter(Boolean).join(' · ');
-    box.append(title, el('div', 'facts', facts));
-    if (m.checked_at) box.append(el('div', 'facts', '硬件信息检测于 ' + time(m.checked_at)));
-    box.append(el('div', 'role', c.role ? '用途：' + c.role : '用途：未填写'));
-    if (c.software && c.software.length) box.append(el('div', 'facts', '软件：' + c.software.join('、')));
-    for (const a of c.accounts || []) box.append(el('div', 'facts', '账号：' + a.site + (a.account ? '（' + a.account + '）' : '') + ' · ' + ({ logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' }[a.status] || a.status || '未知')));
-    for (const a of profile.agents || []) {
+    box.append(title, fold('computer', '电脑档案', false, (part) => {
+      part.append(el('div', 'facts', facts));
+      if (m.checked_at) part.append(el('div', 'facts', '硬件信息检测于 ' + time(m.checked_at)));
+      part.append(el('div', 'role', c.role ? '用途：' + c.role : '用途：未填写'));
+      if (c.software && c.software.length) part.append(el('div', 'facts', '软件：' + c.software.join('、')));
+      for (const a of c.accounts || []) part.append(el('div', 'facts', '账号：' + a.site + (a.account ? '（' + a.account + '）' : '') + ' · ' + ({ logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' }[a.status] || a.status || '未知')));
+    }));
+    box.append(fold('agents', '常驻 Agent（' + (profile.agents || []).length + '）', true, (part) => { for (const a of profile.agents || []) {
       const card = el('div', 'agent');
-      const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? '（主）' : '')));
+      const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? '（主）' : '') + (a.locked ? '（锁定）' : '') + (a.can_dispatch === false ? '（不能派任务）' : '') + (a.sessions > 1 ? '（' + a.sessions + ' 个同名会话）' : '')));
       if (a.status) head.append(document.createTextNode(' '), el('span', 'badge s-' + a.status, STATUS[a.status] || a.status));
       card.append(head, el('div', null, a.role || ''));
       if (a.tags && a.tags.length) card.append(el('div', 'tags', a.tags.map((t) => '#' + t).join(' ')));
@@ -169,8 +189,8 @@
         const g = groups.find((x) => x.name === a.name);
         if (g) { selected = g.key; transcriptKey = ''; document.body.classList.add('viewing'); renderList(); renderDetail(true); }
       });
-      box.append(card);
-    }
+      part.append(card);
+    } }));
     return box;
   }
 

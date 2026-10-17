@@ -181,7 +181,7 @@
     }));
     box.append(fold('agents', '常驻 Agent（' + (profile.agents || []).length + '）', true, (part) => { for (const a of profile.agents || []) {
       const card = el('div', 'agent');
-      const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? '（主）' : '')));
+      const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? '（主）' : '') + (a.locked ? '（锁定）' : '') + (a.can_dispatch === false ? '（不能派任务）' : '') + (a.sessions > 1 ? '（' + a.sessions + ' 个同名会话）' : '')));
       if (a.status) head.append(document.createTextNode(' '), el('span', 'badge s-' + a.status, STATUS[a.status] || a.status));
       card.append(head, el('div', null, a.role || ''));
       if (a.tags && a.tags.length) card.append(el('div', 'tags', a.tags.map((t) => '#' + t).join(' ')));

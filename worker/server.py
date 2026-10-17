@@ -308,6 +308,9 @@ class TaskManager:
     def public(self, job, include_result=False):
         fields = ('task_id', 'name', 'engine', 'model', 'effort', 'status', 'workspace', 'created_at', 'started_at', 'finished_at', 'thread_id', 'forked_from_thread_id', 'resume_task_id', 'parent_task_id', 'auto_wake', 'timeout_seconds', 'exit_code', 'error', 'latest_message')
         response = {k: job[k] for k in fields if k in job}
+        owner = self.jobs.get(self.session_owner(job) or '')
+        if owner:
+            response['owner'] = owner.get('name') or owner['task_id']
         if self.removed(job):
             response['archived'] = True
         if job.get('thread_id') and job.get('engine') != 'claude':
@@ -375,32 +378,99 @@ class TaskManager:
         self.save_profile()
         return computer
 
-    def register_agent(self, name, role, tags=None, agent_type='resident'):
-        """Record a long-lived agent on this computer: what it is responsible for and what it can do."""
+    def register_agent(self, name, role, tags=None, agent_type='resident', can_dispatch=None, locked=None, caller=None):
+        """Record a long-lived agent on this computer: what it is responsible for and what it can do.
+        can_dispatch=False stops it from opening new sessions; locked=True lets only the orchestrator continue,
+        cancel or open its sessions. Only the orchestrator (no caller) sets them or changes a restricted entry."""
         name = (name or '').strip()
         if not 1 <= len(name) <= 100 or not (role or '').strip():
             raise ValueError('name and role are required')
         if agent_type not in ('main', 'resident'):
             raise ValueError('agent_type must be main or resident')
         agent = self.profile['agents'].get(name, {'created_at': now()})
+        if caller:
+            if can_dispatch is not None or locked is not None:
+                raise ValueError('Only the orchestrator can set can_dispatch or locked')
+            if agent.get('locked'):
+                raise ValueError(f'「{name}」 is locked; only the orchestrator can change it')
+            if agent.get('type', agent_type) != agent_type:
+                raise ValueError(f'Only the orchestrator can change the type of 「{name}」')
         agent.update(role=role.strip(), tags=sorted({t.strip() for t in tags or [] if t and t.strip()}),
                      type=agent_type, updated_at=now())
+        for key, value in (('can_dispatch', can_dispatch), ('locked', locked)):
+            if value is not None:
+                agent[key] = bool(value)
         self.profile['agents'][name] = agent
         self.save_profile()
         return {'name': name, **agent}
 
-    def remove_agent(self, name):
-        if self.profile['agents'].pop(name, None) is None:
+    def remove_agent(self, name, caller=None):
+        agent = self.profile['agents'].get(name)
+        if agent is None:
             raise ValueError('Unknown agent')
+        # Removing the entry would also drop its restrictions.
+        if caller and (agent.get('locked') or agent.get('can_dispatch') is False):
+            raise ValueError(f'「{name}」 has restrictions; only the orchestrator can remove it')
+        del self.profile['agents'][name]
         self.save_profile()
         return {'removed': name}
+
+    def agent_policy(self, name):
+        return self.profile['agents'].get(name or '') or {}
+
+    def session_root(self, job):
+        """The task that opened this session; every continuation points back to it through resume_task_id."""
+        seen = set()
+        while job.get('resume_task_id') in self.jobs and job['task_id'] not in seen:
+            seen.add(job['task_id'])
+            job = self.jobs[job['resume_task_id']]
+        return job
+
+    def session_owner(self, job):
+        """Root task of the main-agent session that opened this session, or None if the orchestrator did."""
+        parent = self.jobs.get(self.session_root(job).get('parent_task_id') or '')
+        return self.session_root(parent)['task_id'] if parent else None
+
+    def named_session(self, name):
+        """Newest task of a live session with this name: queued or running, or finished in a session the user kept."""
+        jobs = [j for j in self.jobs.values() if j.get('name') == name and
+                (j['status'] in ('queued', 'running') or (j.get('thread_id') and not self.removed(j)))]
+        return max(jobs, key=lambda j: j['created_at']) if jobs else None
+
+    def check_dispatch(self, caller, name=None):
+        """A main-agent turn may open a new session unless the orchestrator turned can_dispatch off for it.
+        Calls without a caller come from the orchestrator and are not limited."""
+        if not caller:
+            return
+        own = self.jobs[caller].get('name')
+        if self.agent_policy(own).get('can_dispatch') is False:
+            raise ValueError(f'「{own}」 may not open new sessions (can_dispatch is off); only the orchestrator can allow it')
+        if name and self.agent_policy(name.strip()).get('locked'):
+            raise ValueError(f'「{name.strip()}」 is a locked agent; only the orchestrator can open sessions with that name')
+
+    def authorize(self, job, caller, action):
+        """A main-agent turn controls its own session and the sessions it opened, never a locked agent's;
+        the orchestrator (no caller) controls all."""
+        if not caller:
+            return
+        mine = self.session_root(self.jobs[caller])['task_id']
+        if self.session_root(job)['task_id'] == mine:
+            return
+        name = job.get('name')
+        if self.agent_policy(name).get('locked'):
+            raise ValueError(f'「{name}」 is locked; only the orchestrator can {action} it. Say so in your report instead.')
+        if self.session_owner(job) != mine:
+            raise ValueError(f'You did not open this session; only the agent that opened it or the orchestrator can {action} it')
 
     async def full_profile(self, refresh=False):
         agents = []
         for name, agent in self.profile['agents'].items():
             jobs = [j for j in self.jobs.values() if j.get('name') == name]
             latest = max(jobs, key=lambda j: j['created_at']) if jobs else None
+            session = self.named_session(name)
+            live = {self.session_root(j)['task_id'] for j in jobs if j.get('thread_id') and not self.removed(j)}
             agents.append({'name': name, **agent, 'tasks': len(jobs), 'status': latest['status'] if latest else None,
+                           'task_id': session['task_id'] if session else None, 'sessions': len(live),
                            'last_active': (latest.get('finished_at') or latest.get('started_at') or latest['created_at']) if latest else None})
         machine = await self.machine_info(refresh)
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
@@ -408,8 +478,9 @@ class TaskManager:
                 'busy': {'running': [j.get('name') or j['task_id'] for j in self.jobs.values() if j['status'] == 'running'],
                          'queued': sum(j['status'] == 'queued' for j in self.jobs.values())}}
 
-    def open_desktop(self, task_id):
+    def open_desktop(self, task_id, caller=None):
         job = self.get(task_id)
+        self.authorize(job, caller, 'open')
         if job.get('engine') == 'claude':
             raise ValueError('Claude Code sessions have no Codex desktop link; use the dashboard or claude --resume')
         if not job.get('thread_id'):
@@ -534,7 +605,8 @@ class TaskManager:
             task_id = request.headers.get('x-agent-fleet-task') if request else None
             job = self.jobs.get(task_id or '')
             if task_id:
-                return task_id if job and job['status'] == 'running' and not self.is_worker(job) else None
+                # Only main-agent turns get this header, so a later profile change doesn't hide who is calling.
+                return task_id if job and job['status'] == 'running' else None
         except (AttributeError, LookupError, ValueError):
             pass
         try:
@@ -603,6 +675,11 @@ class TaskManager:
             raise ValueError('name must contain 1 to 100 characters')
         if not 10 <= timeout_seconds <= self.config.get('max_timeout_seconds', 7200):
             raise ValueError('timeout_seconds is outside the configured range')
+        # parent_task_id is the calling main-agent turn; internal wake-ups and the orchestrator have none.
+        if parent_task_id and resume_task_id:
+            self.authorize(self.get(resume_task_id), parent_task_id, 'continue')
+        elif parent_task_id:
+            self.check_dispatch(parent_task_id, name)
         if idempotency_key is not None:
             if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', idempotency_key):
                 raise ValueError('Invalid idempotency_key')
@@ -627,6 +704,17 @@ class TaskManager:
             Path(workspace).resolve() if workspace else self.root / task_folder_name(task_id, name))
         if not any(target.is_relative_to(root) for root in self.roots):
             raise ValueError('workspace is outside allowed_roots in the server configuration')
+        # Renaming the configured main agent changes its title while preserving
+        # the existing engine session and workspace on continuation.
+        mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
+        final_name = self.config['main_agent_name'] if str(target).lower() in mains and self.config.get('main_agent_name') else (
+            parent.get('name') if parent else name and name.strip())
+        # A registered agent is one session: a second one with the same name would split its history.
+        if not parent and final_name in self.profile['agents']:
+            existing = self.named_session(final_name)
+            if existing:
+                raise ValueError(f'「{final_name}」 already has a session (task_id={existing["task_id"]}); continue it with '
+                                 'continue_task instead of opening another session with the same name')
         target.mkdir(parents=True, exist_ok=True)
         if not target.is_dir():
             raise ValueError('workspace must be a directory')
@@ -635,14 +723,9 @@ class TaskManager:
                    workspace=str(target), timeout_seconds=timeout_seconds,
                    idempotency_key=idempotency_key, status='queued', created_at=now())
         if parent:
-            job.update(resume_task_id=resume_task_id, thread_id=self.latest_thread(parent['thread_id']), name=parent.get('name'))
-        elif name is not None:
-            job['name'] = name.strip()
-        # Renaming the configured main agent changes its title while preserving
-        # the existing engine session and workspace on continuation.
-        mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
-        if str(target).lower() in mains and self.config.get('main_agent_name'):
-            job['name'] = self.config['main_agent_name']
+            job.update(resume_task_id=resume_task_id, thread_id=self.latest_thread(parent['thread_id']))
+        if final_name:
+            job['name'] = final_name
         if parent_task_id:
             job['parent_task_id'] = parent_task_id
         # Normally unset: Codex's own default (the latest model at its configured effort), like a new window.
@@ -673,8 +756,9 @@ class TaskManager:
             process.kill()
             await process.wait()
 
-    async def cancel(self, task_id):
+    async def cancel(self, task_id, caller=None):
         job = self.get(task_id)
+        self.authorize(job, caller, 'cancel')
         if job['status'] in ('queued', 'running'):
             job.update(status='cancelled', finished_at=now())
             self.save(job)
@@ -1046,7 +1130,7 @@ def build_app(config):
                  if config.get('fork_when_busy', False) else
                  'continuing such a session fails with an explanation; tell the human, or start a new task instead.')
     mcp = FastMCP('Codex Task Dispatcher',
-        instructions='Submit tasks to Codex running on the server computer. submit_task creates a new session; continue_task(task_id, prompt) reuses an existing dispatched session with its conversation history and workspace. Wait for prior work in the session to finish before continuing. Paths refer to the server computer. Use idempotency_key when retrying submission. Poll get_task every 5–15 seconds. Completed means a final result was produced; inspect failed/timed_out/interrupted errors. Tasks run one at a time. Always include the returned desktop_link as a clickable Markdown link when reporting a task to the human, so they can open it without contacting another agent. desktop_url opens the local Codex app on the computer where clicked. If the human wants the chat shown on the server desktop, call open_task after the task finishes; it opens that chat directly without restarting the app. The user does not need to ask this dispatcher implementation chat to open it. Sessions appear in the Codex desktop app sidebar under their name. The desktop app keeps chats it has opened locked until it fully exits; ' + busy_note + ' A read-only live view of all sessions, which never locks them, is at /dashboard on this server. get_profile describes this computer (hardware, role, software, accounts) and its long-lived agents; keep it current with update_computer_profile and register_agent.',
+        instructions='Submit tasks to Codex running on the server computer. submit_task creates a new session; continue_task(task_id, prompt) reuses an existing dispatched session with its conversation history and workspace. Wait for prior work in the session to finish before continuing. Paths refer to the server computer. Use idempotency_key when retrying submission. Poll get_task every 5–15 seconds. Completed means a final result was produced; inspect failed/timed_out/interrupted errors. Tasks run one at a time. Always include the returned desktop_link as a clickable Markdown link when reporting a task to the human, so they can open it without contacting another agent. desktop_url opens the local Codex app on the computer where clicked. If the human wants the chat shown on the server desktop, call open_task after the task finishes; it opens that chat directly without restarting the app. The user does not need to ask this dispatcher implementation chat to open it. Sessions appear in the Codex desktop app sidebar under their name. The desktop app keeps chats it has opened locked until it fully exits; ' + busy_note + ' A read-only live view of all sessions, which never locks them, is at /dashboard on this server. get_profile describes this computer (hardware, role, software, accounts) and its long-lived agents; keep it current with update_computer_profile and register_agent. A main agent can continue, cancel or open only the sessions it opened; the orchestrator controls every session and is the only one that sets an agent\'s can_dispatch / locked with register_agent.',
         stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(
             allowed_hosts=config['allowed_hosts'], allowed_origins=config.get('allowed_origins', [])))
@@ -1066,7 +1150,7 @@ def build_app(config):
     async def continue_task(task_id: str, prompt: str, timeout_seconds: int = 1800,
                             idempotency_key: str | None = None, model: str | None = None, effort: str | None = None,
                             ctx: Context = None) -> dict:
-        """Continue the Codex session of a finished dispatched task, preserving its conversation history and workspace. Return a new task_id for this turn. You can reference any finished task in that session; continuation uses its latest saved history. A session the human has opened in the desktop app stays locked until Codex fully exits (see the server instructions for what happens then). Wait until the session has no pending task. Only sessions created by this service can be continued. model / effort: normally OMIT both; set them only when the session keeps failing with "Selected model is at capacity" or the human asks. The override applies to this turn, and later continuations of the session inherit it."""
+        """Continue the Codex session of a finished dispatched task, preserving its conversation history and workspace. Return a new task_id for this turn. You can reference any finished task in that session; continuation uses its latest saved history. A session the human has opened in the desktop app stays locked until Codex fully exits (see the server instructions for what happens then). Wait until the session has no pending task. Only sessions created by this service can be continued; a main agent can continue only sessions it opened, and never a locked agent's. model / effort: normally OMIT both; set them only when the session keeps failing with "Selected model is at capacity" or the human asks. The override applies to this turn, and later continuations of the session inherit it."""
         return manager.submit(prompt, None, timeout_seconds, idempotency_key, resume_task_id=task_id,
                               parent_task_id=manager.caller(ctx), model=model, effort=effort)
 
@@ -1084,14 +1168,14 @@ def build_app(config):
         return {'tasks': [manager.public(j) for j in jobs[:limit]]}
 
     @mcp.tool()
-    async def cancel_task(task_id: str) -> dict:
-        """Cancel queued or running work and stop its local process tree. Changes already made by a task are preserved."""
-        return await manager.cancel(task_id)
+    async def cancel_task(task_id: str, ctx: Context = None) -> dict:
+        """Cancel queued or running work and stop its local process tree. Changes already made by a task are preserved. A main agent can cancel only sessions it opened."""
+        return await manager.cancel(task_id, manager.caller(ctx))
 
     @mcp.tool()
-    async def open_task(task_id: str) -> dict:
+    async def open_task(task_id: str, ctx: Context = None) -> dict:
         """Open a finished task's conversation directly in the Codex desktop app on the SERVER COMPUTER, through the official chat deep link. No app restart is needed. Only this dispatcher's sessions can be opened. Wait for all pending work in the session to finish. Returns requested, not a guarantee that the screen rendered. To let the human open it on the same computer themselves, provide desktop_link from get_task instead."""
-        return manager.open_desktop(task_id)
+        return manager.open_desktop(task_id, manager.caller(ctx))
 
     @mcp.tool()
     async def get_profile(refresh: bool = False) -> dict:
@@ -1105,9 +1189,10 @@ def build_app(config):
         return manager.update_computer(role=role, notes=notes, software=software, accounts=accounts)
 
     @mcp.tool()
-    async def register_agent(name: str, role: str, tags: list[str] | None = None, agent_type: str = 'resident') -> dict:
-        """Add or update a long-lived agent in this computer's profile. name must match the session name used with submit_task. role: what it is responsible for. tags: capabilities such as gpu, 网页, app, 剪映, bilibili. agent_type: main (this computer's 主agent export) or resident. Do not register one-off tasks."""
-        return manager.register_agent(name, role, tags, agent_type)
+    async def register_agent(name: str, role: str, tags: list[str] | None = None, agent_type: str = 'resident',
+                             can_dispatch: bool | None = None, locked: bool | None = None, ctx: Context = None) -> dict:
+        """Add or update a long-lived agent in this computer's profile. name must match the session name used with submit_task. role: what it is responsible for. tags: capabilities such as gpu, 网页, app, 剪映, bilibili. agent_type: main (this computer's 主agent export) or resident. Do not register one-off tasks. can_dispatch / locked: orchestrator only; omit them to keep the current values. can_dispatch=false stops that agent from opening new sessions; locked=true lets only the orchestrator continue, cancel or open its sessions."""
+        return manager.register_agent(name, role, tags, agent_type, can_dispatch, locked, manager.caller(ctx))
 
     @mcp.tool()
     async def notify_orchestrator(title: str, summary: str, needs_human: bool = False,
@@ -1117,9 +1202,9 @@ def build_app(config):
         return manager.notify(title, summary, needs_human, task_ids, sender=(parent or {}).get('name'))
 
     @mcp.tool()
-    async def remove_agent(name: str) -> dict:
+    async def remove_agent(name: str, ctx: Context = None) -> dict:
         """Remove an agent from this computer's profile (its sessions and history are kept)."""
-        return manager.remove_agent(name)
+        return manager.remove_agent(name, manager.caller(ctx))
 
     @mcp.custom_route('/health', methods=['GET'])
     async def health(request):

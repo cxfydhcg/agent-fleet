@@ -40,6 +40,8 @@ MSG
 
 Talking to an agent other than the configured main agent is the **special case** of bypassing the computer's main agent. Do it when the user names that agent explicitly. To create a brand-new named agent, add `--new` (and optionally `--workspace=<absolute path on that computer>`). Do this only when the user asked for a new agent.
 
+Session ownership: a main agent can continue, cancel or open only the sessions it opened itself; you (the orchestrator) control every session. When the user wants an agent kept out of dispatching, or a resident agent reserved for you, use `describe-agent <电脑> "<Agent名>" --role=... --can-dispatch=off` or `--locked=on` (`on`/`off` to undo; omit to keep). Only do this when the user asks.
+
 ## 3. Report back
 
 - Relay the agent's `reply` faithfully and briefly. Say which computer and agent answered.

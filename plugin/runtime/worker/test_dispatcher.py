@@ -822,6 +822,136 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('paused', self.manager.jobs['wake-1']['latest_message'])
 
 
+
+class SessionControlTests(unittest.IsolatedAsyncioTestCase):
+    """Who may open and control sessions: a main agent only its own ones, the orchestrator (no caller) all."""
+    asyncSetUp, asyncTearDown, add, finish, queued_wakes = (WakeTests.asyncSetUp, WakeTests.asyncTearDown,
+                                                            WakeTests.add, WakeTests.finish, WakeTests.queued_wakes)
+
+    def child(self, name, caller='main-1'):
+        job = self.manager.jobs[self.manager.submit('work', None, 60, None, name=name, parent_task_id=caller)['task_id']]
+        job.update(status='completed', thread_id='T-' + job['task_id'])
+        return job
+
+    async def test_main_agent_controls_only_sessions_it_opened(self):
+        self.main['status'] = 'running'
+        mine = self.child('剪辑')
+        theirs = self.add('orch', 'O', 'completed', name='orchestrator 开的')
+        self.assertEqual(self.manager.public(mine)['owner'], '主agent export')
+        self.assertNotIn('owner', self.manager.public(theirs))
+        for attempt in (lambda: self.manager.submit('more', None, 60, None, resume_task_id='orch', parent_task_id='main-1'),
+                        lambda: self.manager.open_desktop('orch', 'main-1')):
+            with self.assertRaisesRegex(ValueError, 'did not open this session'):
+                attempt()
+        with self.assertRaisesRegex(ValueError, 'did not open this session'):
+            await self.manager.cancel('orch', 'main-1')
+        # A later turn of the same main agent still owns it, through the whole chain of continuations.
+        self.main['status'] = 'completed'
+        later = self.add('main-2', 'P', 'running', workspace=self.main_ws, name='主agent export', resume_task_id='main-1')
+        step = self.manager.submit('more', None, 60, None, resume_task_id=mine['task_id'], parent_task_id='main-2')
+        self.assertEqual(step['owner'], '主agent export')
+        self.assertEqual((await self.manager.cancel(step['task_id'], 'main-2'))['status'], 'cancelled')
+        # The orchestrator keeps full control, and internal wake-ups are not limited.
+        self.manager.submit('more', None, 60, None, resume_task_id='orch')
+        later['status'] = 'completed'
+        self.add('child-x', 'CX', 'running', name='甲', parent_task_id='main-2')
+        self.finish('child-x', 'done')
+        self.assertEqual(len(self.queued_wakes()), 1)
+
+    async def test_can_dispatch_and_locked_are_set_by_the_orchestrator_only(self):
+        self.main['status'] = 'running'
+        owned = self.child('发布员')
+        self.manager.register_agent('发布员', '发布视频', locked=True)
+        self.manager.register_agent('主agent export', '总负责', agent_type='main', can_dispatch=False)
+        with self.assertRaisesRegex(ValueError, 'can_dispatch is off'):
+            self.manager.submit('new', None, 60, None, name='剪辑', parent_task_id='main-1')
+        self.manager.submit('new', None, 60, None, name='剪辑')  # the orchestrator is not limited
+        with self.assertRaisesRegex(ValueError, 'locked'):
+            self.manager.submit('more', None, 60, None, resume_task_id=owned['task_id'], parent_task_id='main-1')
+        with self.assertRaisesRegex(ValueError, 'locked'):
+            await self.manager.cancel(owned['task_id'], 'main-1')
+        self.manager.submit('more', None, 60, None, resume_task_id=owned['task_id'])
+        # The main agent can neither lift its own limit nor touch a locked agent's entry.
+        for attempt in (lambda: self.manager.register_agent('主agent export', '总负责', agent_type='main', can_dispatch=True, caller='main-1'),
+                        lambda: self.manager.register_agent('主agent export', '总负责', agent_type='resident', caller='main-1'),
+                        lambda: self.manager.remove_agent('主agent export', caller='main-1'),
+                        lambda: self.manager.register_agent('发布员', '别的', caller='main-1'),
+                        lambda: self.manager.remove_agent('发布员', caller='main-1')):
+            with self.assertRaises(ValueError):
+                attempt()
+        self.manager.register_agent('主agent export', '总负责（新）', agent_type='main', caller='main-1')  # plain updates still work
+        self.assertIs(self.manager.agent_policy('主agent export')['can_dispatch'], False)
+        self.manager.register_agent('发布员', '发布视频和封面')  # omitted flags are kept
+        self.assertIs(self.manager.agent_policy('发布员')['locked'], True)
+        # Even when allowed to dispatch, it cannot open a new session under a locked agent's name.
+        self.manager.register_agent('主agent export', '总负责', agent_type='main', can_dispatch=True)
+        with self.assertRaisesRegex(ValueError, 'locked agent'):
+            self.manager.submit('new', None, 60, None, name='发布员', parent_task_id='main-1')
+        self.manager.submit('new', None, 60, None, name='剪辑', parent_task_id='main-1')
+
+    async def test_tools_pass_the_caller(self):
+        import server
+        from mcp.server.fastmcp.exceptions import ToolError
+        created = []
+
+        class Recording(server.FastMCP):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                created.append(self)
+        token = Path(self.temp.name) / 'token.txt'
+        token.write_text('t' * 40, encoding='utf-8')
+        with patch('server.FastMCP', Recording):
+            _, self.manager = server.build_app({**self.config, 'token_file': str(token), 'allowed_hosts': []})
+        self.main = self.add('main-1', 'P', 'running', workspace=self.main_ws, name='主agent export')
+        self.add('orch', 'O', 'completed', name='别人的')
+        self.manager.register_agent('主agent export', '总负责', agent_type='main', can_dispatch=False)
+        calls = [('submit_task', {'prompt': 'x'}), ('continue_task', {'task_id': 'orch', 'prompt': 'x'}),
+                 ('cancel_task', {'task_id': 'orch'}), ('open_task', {'task_id': 'orch'}),
+                 ('register_agent', {'name': '主agent export', 'role': 'r', 'agent_type': 'main', 'can_dispatch': True}),
+                 ('remove_agent', {'name': '主agent export'})]
+        with patch.object(server.TaskManager, 'caller', return_value='main-1'):
+            for tool, arguments in calls:
+                with self.assertRaises(ToolError, msg=tool):
+                    await created[0].call_tool(tool, arguments)
+        await created[0].call_tool('register_agent', {'name': '主agent export', 'role': 'r', 'agent_type': 'main', 'can_dispatch': True})
+        self.assertIs(self.manager.agent_policy('主agent export')['can_dispatch'], True)
+
+    async def test_registered_agent_keeps_a_single_session(self):
+        archived = set()
+        self.manager.removed = lambda job: job.get('thread_id') in archived
+        self.main['status'] = 'running'
+        first = self.child('发布员')
+        self.manager.register_agent('发布员', '发布视频')
+        for caller in ('main-1', None):
+            with self.assertRaisesRegex(ValueError, f"task_id={first['task_id']}"):
+                self.manager.submit('again', None, 60, None, name='发布员', parent_task_id=caller)
+        # The main agent finds the session through its profile and continues it instead.
+        [agent] = [a for a in (await self.manager.full_profile())['agents'] if a['name'] == '发布员']
+        self.assertEqual((agent['task_id'], agent['sessions']), (first['task_id'], 1))
+        step = self.manager.submit('more', None, 60, None, resume_task_id=agent['task_id'], parent_task_id='main-1')
+        with self.assertRaisesRegex(ValueError, step['task_id']):  # a queued turn counts too
+            self.manager.submit('again', None, 60, None, name='发布员')
+        # One-off names may repeat, and once the user archives the session a fresh one may start.
+        self.child('剪辑'), self.child('剪辑')
+        self.manager.jobs[step['task_id']]['status'] = 'cancelled'
+        archived.add(first['thread_id'])
+        self.child('发布员')
+
+    async def test_main_agent_name_cannot_be_reused_for_another_session(self):
+        self.manager.removed = lambda job: False
+        self.manager.register_agent('主agent export', '总负责', agent_type='main')
+        with self.assertRaisesRegex(ValueError, 'main-1'):
+            self.manager.submit('pretend', None, 60, None, name='主agent export')
+
+    async def test_header_identifies_the_caller_even_after_a_profile_change(self):
+        from types import SimpleNamespace
+        self.main['status'] = 'running'
+        self.manager.config['main_agent_workspaces'] = []
+        self.manager.register_agent('主agent export', '总负责', agent_type='resident')
+        ctx = SimpleNamespace(request_context=SimpleNamespace(request=SimpleNamespace(headers={'x-agent-fleet-task': 'main-1'})))
+        self.assertEqual(self.manager.caller(ctx), 'main-1')
+
+
 class CodexAppFolderTests(unittest.TestCase):
     """The JSON transform of tools/codex_app_folder.py, without touching real files or processes."""
 

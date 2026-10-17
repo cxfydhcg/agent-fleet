@@ -6,6 +6,10 @@
 //   node fleet.mjs profile  <电脑> [--refresh]         一台电脑的完整档案；--refresh 重新检测硬件（平时不用）
 //   node fleet.mjs describe-computer <电脑> [--role=用途] [--notes=备注] [--software=软件1,软件2]
 //   node fleet.mjs describe-agent <电脑> <Agent名> --role=职责 [--tags=gpu,网页] [--type=main|resident]
+//                                    [--can-dispatch=on|off] [--locked=on|off]
+//                                                     --can-dispatch=off：这个 Agent 不能再开新会话（派新任务）
+//                                                     --locked=on：只有 orchestrator 能续接、取消、打开它的会话，主 Agent 也不行
+//                                                     不加就保持原样；只有 orchestrator 能改这两项
 //   node fleet.mjs remove-agent <电脑> <Agent名>       从档案里去掉（会话和历史保留）
 //   node fleet.mjs watch                              持续盯着所有电脑的新通知，每条输出一行（给后台监视用；从上次看到的位置继续，
 //                                                     位置记在 ~/.agent-fleet/watch-state.json）
@@ -241,15 +245,14 @@ async function wait(taskId) {
   }
 }
 
-// Named sessions the dispatcher knows about: newest finished task per name.
+// Named sessions the dispatcher knows about: newest task per name (newest is the one that is continued).
 async function namedSessions() {
   const { tasks } = await call("list_tasks", { limit: 100 });
   const byName = new Map();
   for (const t of tasks) {
     if (!t.name || !t.thread_id || t.archived) continue; // archived in the Codex app = removed by the user
-    const entry = byName.get(t.name) ?? { latest: null, sessions: new Set(), status: t.status };
+    const entry = byName.get(t.name) ?? { latest: t, sessions: new Set(), status: t.status };
     entry.sessions.add(t.thread_id);
-    if (!entry.latest && TERMINAL.has(t.status)) entry.latest = t;
     byName.set(t.name, entry);
   }
   return byName;
@@ -261,7 +264,7 @@ async function continueWhenFree(taskId, prompt) {
     try {
       return await call("continue_task", { task_id: taskId, prompt });
     } catch (error) {
-      if (!/pending work/.test(error.message)) throw error;
+      if (!/pending work|Wait for the task to finish/.test(error.message)) throw error;
       if (i === 0) console.error("  对方正在处理别的事（例如子任务完成后的自动通知），排队等它空闲...");
       await sleep(5000);
     }
@@ -275,11 +278,12 @@ async function talk(agentName, prompt) {
   if (agent?.last_task_id) {
     started = await continueWhenFree(agent.last_task_id, prompt);
   } else {
-    const found = agent ? null : (await namedSessions()).get(agentName);
+    // Look for an existing session even when the agent is in the registry: a registered agent can't get a second one.
+    const found = (await namedSessions()).get(agentName);
     if (found?.latest) {
       if (found.sessions.size > 1) console.error(`注意：有 ${found.sessions.size} 个叫「${agentName}」的会话，使用最近的一个。`);
       started = await continueWhenFree(found.latest.task_id, prompt);
-      agent = pc.agents[agentName] = {};
+      agent = pc.agents[agentName] = { ...(agent ?? {}) };
     } else if (agent || flag("--new")) {
       const workspace = option("workspace") ?? agent?.workspace;
       started = await call("submit_task", { prompt, name: agentName, ...(workspace ? { workspace } : {}) });
@@ -304,6 +308,13 @@ async function talk(agentName, prompt) {
 
 await connect(pc);
 const list = (value) => value?.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+const toggle = (name) => {
+  const value = option(name)?.toLowerCase();
+  if (value === undefined) return undefined;
+  if (["on", "true", "yes", "1"].includes(value)) return true;
+  if (["off", "false", "no", "0"].includes(value)) return false;
+  throw new Error(`--${name} must be on or off`);
+};
 // Normally unset: Codex's default model, like a new window.
 const modelChoice = () => Object.fromEntries(["model", "effort"].filter((k) => option(k)).map((k) => [k, option(k)]));
 
@@ -313,6 +324,7 @@ switch (cmd) {
     const described = Object.fromEntries((await call("get_profile", {})).agents.map((a) => [a.name, a]));
     const names = [...new Set([...Object.keys(described), ...Object.keys(pc.agents), ...sessions.keys()])];
     out(names.map((n) => ({ agent: n, default: n === mainAgentName(pc), role: described[n]?.role ?? null, tags: described[n]?.tags ?? [],
+                            can_dispatch: described[n]?.can_dispatch ?? true, locked: described[n]?.locked ?? false,
                             long_lived: n in described, status: sessions.get(n)?.status ?? null, sessions: sessions.get(n)?.sessions.size ?? 0 })));
     saveRegistry();
     break;
@@ -328,7 +340,8 @@ switch (cmd) {
     out(await call("update_computer_profile", { role: option("role"), notes: option("notes"), software: list(option("software")) }));
     break;
   case "describe-agent":
-    out(await call("register_agent", { name: rest[0], role: option("role"), tags: list(option("tags")), agent_type: option("type") ?? (rest[0] === mainAgentName(pc) ? "main" : "resident") }));
+    out(await call("register_agent", { name: rest[0], role: option("role"), tags: list(option("tags")), agent_type: option("type") ?? (rest[0] === mainAgentName(pc) ? "main" : "resident"),
+                                       can_dispatch: toggle("can-dispatch"), locked: toggle("locked") }));
     break;
   case "remove-agent":
     out(await call("remove_agent", { name: rest[0] }));

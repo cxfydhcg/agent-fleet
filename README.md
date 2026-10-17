@@ -108,6 +108,11 @@ node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>
 | `watch` | 持续输出所有电脑的新通知（给后台监视用） |
 | `notifications <电脑>` | 读通知全文 |
 | `profile <电脑> [--refresh]` | 一台电脑的完整档案，`--refresh` 重新检测硬件 |
+| `describe-agent <电脑> "<Agent名>" --role=职责 [--can-dispatch=on\|off] [--locked=on\|off]` | 登记 Agent；`--can-dispatch=off` 不让它开新会话，`--locked=on` 只有 orchestrator 能续接/取消/打开它的会话 |
+
+**会话归属**：主 Agent 用 `submit_task` 开的会话归它所有，`continue_task` / `cancel_task` / `open_task` 只对自己开的会话（及其续接）有效；orchestrator 能控制所有会话。`can_dispatch` 和 `locked` 只有 orchestrator 能设置，主 Agent 也不能删掉带这些限制的登记。这些限制针对派任务服务能认出来的主 Agent 调用（Claude 引擎靠每轮的请求头，Codex 靠 turn metadata）；认不出调用者的请求按 orchestrator 处理。它们是管理规则，不是安全边界：拿到令牌的人仍然拥有全部权限。
+
+**同名会话**：登记过的 Agent（常驻或主 Agent）只保留一个会话：已经有会话时，再用这个名字 `submit_task` 会被拒绝，报错里带着该续接的 `task_id`（`get_profile` 里每个 Agent 也有 `task_id`）。用户在 Codex 桌面 App 里归档了旧会话后才能重新开。没登记的一次性任务可以重名。
 
 只读看板：`http://<电脑的 Tailscale 名字>:8766/dashboard`，第一次打开时粘贴那台电脑的令牌。
 

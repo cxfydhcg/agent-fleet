@@ -58,9 +58,11 @@ orchestrator 靠每台电脑的档案来决定把工作交给谁，所以档案�
 
 - 硬件信息是检测一次就保存的，平时不用管。只有硬件或网络确实变了，才用 `get_profile(refresh=true)` 重新检测。
 - 开一个**长期负责某类事**的常驻 Agent 时（比如“B站发布员”），立即用 `register_agent` 登记它。**一次性的子任务不要登记**。
+- **登记过的 Agent 只有一个会话**。再找它时用 `continue_task`，`task_id` 从 `get_profile` 里这个 Agent 的 `task_id` 拿；不要用同一个名字再 `submit_task`，那会被拒绝（报错里会给出该用的 `task_id`）。只有用户在桌面 App 里归档了它的会话，才能用这个名字重新开。
 - 发现软件装上、卸载或更新了，或者账号登录状态变了（比如 B站需要重新登录），顺手用 `update_computer_profile` 更新。
 - 账号只记网站、账号名、登录状态、到期时间和检查时间，**绝不记录密码、令牌或 cookie**。
 - 你自己是本机的主 Agent，登记时用 `agent_type: "main"`。
+- **你只能控制自己开的会话**：`continue_task`、`cancel_task`、`open_task` 只对你用 `submit_task` 开出来的会话（以及它们的续接）有效。orchestrator 直接开的会话、被设成 `locked`（锁定）的 Agent，都会被拒绝；被拒绝时不要换办法绕过，在汇报里说明，由 orchestrator 处理。如果 orchestrator 关掉了你的 `can_dispatch`，`submit_task` 会被拒绝，你只能自己做或在汇报里说明。`can_dispatch` 和 `locked` 只有 orchestrator 能改。
 - **只有你能改档案和派任务**。子任务被告知不能调用派任务服务，所以需要子任务帮忙收集档案信息时，让它在最终回复里列出结果，由你来调用 `update_computer_profile` 或 `register_agent` 写入。
 
 ## 必须遵守：派完就结束本轮，不要等待
