@@ -21,7 +21,9 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $path=Join-Path $DataDir 'connection.json'
 $connection=@{name='fixture-pc';engine=$Engine;main_agent_name=$MainAgentName;token='fixture-role-token';local_url='http://127.0.0.1:18765/mcp';tailscale_url='';main_agent_workspace=(Join-Path $DataDir 'main')}
 [System.IO.File]::WriteAllText($path,($connection|ConvertTo-Json),(New-Object System.Text.UTF8Encoding $false))
-@{status='service-ready';engine=$Engine;connection_file=$path} | ConvertTo-Json
+$client=Join-Path $DataDir 'local-client'; New-Item -ItemType Directory -Force -Path $client | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $client 'computers.json'),'{"computers":{}}',(New-Object System.Text.UTF8Encoding $false))
+@{status='service-ready';engine=$Engine;connection_file=$path;client_home=$client;workspace=(Join-Path $DataDir 'workspace')} | ConvertTo-Json
 '''
 
 
@@ -79,6 +81,9 @@ class RoleSetupTests(unittest.TestCase):
         self.assertTrue((self.data / 'connection.json').exists())
         self.assertFalse(self.home.exists())
         self.assertEqual(self.result(result.stdout)['worker']['engine'], 'claude')
+        # The worker's own client treats its workspace as the orchestrator folder.
+        local = json.loads((self.data / 'local-client/computers.json').read_text(encoding='utf-8'))
+        self.assertEqual(Path(local['orchestrator_workspace']), (self.data / 'workspace').resolve())
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_both_registers_its_worker_locally_without_exposing_token(self):

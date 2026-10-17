@@ -11,7 +11,7 @@ const FLEET = resolve('plugin/skills/call-agent/fleet.mjs');
 
 // A dispatcher that finishes every task at once and records what was started.
 async function fakeDispatcher() {
-  const started = [], tasks = [];
+  const started = [], tasks = [], prompts = [];
   const server = createServer(async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
@@ -23,6 +23,7 @@ async function fakeDispatcher() {
     if (tool === 'get_profile') return result({ main_agent: { id: 'main-1', name: '主agent export' }, agents: [] });
     if (tool === 'list_tasks') return result({ tasks });
     if (tool === 'submit_task' || tool === 'continue_task') {
+      prompts.push(args.prompt);
       const task = { task_id: `t${tasks.length + 1}`, name: args.name ?? tasks.find((t) => t.task_id === args.task_id)?.name,
                      thread_id: `th-${args.name ?? args.task_id}`, status: 'completed', result: 'ok' };
       tasks.unshift(task);
@@ -34,7 +35,7 @@ async function fakeDispatcher() {
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  return { server, started, url: `http://127.0.0.1:${server.address().port}/mcp` };
+  return { server, started, prompts, url: `http://127.0.0.1:${server.address().port}/mcp` };
 }
 
 function fleet(args, { cwd, env }) {
@@ -76,6 +77,13 @@ test('only the orchestrator folder reaches the main agent; other sessions get th
   assert.equal(worker.started.at(-1).name, own);
   assert.equal(worker.started.length, first + 1);
   assert.ok(!worker.started.slice(1).some((s) => s.name === '主agent export'), 'no other session reached the main agent');
+
+  // The installation check reaches the main agent from any session, and carries only its fixed message.
+  run = await fleet(['check', 'pc-1', 'do something else'], { cwd: project, env: session });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(worker.started.at(-1), { tool: 'submit_task', name: '主agent export' });
+  assert.match(worker.prompts.at(-1), /^Installation check: reply with exactly OK/);
+  assert.doesNotMatch(worker.prompts.at(-1), /do something else/);
 
   // Without a session id there is nothing to name the agent after.
   run = await fleet(['export', 'pc-1', 'hello'], { cwd: project, env: base });

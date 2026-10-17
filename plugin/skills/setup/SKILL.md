@@ -162,10 +162,12 @@ To register another worker later, rerun with `--role orchestrator --connection`
   or Tailscale for remote mode. Never create an API key or print credentials. If
   sign-in is missing, finish what setup can do, state the required human action,
   and rerun setup after sign-in rather than retrying unauthenticated requests.
-- Send each new or changed worker's main agent, via main-agent (this computer) or
-  call-agent (another computer): `Installation check: reply with exactly OK. Do
-  not use tools or dispatch child tasks.` Report the actual status and reply;
-  service-ready or HTTP health is not proof of a successful model turn.
+- Check each new or changed worker's main agent with `fleet.mjs check <computer>`,
+  through main-agent's client (this computer) or call-agent's (another computer).
+  It sends a fixed "reply with exactly OK" message straight to the main agent
+  from any session; don't use `export` for this, which from a session outside the
+  orchestrator folder goes to that session's own agent instead. Report the actual
+  status and reply; service-ready or HTTP health is not proof of a successful model turn.
 - For an orchestrator, run call-agent's `fleet.mjs overview`. With no workers
   registered, explain that the orchestrator is ready and needs a worker's
   connection file, which a worker setup on the other computer creates. The user

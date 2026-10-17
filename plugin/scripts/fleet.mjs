@@ -34,6 +34,8 @@
 //   node fleet.mjs export   <电脑> <消息> [--title=任务名] [--from=会话]
 //                                                     orchestrator 会话：发给那台电脑的主 Agent。其他会话：发给本会话自己的 Agent，
 //                                                     第一次用 --title 的名字新建（重名自动加序号），之后同一个会话一直续接它。
+//   node fleet.mjs check    <电脑>                    安装检查：让主 Agent 只回复 OK（不用工具、不派子任务）。任何会话都可以用，
+//                                                     消息固定，不能夹带别的内容。
 //   node fleet.mjs submit   <电脑> <prompt> [--name=会话名] [--wait] [--model=模型] [--effort=档位]   直接开新任务（特殊情况用）
 //   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
 //                                                     --model/--effort 平时不加；只在会话一直报 "Selected model is at capacity"
@@ -769,6 +771,11 @@ switch (cmd) {
     break;
   case "export":
     await talkMainOrOwn(rest.join(" "));
+    break;
+  case "check":
+    // Setup verifies the main agent from whatever session runs it, so this one fixed message is exempt from the
+    // orchestrator-only rule; it cannot carry anything else.
+    await talkMain("Installation check: reply with exactly OK. Do not use tools or dispatch child tasks.");
     break;
   case "set-manager-name": {
     const name = (rest[0] ?? "").trim();
