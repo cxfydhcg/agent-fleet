@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureDesktopProject } from './setup-desktop.mjs';
+import { ensureDesktopProjects } from './setup-desktop.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const values = new Map();
 const flags = new Set();
-const booleans = new Set(['plan', 'local', 'full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop']);
+const booleans = new Set(['plan', 'local', 'full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop', 'desktop-only']);
 const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
   'codex-executable', 'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
 const argv = process.argv.slice(2);
@@ -22,6 +22,34 @@ for (let i = 0; i < argv.length; i++) {
 }
 const role = values.get('role');
 if (!['orchestrator', 'worker', 'both'].includes(role)) fail('Choose a role: orchestrator, worker, or both.');
+// Repair sidebar visibility without redeploying/restarting a worker or changing
+// its permissions, identity, connectivity, registry or pairing window.
+if (flags.has('desktop-only')) {
+  if (role === 'orchestrator') fail('--desktop-only requires an installed worker (worker or both). / 此选项仅用于已安装的工作端。');
+  const allowedValues = new Set(['role', 'data-dir', 'language']);
+  if ([...values.keys()].some(key => !allowedValues.has(key)) ||
+      [...flags].some(key => !['desktop-only', 'plan', 'no-desktop'].includes(key)))
+    fail('--desktop-only accepts only --role, --data-dir, --language, --plan and --no-desktop. / 此模式不能修改工作端设置。');
+  if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en. / 语言必须为 zh 或 en。');
+  const defaultData = process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support', 'agent-fleet')
+    : process.platform === 'win32' && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agent-fleet') : null;
+  if (!values.has('data-dir') && !defaultData) fail('Pass --data-dir for this platform. / 此平台需要指定 --data-dir。');
+  const configPath = join(resolve(values.get('data-dir') || defaultData), 'config.json');
+  if (!existsSync(configPath)) fail('No installed worker configuration was found. / 找不到已安装的工作端配置。');
+  const config = JSON.parse(readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
+  if (typeof config.tasks_dir !== 'string' || !isAbsolute(config.tasks_dir)) fail('Worker tasks_dir must be absolute. / 工作端任务目录必须是绝对路径。');
+  const workspace = dirname(config.tasks_dir);
+  if (flags.has('plan')) {
+    console.log(JSON.stringify({ role, plan: true, desktop_only: true, workspace,
+      other_workspace: config.codex_app_folders && config.codex_app_register_other_project !== false &&
+        config.executor !== 'claude' && config.engine !== 'claude' ? config.tasks_dir : null }, null, 2));
+  } else {
+    const desktop = await ensureDesktopProjects({ workspace, workerConfig: config, disabled: flags.has('no-desktop') });
+    console.log(JSON.stringify({ role, desktop_only: true,
+      status: desktop.status === 'pending' ? 'desktop-setup-pending' : desktop.status === 'registered' ? 'setup-complete' : desktop.status, desktop }, null, 2));
+  }
+  process.exit(0);
+}
 if (values.has('engine') && !['codex', 'claude'].includes(values.get('engine'))) fail('Engine must be codex or claude.');
 if (values.has('connectivity') && !['local', 'tailscale', 'lan'].includes(values.get('connectivity'))) fail('Connectivity must be local, tailscale or lan.');
 if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--lan-address requires --connectivity lan.');
@@ -134,7 +162,11 @@ if (role !== 'worker') {
   }
   if (values.has('connection')) run(process.execPath, [setup, ...place, '--connection', resolve(values.get('connection')), ...(flags.has('local') ? ['--local'] : []), '--no-desktop'], env);
 }
-const desktop = await ensureDesktopProject({workspace: values.get('workspace') || worker?.workspace || join(homedir(),'Documents','AgentFleet'), disabled:flags.has('no-desktop')});
+const workerConfigPath = worker?.data_dir ? join(worker.data_dir, 'config.json') : null;
+const workerConfig = workerConfigPath && existsSync(workerConfigPath)
+  ? JSON.parse(readFileSync(workerConfigPath, 'utf8').replace(/^\uFEFF/, '')) : undefined;
+const desktop = await ensureDesktopProjects({workspace: values.get('workspace') || worker?.workspace || join(homedir(),'Documents','AgentFleet'),
+  workerConfig, disabled:flags.has('no-desktop')});
 if (worker) worker.desktop = desktop;
 console.log(JSON.stringify({ role, status: desktop.status === 'pending' ? 'desktop-setup-pending' : 'setup-complete', desktop, ...(worker ? { worker } : {}),
   ...(role !== 'worker' ? { registry_home: registryHome } : {}) }, null, 2));

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve, join, normalize, win32 } from 'node:path';
+import { resolve, join, normalize, win32, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +11,25 @@ export const projectForWorkspace = (state, workspace, platform = process.platfor
 };
 
 export const desktopWorkspaceUrl = workspace => 'codex://new?path=' + encodeURIComponent(workspace);
+
+// Registration belongs to the running app. The dispatcher's offline thread
+// sorter must not be responsible for making the second project visible.
+export async function ensureDesktopProjects({ workspace, workerConfig, disabled = false }, runtime = {}) {
+  const folders = workerConfig?.codex_app_folders;
+  const otherEnabled = !!folders && workerConfig.codex_app_register_other_project !== false &&
+    workerConfig.executor !== 'claude' && workerConfig.engine !== 'claude' && !disabled;
+  if (otherEnabled && (typeof workerConfig.tasks_dir !== 'string' || !isAbsolute(workerConfig.tasks_dir)))
+    throw new Error('Worker tasks_dir must be absolute. / 工作端任务目录必须是绝对路径。');
+  const main = await ensureDesktopProject({ workspace, disabled }, runtime);
+  if (!otherEnabled) return main;
+  const other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir, disabled }, runtime);
+  const projects = { main, other };
+  // Keep the main project's existing top-level fields for older callers, but
+  // never report successful registration if either project is still pending.
+  const incomplete = Object.values(projects).find(project => project.status !== 'registered');
+  return { ...main, status: incomplete?.status || 'registered', projects,
+    ...(incomplete?.message ? { message: incomplete.message } : {}) };
+}
 
 export async function ensureDesktopProject({ workspace, disabled = false }, runtime = {}) {
   if (disabled) return { status: 'disabled' };

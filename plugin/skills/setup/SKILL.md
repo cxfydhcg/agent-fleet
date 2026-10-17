@@ -178,6 +178,15 @@ To register another worker later, rerun with `--role orchestrator --connection`
 
 ## 7. Desktop app visibility
 
+- Codex workers register both the main workspace and `tasks_dir` through the app
+  during setup, unless `codex_app_register_other_project` is `false`. Respect that
+  opt-out. When both are enabled, check both entries in `desktop.projects`; a
+  registered main project alone is not complete. Existing workers can repair only this step with
+  `node "<plugin-root>/scripts/setup.mjs" --role worker --language zh --desktop-only`
+  (use the configured language and `--data-dir` if custom). Preview with `--plan`.
+  This does not restart the service or change permissions, identity or pairing.
+  The app may initially name the second project `tasks`; do not claim it has the
+  configured display name unless verified. Existing user-chosen names are kept.
 - Setup registers the workspace under Projects in Codex desktop on Windows and macOS and
   reports `desktop.status`, including when it reuses an existing worker. Verify
   `registered` and the path with the app's project-list tool when available;

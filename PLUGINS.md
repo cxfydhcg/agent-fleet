@@ -65,8 +65,8 @@ node <repository>/plugin/scripts/start.mjs
 It checks authenticated health, reuses an already-running service, and prints the local dashboard URL.
 Use `--config PATH` (or `AGENT_FLEET_CONFIG`) for a custom data directory. No token appears in output.
 
-Setup also adds the workspace to the Windows Codex desktop sidebar as a local
-project, and verifies its saved registration. It uses the app's workspace URL;
+Setup adds both a Codex worker's workspace and its configured `tasks_dir` to the
+Windows/macOS desktop sidebar and verifies both registrations. It uses the app's workspace URL;
 it does not edit the running app's internal state file or open a live worker
 session. This also runs when setup reuses an existing worker.
 In Codex desktop, the setup skill also reads and pins the verified main-agent
@@ -74,6 +74,26 @@ chat when app tools are available, so it is visible under its configured name.
 It preserves the same session and never opens it. Claude worker chats remain in
 the worker dashboard. A sidebar project and a visible main-agent chat are checked
 separately.
+
+Repair only these project registrations for an installed worker, without
+redeploying or restarting the service, changing permissions, or reopening pairing:
+
+```text
+node <repository>/plugin/scripts/setup.mjs --role worker --language zh --desktop-only --plan
+node <repository>/plugin/scripts/setup.mjs --role worker --language zh --desktop-only
+```
+
+Use the installed language and `--data-dir PATH` for a custom data directory.
+Both results appear under `desktop.projects`. If either remains pending, overall
+registration is pending. Registration preserves existing project names; the app
+may initially call the other project `tasks`. The user can rename that project
+to `AgentFleet-其他` or `AgentFleet-Other` in the sidebar. Session sorting still
+runs separately while the app is closed.
+
+Set `codex_app_register_other_project` to `false` in the worker config to opt out
+of registering the tasks directory during setup/desktop repair. This preserves
+the user's removal of that sidebar project without changing task storage or the
+separate offline session sorter.
 
 For orchestrator-only setup, the public project folder defaults to
 `Documents/AgentFleet`; `--workspace PATH` chooses a different folder. Private
