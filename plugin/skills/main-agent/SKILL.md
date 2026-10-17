@@ -34,8 +34,8 @@ Use `list`, `get`, `notifications`, or another `export` message to check outcome
 For model/effort overrides use the client's documented submit/continue arguments
 only when the user requested them. Do not mix session IDs between engines.
 
-During installation verification, send `Reply with exactly OK. Do not use tools
-or dispatch child tasks.` Confirm a completed result. Report failures honestly;
+During installation verification, run `node "<plugin-root>/scripts/fleet.mjs" check "<computer>"`;
+it reaches the main agent from any session. Confirm a completed `OK` result. Report failures honestly;
 do not mark a queued response as success. Missing login requires the owner.
 
 For viewing use the dashboard URL from setup (default

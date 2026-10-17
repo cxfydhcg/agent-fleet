@@ -13,7 +13,7 @@ def write_json(path, value):
 
 def build():
     root = ROOT / 'plugin'
-    metadata = dict(name='agent-fleet', version='0.6.5',
+    metadata = dict(name='agent-fleet', version='0.6.6',
                     description='Set up this computer as an orchestrator, worker, or both in Codex or Claude Code.')
     extension = dict(onboardingSkill='./skills/setup/SKILL.md', interface=dict(
         displayName='Agent Fleet', shortDescription=metadata['description'],

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +108,18 @@ if (flags.has('plan')) {
     desktop: { enabled: !flags.has('no-desktop'), workspace: values.get('workspace') || worker?.workspace || join(homedir(),'Documents','AgentFleet') },
     ...(role !== 'worker' ? { orchestrator: { registry_home: registryHome, local_worker_registration: role === 'both', connection_file: values.get('connection') || null } } : {}) }, null, 2));
   process.exit(0);
+}
+// The worker's own client (main-agent skill) treats sessions in the worker's workspace as the orchestrator session,
+// so its main agent stays reachable from there instead of falling back to a default folder.
+if (worker?.client_home && worker.workspace) {
+  const local = join(worker.client_home, 'computers.json');
+  if (existsSync(local)) {
+    const saved = JSON.parse(readFileSync(local, 'utf8').replace(/^\uFEFF/, ''));
+    if (saved.orchestrator_workspace !== resolve(worker.workspace)) {
+      saved.orchestrator_workspace = resolve(worker.workspace);
+      writeFileSync(local, JSON.stringify(saved, null, 2) + '\n');
+    }
+  }
 }
 if (role !== 'worker') {
   const env = { ...process.env, AGENT_FLEET_HOME: registryHome };
