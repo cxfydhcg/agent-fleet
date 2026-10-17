@@ -85,4 +85,18 @@ test('only the orchestrator folder reaches the main agent; other sessions get th
   assert.equal(run.code, 0, run.stderr);
   assert.equal(worker.started.at(-1).name, `${basename(project)} · nightly`);
   assert.ok(JSON.parse(readFileSync(join(home, 'computers.json'), 'utf8')).computers['pc-1'].agents[own], 'registry remembers the agent');
+
+  // A titled session is named after its task; a second session with the same title gets a number.
+  const titled = { ...base, CLAUDE_CODE_SESSION_ID: 'titled-session-1' };
+  run = await fleet(['export', 'pc-1', 'hello', '--title=系统设置截图'], { cwd: project, env: titled });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(worker.started.at(-1), { tool: 'submit_task', name: '系统设置截图' });
+  run = await fleet(['export', 'pc-1', 'hello', '--title=系统设置截图'], { cwd: project, env: { ...base, CLAUDE_CODE_SESSION_ID: 'titled-session-2' } });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(worker.started.at(-1), { tool: 'submit_task', name: '系统设置截图 2' });
+  // Later sends from the first session find its agent without a title, and a new title doesn't rename it.
+  run = await fleet(['export', 'pc-1', 'more', '--title=别的名字'], { cwd: project, env: titled });
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(worker.started.at(-1).tool, 'continue_task');
+  assert.equal(worker.started.at(-1).name, '系统设置截图');
 });
