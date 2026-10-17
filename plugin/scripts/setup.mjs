@@ -112,13 +112,15 @@ if (flags.has('plan')) {
 if (role !== 'worker') {
   const env = { ...process.env, AGENT_FLEET_HOME: registryHome };
   const setup = join(root, 'scripts/setup-orchestrator.mjs');
-  run(process.execPath, [setup, '--no-desktop'], env);
+  // The project folder the orchestrator session works in; only sessions there may talk to main agents.
+  const place = ['--workspace', resolve(values.get('workspace') || worker?.workspace || join(homedir(), 'Documents', 'AgentFleet'))];
+  run(process.execPath, [setup, ...place, '--no-desktop'], env);
   if (values.has('language')) run(process.execPath, [join(root, 'skills/call-agent/fleet.mjs'), 'language', values.get('language')], env);
   if (role === 'both') {
     if (!worker.connection_file || !existsSync(worker.connection_file)) throw new Error('Worker connection file is missing; no local worker was registered.');
-    run(process.execPath, [setup, '--connection', worker.connection_file, '--local', '--no-desktop'], env);
+    run(process.execPath, [setup, ...place, '--connection', worker.connection_file, '--local', '--no-desktop'], env);
   }
-  if (values.has('connection')) run(process.execPath, [setup, '--connection', resolve(values.get('connection')), ...(flags.has('local') ? ['--local'] : []), '--no-desktop'], env);
+  if (values.has('connection')) run(process.execPath, [setup, ...place, '--connection', resolve(values.get('connection')), ...(flags.has('local') ? ['--local'] : []), '--no-desktop'], env);
 }
 const desktop = await ensureDesktopProject({workspace: values.get('workspace') || worker?.workspace || join(homedir(),'Documents','AgentFleet'), disabled:flags.has('no-desktop')});
 if (worker) worker.desktop = desktop;

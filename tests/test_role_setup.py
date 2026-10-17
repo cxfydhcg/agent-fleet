@@ -67,6 +67,8 @@ class RoleSetupTests(unittest.TestCase):
         result = self.run_setup('--role','orchestrator')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.home / 'computers.json').exists())
+        saved = json.loads((self.home / 'computers.json').read_text(encoding='utf-8'))
+        self.assertEqual(Path(saved['orchestrator_workspace']), Path.home() / 'Documents' / 'AgentFleet')
         self.assertFalse(self.data.exists())
         self.assertEqual(self.result(result.stdout)['role'], 'orchestrator')
 

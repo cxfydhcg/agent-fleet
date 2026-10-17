@@ -46,7 +46,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { basename, join, relative, resolve, isAbsolute } from "node:path";
 
 const MAIN_AGENT = "主agent export";
 const validAgentName = (name) => typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 100 && !/[\u0000-\u001f\u007f]/.test(name) && !name.trim().startsWith('--') && !['__proto__', 'constructor', 'prototype'].includes(name.trim());
@@ -83,6 +83,25 @@ function resolveComputer(key) {
                                                      registry.computers[n].main_agent_id === key.trim()) ?? key;
 }
 const computer = cmd === "add-computer" ? computerArg : resolveComputer(computerArg);
+
+// Only the orchestrator session, the one working in the orchestrator's project folder, talks to main agents.
+// Any other session gets its own agent on the worker, created on first use and reused afterwards; the worker
+// files it under its "other" folder.
+const orchestratorWorkspace = resolve(registry.orchestrator_workspace || join(homedir(), "Documents", "AgentFleet"));
+const within = (dir, root) => {
+  const path = relative(process.platform === "linux" ? root : root.toLowerCase(), process.platform === "linux" ? dir : dir.toLowerCase());
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+};
+const isOrchestrator = within(resolve(process.cwd()), orchestratorWorkspace);
+function callerAgentName() {
+  const id = option("from")?.trim() || (process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || "").slice(0, 8);
+  if (!id) {
+    console.error(T(`这个会话不在 orchestrator 文件夹（${orchestratorWorkspace}）里，不能直接找主 Agent。加 --from=<本会话的名字或 ID>，任务会交给这个会话自己的 Agent。`,
+                    `This session is outside the orchestrator folder (${orchestratorWorkspace}), so it cannot reach main agents. Add --from=<this session's name or id> to use this session's own agent.`));
+    process.exit(2);
+  }
+  return `${basename(process.cwd()) || "session"} · ${id}`.slice(0, 100);
+}
 // Management names are how people and the orchestrator call a main agent, so they must not collide with
 // another computer's name or management name.
 function managerNameConflict(name, self) {
@@ -596,10 +615,18 @@ async function talkMain(prompt) {
 }
 
 function talk(agentName, prompt) {
-  return agentName === mainAgentName(pc) || (pc.manager_name && agentName === pc.manager_name) ? talkMain(prompt) : talkNamed(agentName, prompt);
+  return agentName === mainAgentName(pc) || (pc.manager_name && agentName === pc.manager_name) ? talkMainOrOwn(prompt) : talkNamed(agentName, prompt);
 }
 
-async function talkNamed(agentName, prompt) {
+function talkMainOrOwn(prompt) {
+  if (isOrchestrator) return talkMain(prompt);
+  const own = callerAgentName();
+  console.error(T(`这个会话不是 orchestrator 会话，任务不经过主 Agent，交给本会话自己的 Agent「${own}」（在 ${computer} 的「其他」文件夹里）。`,
+                  `This is not the orchestrator session, so the task skips the main agent and goes to this session's own agent "${own}" (in ${computer}'s "other" folder).`));
+  return talkNamed(own, prompt, true);
+}
+
+async function talkNamed(agentName, prompt, create = flag("--new")) {
   let agent = pc.agents[agentName];
   let started;
   if (agent?.last_task_id) {
@@ -612,7 +639,7 @@ async function talkNamed(agentName, prompt) {
                                                    `Note: ${found.sessions.size} sessions are named "${agentName}"; using the newest.`));
       started = await continueWhenFree(found.latest.task_id, prompt);
       agent = pc.agents[agentName] = { ...(agent ?? {}) };
-    } else if (agent || flag("--new")) {
+    } else if (agent || create) {
       const workspace = option("workspace") ?? agent?.workspace;
       started = await call("submit_task", { prompt, name: agentName, ...(workspace ? { workspace } : {}) });
       agent = pc.agents[agentName] = { ...(agent ?? {}), ...(workspace ? { workspace } : {}) };
@@ -685,7 +712,7 @@ switch (cmd) {
     await talk(rest[0], rest.slice(1).join(" "));
     break;
   case "export":
-    await talkMain(rest.join(" "));
+    await talkMainOrOwn(rest.join(" "));
     break;
   case "set-manager-name": {
     const name = (rest[0] ?? "").trim();
