@@ -9,15 +9,15 @@ Install **one plugin**, then run setup and choose this computer's role:
 | Both | Set up the worker and orchestrator, and register this worker locally automatically. |
 
 The same plugin works in Codex and Claude Code. For a worker, separately choose
-whether its main agent and tasks run Codex or Claude Code. It includes four skills:
-setup, pair, main-agent and call-agent. Setup is the single entry point: it asks whether
+whether its main agent and tasks run Codex or Claude Code. It includes five skills:
+setup, start, pair, main-agent and call-agent. Setup is the installation entry point: it asks whether
 this computer controls other agents, is controlled by another computer, or both,
 and also handles registering workers, renames, reconfiguration and repairs.
 
-## Install the local version
+## Install
 
-Use the actual absolute path to this folder wherever <repository> appears.
-These changes have not been published to GitHub yet, so use the local folder.
+Use `cxfydhcg/agent-fleet` as the marketplace source for the published plugin.
+For development, use the actual absolute path to this folder wherever <repository> appears.
 
 On Windows, the included helper installs the single plugin:
 
@@ -50,10 +50,20 @@ In a new Codex chat, ask "Use Agent Fleet setup." Choose orchestrator, worker,
 or both when prompted. If your client shows a setup/onboarding button, that button
 uses the same setup skill. Installation itself does not choose a role.
 
-Once published, replace the local marketplace path with cxfydhcg/agent-fleet.
+For the published version, replace the local marketplace path with cxfydhcg/agent-fleet.
 The plugin keeps the existing agent-fleet identity and call-agent command.
 
 ## Run role setup directly
+
+For an installed worker, use `$agent-fleet:start` in Codex or `/agent-fleet:start` in Claude Code
+to start the service without reinstalling or changing configuration. The direct command is:
+
+```text
+node <repository>/plugin/scripts/start.mjs
+```
+
+It checks authenticated health, reuses an already-running service, and prints the local dashboard URL.
+Use `--config PATH` (or `AGENT_FLEET_CONFIG`) for a custom data directory. No token appears in output.
 
 Setup also adds the workspace to the Windows Codex desktop sidebar as a local
 project, and verifies its saved registration. It uses the app's workspace URL;
@@ -190,6 +200,7 @@ After changing shared runtime or the legacy fleet client, run:
 python tools/build_plugins.py
 python -m unittest discover -s worker -p "test_*.py"
 python -m unittest discover -s tests -p "test_*.py"
+node --test tests/test_service_start.mjs
 claude plugin validate .
 claude plugin validate plugin
 ```

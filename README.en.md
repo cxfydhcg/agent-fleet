@@ -76,6 +76,10 @@ To pair again later (code expired, a new computer, a changed IP), use the pair s
 
 ## Usage
 
+To start this computer's installed worker, use `$agent-fleet:start` in Codex or
+`/agent-fleet:start` in Claude Code, or ask to start the Agent Fleet service. It keeps the existing
+configuration, checks service readiness, and reuses a running service without rerunning setup.
+
 On the orchestrator, just say things like:
 
 > Have 【Manager Cris】 edit today's video and put it in the shared folder

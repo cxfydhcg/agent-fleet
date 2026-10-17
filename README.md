@@ -76,6 +76,10 @@ Claude Code：在对话框里输入
 
 ## 使用
 
+本机工作端服务停了时，在 Codex 中用 `$agent-fleet:start`，或在 Claude Code 中用
+`/agent-fleet:start`；也可以直接说“启动 Agent Fleet 服务”。它沿用已有配置，启动后检查服务
+是否就绪，无需重新 setup；服务已经运行时会直接复用。
+
 在管理端直接说，例如：
 
 > 让【经理cris】把今天的视频剪好，放到 shared 文件夹
