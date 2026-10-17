@@ -66,6 +66,10 @@ class Setup:
         self.connectivity = a.connectivity or ('lan' if prior.get('lan_url') else
                                                'tailscale' if prior.get('remote_url') and not prior.get('local_only') else 'local')
         self.workspace = Path(a.workspace or (Path(prior['tasks_dir']).parent if prior.get('tasks_dir') else Path.home() / 'AgentFleet')).expanduser().resolve()
+        # Keep an existing task directory across reinstalls. New installations
+        # use the same localized name for the real directory and desktop project.
+        self.tasks_dir = (self.workspace / Path(prior['tasks_dir']).name if prior.get('tasks_dir') else
+                          self.workspace / self.t('AgentFleet-其他', 'AgentFleet-Other'))
         self.name = a.name or prior.get('computer_name') or default_name()
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.name):
             self.fail('电脑名只能用字母、数字、点、下划线和连字符，并以字母或数字开头。',
@@ -96,7 +100,7 @@ class Setup:
     def plan(self):
         return {'platform': 'macos', 'engine': self.engine, 'connectivity': self.connectivity, 'lan_address': self.lan_address,
                 'computer': self.name, 'main_agent_name': self.main_name, 'manager_name': self.manager_name, 'language': self.language,
-                'workspace': str(self.workspace), 'data_dir': str(self.data), 'full_access': self.full_access,
+                'workspace': str(self.workspace), 'tasks_dir': str(self.tasks_dir), 'data_dir': str(self.data), 'full_access': self.full_access,
                 'existing': bool(self.prior), 'autostart': not self.args.no_autostart}
 
     # --- steps --------------------------------------------------------------------------------------
@@ -162,7 +166,7 @@ class Setup:
 
     def python_environment(self):
         self.step('准备 Python 环境', 'Preparing the Python environment')
-        for folder in (self.data / 'state', self.workspace / 'tasks', self.workspace / 'shared'):
+        for folder in (self.data / 'state', self.tasks_dir, self.workspace / 'shared'):
             folder.mkdir(parents=True, exist_ok=True)
         venv = self.data / 'venv'
         self.python = venv / 'bin' / 'python'
@@ -222,7 +226,7 @@ class Setup:
                            'Sub-tasks use the Codex workspace-write sandbox; extra permissions are not approved automatically.'))
             text = template.replace('\\', '/')  # the template's folder references use Windows separators
             for key, value in (('COMPUTER_NAME', self.name), ('WORKSPACE', str(self.workspace)), ('AGENT_ENGINE', self.engine),
-                               ('MAIN_AGENT_NAME', self.main_name), ('PERMISSION_NOTE', note)):
+                               ('MAIN_AGENT_NAME', self.main_name), ('TASKS_DIR_NAME', self.tasks_dir.name), ('PERMISSION_NOTE', note)):
                 text = text.replace('{{' + key + '}}', value)
             agents.write_text(text, encoding='utf-8')
         if not (self.main_workspace / 'CLAUDE.md').exists():
@@ -269,7 +273,7 @@ class Setup:
             'codex_launcher_args': [], 'codex_version': self.args.codex_version if self.engine == 'codex' else None,
             'tailscale_executable': self.tailscale_executable, 'state_dir': str(self.data / 'state'),
             'token_file': str(self.token_file), 'worker_rules_file': str(self.workspace / 'worker-rules.md'),
-            'tasks_dir': str(self.workspace / 'tasks'), 'shared_dir': str(self.workspace / 'shared'),
+            'tasks_dir': str(self.tasks_dir), 'shared_dir': str(self.workspace / 'shared'),
             'allowed_roots': [str(self.workspace)], 'allowed_hosts': hosts, 'main_agent_workspaces': [str(self.main_workspace)],
             'executor': 'claude' if self.engine == 'claude' else 'app-server', 'engine': self.engine,
             'claude_executable': self.claude or '', 'local_only': self.connectivity != 'tailscale',

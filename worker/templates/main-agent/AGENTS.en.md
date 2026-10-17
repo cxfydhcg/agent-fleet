@@ -30,7 +30,7 @@ When a sub-task fails, judge the cause yourself: you can adjust the requirements
 The workspace for the agents on this computer is `{{WORKSPACE}}`:
 
 - `main-agent\`: your own working directory.
-- `tasks\`: one folder per sub-task, named "date_taskname_number". **Don't specify `workspace`** when dispatching; the service creates it automatically.
+- `{{TASKS_DIR_NAME}}\`: one folder per sub-task, named "date_taskname_number". **Don't specify `workspace`** when dispatching; the service creates it automatically.
 - `shared\`: where sub-tasks hand files to each other. When one sub-task's output must go to the next sub-task, have the first one put the files in a subfolder of `shared\` named after the piece of work (for example `shared\2026-10-12-todays-video\`), and write the full path in the prompt for the next sub-task. Files for the user go here too; give the path in your report.
 
 ## Available tools: codex_tasks (this computer's dispatcher)

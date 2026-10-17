@@ -15,7 +15,7 @@ Ask the user which role this computer should have; it can have both:
 2. From the repo root, run: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install-worker.ps1 [-FullAccess] -Description "<what this computer is for>"`
    It installs missing Node.js / Python / Tailscale (via winget) and the Codex CLI. It also deploys the dispatcher, creates the computer's main agent ("主agent export") and adds autostart at logon.
 3. Two steps need the human, and you cannot do them: **signing in to Tailscale** (the tray app, or `tailscale up`) and **signing in to Codex** (`codex login`). If the script warns about either, ask the user to do it, then re-run the script.
-   The agents' working area is `%USERPROFILE%\AgentFleet\` (`main-agent\`, `tasks\`, `shared\`); pass `-Workspace <path>` to put it elsewhere, e.g. on a bigger disk for video work.
+   The agents' working area is `%USERPROFILE%\AgentFleet\` (`main-agent\`, `AgentFleet-其他\` or `AgentFleet-Other\`, `shared\`); pass `-Workspace <path>` to put it elsewhere, e.g. on a bigger disk for video work.
 4. The script writes `%LOCALAPPDATA%\agent-fleet\connection.json`. It contains this computer's **token**: never print it, paste it into chat, or commit it. Tell the user to copy the file to their orchestrator computer.
 
 ### Worker (macOS)

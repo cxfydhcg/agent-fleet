@@ -230,8 +230,28 @@ class PluginSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout[result.stdout.rindex('{\n  "role"'):])['worker']
         self.assertEqual((value['connectivity'], value['lan_address'], value['main_agent_name']), ('lan', '192.0.2.10', 'Main agent'))
+        self.assertEqual(Path(value['tasks_dir']), workspace / 'AgentFleet-Other')
+        result = run('--language', 'zh')
+        value = json.loads(result.stdout[result.stdout.rindex('{\n  "role"'):])['worker']
+        self.assertEqual(Path(value['tasks_dir']), workspace / 'AgentFleet-其他')
         self.assertNotEqual(run('--connectivity', 'local', '--lan-address', '192.0.2.10').returncode, 0)
         self.assertFalse(data.exists())
+        self.assertFalse(workspace.exists())
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS worker setup')
+    def test_mac_reinstall_preserves_named_task_directory(self):
+        data, workspace = self.root / 'private', self.root / 'workspace'
+        data.mkdir()
+        path = data / 'config.json'
+        original = json.dumps({'language': 'en', 'tasks_dir': str(workspace / 'AgentFleet-Other'),
+                               'sandbox': 'danger-full-access', 'computer_name': 'fixture-pc'})
+        path.write_text(original)
+        result = subprocess.run(['node', str(ROOT / 'plugin/scripts/setup.mjs'), '--role', 'worker', '--plan',
+            '--no-desktop', '--data-dir', str(data)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout[result.stdout.rindex('{\n  "role"'):])['worker']
+        self.assertEqual(Path(value['tasks_dir']), workspace / 'AgentFleet-Other')
+        self.assertEqual(path.read_text(), original)
         self.assertFalse(workspace.exists())
 
     def test_manifests_and_catalogs_reference_self_contained_plugins(self):

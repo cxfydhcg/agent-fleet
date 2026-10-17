@@ -64,7 +64,8 @@ if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $existingRegis
     if ($registeredComputer -and @($registeredComputer.Value.agents.PSObject.Properties | Where-Object { $_.Name -ceq $MainAgentName }).Count) { throw 'An agent already uses the requested main agent name; choose another name.' }
 }
 if ($Plan) {
-    [ordered]@{engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
+    $tasksLeaf = if ($previous -and $previous.tasks_dir) { Split-Path -Leaf $previous.tasks_dir } elseif ($Language -eq 'en') { 'AgentFleet-Other' } else { 'AgentFleet-其他' }
+    [ordered]@{tasks_dir=(Join-Path $Workspace $tasksLeaf);engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
     return
 }
 if ($previous -and -not $Reconfigure) {

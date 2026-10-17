@@ -9,7 +9,7 @@ param(
     [string]$ManagerName = '',    # 可选：管理端调用这台电脑主 Agent 时用的名字（比如 经理cris），写进 connection.json
     [string]$Description = '',
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),      # 内部数据：配置、令牌、任务记录
-    [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-agent\、tasks\、shared\
+    [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-agent\、AgentFleet-其他\（英文 AgentFleet-Other\）、shared\
     [int]$Port = 8765,
     [int]$TailscalePort = 8766,
     [switch]$FullAccess,          # 子任务不设沙箱并自动同意权限请求，才能操作桌面、浏览器和其他程序
@@ -34,6 +34,9 @@ if (-not $Language) {
     elseif ((Get-Culture).Name -like 'zh*') { $Language = 'zh' } else { $Language = 'en' }
 }
 function T($zh, $en) { if ($Language -eq 'en') { $en } else { $zh } }
+# Keep the configured leaf on reinstalls; use the localized project name for new workers.
+$tasksLeaf = if ($priorSettings -and $priorSettings.tasks_dir) { Split-Path -Leaf $priorSettings.tasks_dir } else { T 'AgentFleet-其他' 'AgentFleet-Other' }
+$tasksDir = Join-Path $Workspace $tasksLeaf
 if (-not $PSBoundParameters.ContainsKey('MainAgentName')) {
     $MainAgentName = $(if ($priorSettings -and $priorSettings.main_agent_name) { $priorSettings.main_agent_name } else { T '主agent export' 'Main agent' })
 }
@@ -135,7 +138,7 @@ if ($loginExitCode -ne 0) { $warnings.Add((T 'Codex 还没有登录：运行 cod
 
 # 3. Python environment for the service
 Step (T '准备 Python 环境' 'Preparing the Python environment')
-New-Item -ItemType Directory -Force -Path $DataDir, (Join-Path $DataDir 'state'), (Join-Path $Workspace 'tasks'), (Join-Path $Workspace 'shared') | Out-Null
+New-Item -ItemType Directory -Force -Path $DataDir, (Join-Path $DataDir 'state'), $tasksDir, (Join-Path $Workspace 'shared') | Out-Null
 $venv = Join-Path $DataDir 'venv'
 $venvPython = Join-Path $venv 'Scripts\python.exe'
 if (-not (Test-Path $venvPython)) {
@@ -177,7 +180,7 @@ $agentsFile = Join-Path $mainWorkspace 'AGENTS.md'
 if (-not (Test-Path $agentsFile)) {
     $template = [System.IO.File]::ReadAllText((Join-Path $worker (T 'templates\main-agent\AGENTS.md' 'templates\main-agent\AGENTS.en.md')))
     $permissionNote = if ($FullAccess) { T '子任务以完整权限运行，可操作桌面、浏览器和其他应用；所有权限请求自动批准。' 'Sub-tasks run with full access and can operate the desktop, browsers and other apps; every permission request is approved automatically.' } elseif ($Engine -eq 'claude') { T '子任务使用 Claude Code restricted 模式：文件工具限于工作目录和 shared 文件夹，命令执行关闭；这不是操作系统级沙箱。' 'Sub-tasks use Claude Code restricted mode: file tools are limited to the working folder and the shared folder, and command execution is off. This is not an OS-level sandbox.' } else { T '子任务使用 Codex workspace-write 沙箱，不自动批准额外权限。' 'Sub-tasks use the Codex workspace-write sandbox; extra permissions are not approved automatically.' }
-    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace).Replace('{{AGENT_ENGINE}}', $Engine).Replace('{{MAIN_AGENT_NAME}}', $MainAgentName).Replace('{{PERMISSION_NOTE}}', $permissionNote))
+    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace).Replace('{{TASKS_DIR_NAME}}', $tasksLeaf).Replace('{{AGENT_ENGINE}}', $Engine).Replace('{{MAIN_AGENT_NAME}}', $MainAgentName).Replace('{{PERMISSION_NOTE}}', $permissionNote))
 }
 if (-not (Test-Path (Join-Path $mainWorkspace 'CLAUDE.md'))) { Copy-Item -LiteralPath $agentsFile -Destination (Join-Path $mainWorkspace 'CLAUDE.md') }
 if ($Engine -eq 'codex') {
@@ -236,7 +239,7 @@ $config = [ordered]@{
     state_dir = (Join-Path $DataDir 'state')
     token_file = $tokenFile
     worker_rules_file = (Join-Path $Workspace 'worker-rules.md')
-    tasks_dir = (Join-Path $Workspace 'tasks')
+    tasks_dir = $tasksDir
     shared_dir = (Join-Path $Workspace 'shared')
     allowed_roots = @($Workspace)
     allowed_hosts = $allowedHosts

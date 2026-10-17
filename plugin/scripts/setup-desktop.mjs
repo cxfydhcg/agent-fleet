@@ -47,6 +47,10 @@ export async function ensureDesktopProjects({ workspace, workerConfig, disabled 
   if (existing && (existing.name === expectedName || existing.name !== defaultName)) {
     // Keep an intentional user rename, but repair the default directory label.
     other = { status: 'registered', project_id: existing.id, project_name: existing.name, workspace: workerConfig.tasks_dir };
+  } else if (defaultName === expectedName) {
+    // The real directory has the intended display name, so the app's normal
+    // project entry point can register it immediately, just like the main root.
+    other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir }, runtime);
   } else {
     requestNamedProject(workerConfig, { version: 1, other: {
       root: workerConfig.tasks_dir, name: expectedName, project_id: existing?.id ?? null,

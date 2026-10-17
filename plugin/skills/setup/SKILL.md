@@ -178,9 +178,12 @@ To register another worker later, rerun with `--role orchestrator --connection`
 
 ## 7. Desktop app visibility
 
-- Codex workers register the main workspace through the app. The other project
-  is created with the configured name by the worker while Codex is closed; never
-  open its raw `tasks_dir` URL, which would create the wrong `tasks` label.
+- Codex workers register both projects through the app. New installations use
+  a real task directory named `AgentFleet-其他` (zh) or `AgentFleet-Other` (en),
+  so the other project appears with the right name without restarting Codex.
+  Reinstalls preserve the configured task path. For existing directories whose
+  basename differs from the configured project name, the worker instead creates
+  the correctly named project while Codex is closed; do not open their raw URL.
   Respect an explicit `codex_app_register_other_project: false` opt-out, unless
   the user subsequently requests the correctly named other project.
   Check both entries in `desktop.projects` when enabled. A registered main

@@ -46,6 +46,31 @@ test('requests the configured exact name without opening a tasks project', async
   assert.equal((await ensureDesktopProjects({ workspace, workerConfig }, app.runtime)).status, 'registered');
 });
 
+test('localized real directories register immediately and repeat setup reuses the project', async () => {
+  for (const [language, name] of [['zh', 'AgentFleet-其他'], ['en', 'AgentFleet-Other']]) {
+    const app = fakeApp();
+    const config = { ...workerConfig, language, codex_app_folders: true, tasks_dir: join(workspace, name) };
+    const report = await ensureDesktopProjects({ workspace, workerConfig: config }, app.runtime);
+    assert.equal(report.status, 'registered');
+    assert.equal(report.projects.other.project_name, name);
+    assert.equal(new URL(app.launches[0]).searchParams.get('path'), config.tasks_dir);
+    assert.equal(app.requests.length, 0);
+    const again = await ensureDesktopProjects({ workspace, workerConfig: config }, app.runtime);
+    assert.equal(again.projects.other.project_id, report.projects.other.project_id);
+    assert.equal(app.launches.length, 1);
+  }
+});
+
+test('localized directory registration remains pending until confirmed by the app', async () => {
+  const app = fakeApp({ pending: true });
+  const report = await ensureDesktopProjects({ workspace,
+    workerConfig: { ...workerConfig, tasks_dir: join(workspace, 'AgentFleet-其他') } }, app.runtime);
+  assert.equal(report.status, 'pending');
+  assert.equal(report.projects.other.status, 'pending');
+  assert.equal(app.requests.length, 0);
+  assert.doesNotMatch(report.projects.other.reason || '', /desktop-close/);
+});
+
 test('repeat repair reuses both projects and preserves user names', async () => {
   const app = fakeApp();
   app.state['local-projects'].other = { id: 'other', name: 'Renamed other', rootPaths: [tasks] };

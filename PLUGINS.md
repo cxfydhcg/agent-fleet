@@ -65,12 +65,12 @@ node <repository>/plugin/scripts/start.mjs
 It checks authenticated health, reuses an already-running service, and prints the local dashboard URL.
 Use `--config PATH` (or `AGENT_FLEET_CONFIG`) for a custom data directory. No token appears in output.
 
-Setup adds a Codex worker's main workspace through the app's workspace URL.
-For the other-agents project it requests the configured display name (Chinese:
-`AgentFleet-其他`, English: `AgentFleet-Other`) from the worker's offline folder
-sorter. It never opens the raw `tasks_dir` URL, which would produce a project
-named `tasks`. It does not edit the running app's internal state file or open a
-live worker session. This also runs when setup reuses an existing worker.
+Setup adds both Codex worker projects through the app's workspace URL. New
+installations store tasks in a real directory named `AgentFleet-其他` (Chinese)
+or `AgentFleet-Other` (English), so the other project receives the right name
+immediately without restarting Codex. Reinstalls keep the configured task path.
+Setup does not edit the running app's internal state file or open a live worker
+session. This also runs when setup reuses an existing worker.
 In Codex desktop, the setup skill also reads and pins the verified main-agent
 chat when app tools are available, so it is visible under its configured name.
 It preserves the same session and never opens it. Claude worker chats remain in
@@ -87,7 +87,8 @@ node <repository>/plugin/scripts/setup.mjs --role worker --language zh --desktop
 
 Use the installed language and `--data-dir PATH` for a custom data directory.
 Both results appear under `desktop.projects` when the other project is enabled.
-A missing other project or an observed directory-derived label stays `pending`
+For an existing task directory whose basename differs from the configured project
+name, a missing other project or an observed directory-derived label stays `pending`
 with `reason: waiting-for-desktop-close` and the expected name. Fully quit Codex
 and leave the worker running; its folder loop consumes the one-shot repair
 request after the app closes, backs up state, and verifies the saved names.
