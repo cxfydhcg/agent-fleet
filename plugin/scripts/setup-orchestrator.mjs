@@ -43,6 +43,12 @@ if (existsSync(registry)) {
 }
 mkdirSync(join(home, 'tokens'), { recursive: true });
 if (!existsSync(registry)) writeFileSync(registry, JSON.stringify({ computers: {} }, null, 2) + '\n', { mode: 0o600 });
+// fleet.mjs lets only sessions in this folder (the orchestrator session) talk to main agents.
+const saved = JSON.parse(readFileSync(registry, 'utf8'));
+if (saved.orchestrator_workspace !== workspace) {
+  saved.orchestrator_workspace = workspace;
+  writeFileSync(registry, JSON.stringify(saved, null, 2) + '\n');
+}
 if (connection) {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
   const result = spawnSync(process.execPath, [join(root, 'skills/call-agent/fleet.mjs'), 'add-computer', connection, ...(local ? ['--local=1'] : [])],

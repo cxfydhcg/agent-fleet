@@ -53,7 +53,8 @@ class PluginSetupTests(unittest.TestCase):
         token = self.home / 'tokens/existing-pc.txt'
         token.write_text('fixture-old-token', encoding='utf-8')
         self.assertEqual(self.orchestrator().returncode, 0)
-        self.assertEqual(json.loads(registry.read_text(encoding='utf-8')), contents)
+        # Setup also records the orchestrator's folder; everything else is kept as it was.
+        self.assertEqual(json.loads(registry.read_text(encoding='utf-8')), {**contents, 'orchestrator_workspace': str(Path.home() / 'Documents' / 'AgentFleet')})
         self.assertEqual(token.read_text(), 'fixture-old-token')
 
     def test_local_registration_uses_local_url_and_redacts_token(self):
@@ -167,9 +168,10 @@ class PluginSetupTests(unittest.TestCase):
                 registry = self.home / 'computers.json'
                 value = json.loads(registry.read_text(encoding='utf-8'))
                 value['computers']['fixture-pc']['agents'][chosen]['last_task_id'] = 'existing-task'
+                value['orchestrator_workspace'] = str(self.root)  # export runs as the orchestrator session
                 registry.write_text(json.dumps(value))
                 result = subprocess.run(['node',str(ROOT/'plugin/scripts/fleet.mjs'),'export','fixture-pc','Reply OK'],
-                    env={**os.environ,'AGENT_FLEET_HOME':str(self.home)},capture_output=True,text=True,encoding='utf-8',timeout=20)
+                    env={**os.environ,'AGENT_FLEET_HOME':str(self.home)},cwd=self.root,capture_output=True,text=True,encoding='utf-8',timeout=20)
                 self.assertEqual(result.returncode,0,result.stderr)
                 answer = json.loads(result.stdout)
                 self.assertEqual(answer['agent'], chosen)

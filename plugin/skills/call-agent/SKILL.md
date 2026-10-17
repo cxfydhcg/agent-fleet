@@ -15,6 +15,8 @@ node "${CLAUDE_SKILL_DIR}/fleet.mjs" <command> ...
 
 `fleet.mjs` sits next to this SKILL.md. If your agent doesn't substitute `${CLAUDE_SKILL_DIR}` (e.g. Codex), use the absolute path of this skill's folder instead. If no computers are registered yet, run `overview`; it prints an empty list. Then help the user set up a computer using this plugin's setup skill to choose orchestrator, worker, or both.
 
+**Who may talk to main agents.** Only the orchestrator session, a session working in the orchestrator's project folder (`orchestrator_workspace` in the registry, set by setup; default `~/Documents/AgentFleet`), reaches a computer's main agent. From any other session, `export` and `agent <电脑> <main agent>` go instead to that session's own agent on the computer, named `<folder> · <session id>`. It is created on first use, reused for later messages from the same session, and filed in the worker's "other" folder (`AgentFleet-其他`). `fleet.mjs` decides this from the working directory and `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`. If neither id is set, pass `--from=<name>`. Tell the user which agent answered; don't work around the rule by changing directory.
+
 ## 1. Parse the arguments
 
 The expected form is `【电脑名】【Agent名】消息`. Brackets are optional, so also accept `电脑名 Agent名 消息`.
