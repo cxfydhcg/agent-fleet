@@ -81,7 +81,15 @@ On the computer that runs Claude Code, install from the plugin marketplace (reco
 
 Once installed, the skill is called `/agent-fleet:call-agent`. You can also skip the marketplace: clone the project and run `install-orchestrator.ps1` to install it as `/call-agent`; add `-Codex` to also install it into Codex, so Codex can use the same skill.
 
-Then connect each managed computer. You can ask Claude to run this for you, or run the client in the skill folder yourself:
+Then connect each managed computer. **Pairing codes are recommended; no file copying**:
+
+1. Once a worker is set up with LAN or Tailscale, it shows a pairing code (e.g. `4821-7395`; valid 10 minutes, works once, and 5 wrong tries cancel it). If it expires, run `worker\pair.ps1` on the worker for a new one.
+2. On the orchestrator, tell Claude "search for new computers and pair, code 4821-7395". It searches first: computers on the local network and online Tailscale devices, looking for workers waiting to pair (`fleet.mjs discover`). If it finds exactly one, it connects to it (`fleet.mjs pair 4821-7395`).
+3. If nothing is found (e.g. a different subnet), give it the worker's IP: `fleet.mjs pair 192.168.1.23 4821-7395`.
+
+The code is what keeps this safe: without it, others on the same network cannot get the token. The worker's firewall still has to allow the port (see "Install a managed computer").
+
+The old way also works: copy that computer's `connection.json` over and run:
 
 ```powershell
 node <skill folder>\fleet.mjs add-computer <that computer's connection.json>

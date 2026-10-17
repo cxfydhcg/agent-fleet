@@ -1076,6 +1076,53 @@ class AppSidebarFolderTests(unittest.IsolatedAsyncioTestCase):
         self.manager.folder_task.cancel()
 
 
+
+class PairingTests(unittest.TestCase):
+    """An orchestrator gets the connection info for a one-time code, without anyone copying connection.json."""
+
+    def setUp(self):
+        import server
+        from starlette.testclient import TestClient
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        (root / 'token.txt').write_text('s' * 40, encoding='utf-8')
+        config = {'state_dir': str(root / 'data' / 'state'), 'tasks_dir': str(root / 'ws' / 'tasks'), 'allowed_roots': [str(root / 'ws')],
+                  'token_file': str(root / 'token.txt'), 'allowed_hosts': [], 'computer_name': 'win-pc', 'port': 8765,
+                  'lan_url': 'http://192.168.1.23:8765/mcp', 'main_agent_name': '经理', 'main_agent_workspaces': [str(root / 'ws' / 'main-agent')]}
+        app, self.manager = server.build_app(config)
+        self.client = TestClient(app)
+        self.auth = {'Authorization': 'Bearer ' + 's' * 40}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_code_gives_the_connection_once(self):
+        self.assertEqual(self.client.get('/pair/info').status_code, 404)  # nothing to find until a window is opened
+        self.assertEqual(self.client.post('/pair/start').status_code, 401)  # opening one needs the token
+        started = self.client.post('/pair/start', headers=self.auth).json()
+        self.assertRegex(started['code'], r'^\d{4}-\d{4}$')
+        info = self.client.get('/pair/info').json()
+        self.assertEqual((info['computer_name'], info['main_agent_name'], info['lan_url']), ('win-pc', '经理', 'http://192.168.1.23:8765/mcp'))
+        self.assertNotIn('token', json.dumps(info))
+        self.assertEqual(self.client.post('/pair/claim', json={'code': '0000-0000'}).status_code, 403)
+        claimed = self.client.post('/pair/claim', json={'code': started['code'].replace('-', '')}).json()
+        self.assertEqual((claimed['name'], claimed['token'], claimed['main_agent_id']), ('win-pc', 's' * 40, self.manager.profile['main_agent_id']))
+        self.assertEqual(self.client.post('/pair/claim', json={'code': started['code']}).status_code, 404)  # used once
+        self.assertEqual(self.client.get('/pair/info').status_code, 404)
+
+    def test_wrong_codes_and_time_close_the_window(self):
+        import server
+        code = self.client.post('/pair/start', headers=self.auth).json()['code']
+        for attempt in range(server.PAIRING_ATTEMPTS):
+            answer = self.client.post('/pair/claim', json={'code': '1111-1111' if code != '1111-1111' else '2222-2222'})
+            self.assertEqual(answer.status_code, 403)
+        self.assertFalse(answer.json()['window_open'])
+        self.assertEqual(self.client.post('/pair/claim', json={'code': code}).status_code, 404)
+        code = self.client.post('/pair/start', headers=self.auth).json()['code']
+        self.manager.pairing['expires'] = time.monotonic() - 1
+        self.assertEqual(self.client.post('/pair/claim', json={'code': code}).status_code, 404)
+
+
 class CodexAppFolderTests(unittest.TestCase):
     """The JSON transform of tools/codex_app_folder.py, without touching real files or processes."""
 

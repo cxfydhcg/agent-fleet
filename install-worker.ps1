@@ -309,4 +309,11 @@ Write-Host (T "在管理端电脑上接入：让 Claude 运行 add-computer，�
 Write-Host (T "只读看板：$($connection.dashboard)" "Read-only dashboard: $($connection.dashboard)")
 if ($LanAddress) { Write-Host (T "局域网地址：$lanUrl（明文 HTTP，只在可信网络使用；需要在 Windows 防火墙放行 TCP $Port 端口）" "LAN address: $lanUrl (plain HTTP, trusted networks only; allow TCP port $Port in Windows Firewall)") -ForegroundColor Yellow }
 if (-not $FullAccess) { Write-Host (T '当前子任务只能写自己的工作目录。要操作桌面和浏览器，用 -FullAccess 重新运行。' 'Sub-tasks can currently write only their own working folder. To let them operate the desktop and browsers, rerun with -FullAccess.') -ForegroundColor Yellow }
+# A pairing code lets the orchestrator connect without copying connection.json (only when others can reach this computer).
+if (-not $NoStart -and ($LanAddress -or ($tsName -and -not $LocalOnly))) {
+    Write-Host ''
+    & $venvPython (Join-Path $worker 'tools\pairing.py') --config $configPath
+    if ($LASTEXITCODE -ne 0) { $warnings.Add((T '没能打开配对窗口；稍后运行 worker\pair.ps1 再试。' 'Could not open a pairing window; run worker\pair.ps1 later.')) }
+    else { Write-Host (T '配对码过期了就运行 worker\pair.ps1 重新生成。' 'If the code expires, run worker\pair.ps1 for a new one.') }
+}
 foreach ($w in $warnings) { Write-Warning $w }

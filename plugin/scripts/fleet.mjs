@@ -16,6 +16,10 @@
 //   node fleet.mjs notifications <电脑> [--after=编号] 读通知全文（默认最近 10 条）
 //   node fleet.mjs add-computer <connection.json>      接入一台新电脑（文件由那台电脑的 install-worker.ps1 生成）
 //   node fleet.mjs computers                          列出已登记的电脑和 Agent
+//   node fleet.mjs discover [--hosts=IP,IP] [--port=8765]
+//                                                     在局域网和 Tailscale 设备里找正在等配对的 worker（worker 上先显示配对码）
+//   node fleet.mjs pair [<IP或电脑名>] <配对码>        用 worker 显示的配对码接入它，不用拷 connection.json；
+//                                                     只给配对码时先自动搜索，搜到正好一台就接入它
 //   node fleet.mjs set-manager-name <电脑> <管理名>    给这台电脑的主 Agent 起管理名（比如 经理cris），之后 <电脑> 处可以直接写管理名；
 //                                                     管理名在整个机群里不能重复；写 "" 清除
 //   node fleet.mjs language <zh|en>                   输出的语言（默认跟系统；也可用环境变量 AGENT_FLEET_LANG）
@@ -38,7 +42,8 @@
 // 每台电脑用登记表里的 url（没有就用 local_url）；加 --remote 强制走 Tailscale（或局域网）地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
 const MAIN_AGENT = "主agent export";
@@ -168,9 +173,9 @@ if (cmd === "notifications") {
   out(option("after") ? data.notifications : data.notifications.slice(-10));
   process.exit(0);
 }
-if (cmd === "add-computer") {
-  // connection.json comes from install-worker.ps1 on the new computer: { name, tailscale_url, lan_url, local_url, token, description }
-  const info = JSON.parse(readFileSync(computer, "utf8").replace(/^﻿/, ""));
+// connection.json comes from install-worker.ps1 on the new computer, or from pairing:
+// { name, tailscale_url, lan_url, local_url, token, description, main_agent_id, manager_name, ... }
+function addComputer(info, isThisComputer, source) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || "")) {
     console.error("Computer name must use letters, numbers, dots, underscores or hyphens, beginning with a letter or number.");
     process.exit(2);
@@ -215,7 +220,6 @@ if (cmd === "add-computer") {
     delete agents[oldMain];
   }
   agents[chosenMain] = { ...(agents[chosenMain] ?? {}), ...(info.main_agent_workspace ? { workspace: info.main_agent_workspace } : {}) };
-  const isThisComputer = option("local") === "1";
   if (renamedFrom) delete registry.computers[renamedFrom];
   registry.computers[info.name] = {
     ...existing, engine, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
@@ -227,8 +231,123 @@ if (cmd === "add-computer") {
   saveRegistry();
   if (renamedFrom) console.error(T(`${renamedFrom} 改名为 ${info.name}（同一个主 Agent），原来的设置都保留。`,
                                     `${renamedFrom} was renamed to ${info.name} (same main agent); its settings are kept.`));
-  console.error(T(`已接入 ${info.name}（${registry.computers[info.name].url}）。可以删除这份 connection.json 了，令牌已保存在 ${tokenFile}。`,
-                  `Connected ${info.name} (${registry.computers[info.name].url}). You can delete that connection.json; the token is saved in ${tokenFile}.`));
+  console.error(source === "pair"
+    ? T(`已接入 ${info.name}（${registry.computers[info.name].url}），令牌已保存在 ${tokenFile}。`, `Connected ${info.name} (${registry.computers[info.name].url}); the token is saved in ${tokenFile}.`)
+    : T(`已接入 ${info.name}（${registry.computers[info.name].url}）。可以删除这份 connection.json 了，令牌已保存在 ${tokenFile}。`,
+        `Connected ${info.name} (${registry.computers[info.name].url}). You can delete that connection.json; the token is saved in ${tokenFile}.`));
+}
+if (cmd === "add-computer") {
+  addComputer(JSON.parse(readFileSync(computer, "utf8").replace(/^\ufeff/, "")), option("local") === "1", "file");
+  process.exit(0);
+}
+
+// Where workers waiting to pair might be: this computer's local networks (at most 1024 addresses each) on
+// the worker port, and online Tailscale devices on the Tailscale port. --hosts limits the search.
+const ipToInt = (ip) => ip.split(".").reduce((n, part) => n * 256 + Number(part), 0);
+const intToIp = (n) => [24, 16, 8, 0].map((shift) => Math.floor(n / 2 ** shift) % 256).join(".");
+function searchTargets() {
+  const port = Number(option("port") ?? 8765), tailscalePort = Number(option("tailscale-port") ?? 8766);
+  const given = option("hosts")?.split(/[,，\s]+/).filter(Boolean);
+  if (given) return given.map((h) => (/:\d+$/.test(h) ? h : `${h}:${port}`));
+  const targets = new Set();
+  for (const address of Object.values(networkInterfaces()).flat()) {
+    if (!address || address.internal || !(address.family === "IPv4" || address.family === 4)) continue;
+    const ip = ipToInt(address.address), mask = ipToInt(address.netmask || "255.255.255.0");
+    if (address.address.startsWith("169.254.") || (ip >= ipToInt("100.64.0.0") && ip <= ipToInt("100.127.255.255"))) continue;
+    // The whole subnet when it is small enough, otherwise the /24 around this computer.
+    const block = 2 ** 32 - mask, size = block <= 1024 ? block : 256;
+    const start = Math.floor(ip / size) * size;
+    for (let host = start + 1; host < start + size - 1; host++) if (host !== ip) targets.add(`${intToIp(host)}:${port}`);
+  }
+  for (const binary of ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]) {
+    try {
+      const status = JSON.parse(execFileSync(binary, ["status", "--json"], { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }));
+      for (const peer of Object.values(status.Peer ?? {})) if (peer.Online && peer.TailscaleIPs?.[0]) targets.add(`${peer.TailscaleIPs[0]}:${tailscalePort}`);
+      break;
+    } catch { /* not installed or not signed in */ }
+  }
+  return [...targets];
+}
+
+async function discover() {
+  const targets = searchTargets(), found = [];
+  let next = 0;
+  const probe = async () => {
+    while (next < targets.length) {
+      const target = targets[next++];
+      try {
+        const res = await fetch(`http://${target}/pair/info`, { signal: AbortSignal.timeout(1200) });
+        const info = res.ok ? await res.json() : null;
+        if (info?.service === "agent-fleet" && info.pairing) {
+          const registered = Object.keys(registry.computers).find((n) => registry.computers[n].main_agent_id === info.main_agent_id);
+          found.push({ address: target, ...info, ...(registered ? { already_registered_as: registered } : {}) });
+        }
+      } catch { /* nothing there, or not a worker */ }
+    }
+  };
+  await Promise.all(Array.from({ length: 128 }, probe));
+  return found;
+}
+
+if (cmd === "discover") {
+  const found = await discover();
+  if (!found.length) {
+    console.error(T("没有搜到正在等配对的 worker。请确认：worker 上刚显示过配对码（10 分钟内有效，过期就在 worker 上运行 pair.ps1）；"
+                    + "worker 用的是 LAN 或 Tailscale 方式；防火墙放行了端口；两台电脑在同一个网络。也可以直接用 pair <worker 的 IP> <配对码>。",
+                    "No worker waiting to pair was found. Check that the worker just showed a pairing code (valid 10 minutes; run pair.ps1 "
+                    + "on the worker for a new one), that it was set up with LAN or Tailscale, that its firewall allows the port, and that both "
+                    + "computers are on the same network. You can also run pair <worker IP> <code>."));
+    process.exit(3);
+  }
+  out(found.map(({ address, computer_name, manager_name, main_agent_name, role, engine, expires_in, already_registered_as }) =>
+    ({ address, computer_name, manager_name, main_agent_name, role, engine, expires_in, already_registered_as })));
+  process.exit(0);
+}
+if (cmd === "pair") {
+  const code = rest[0] ?? computerArg, wanted = rest[0] ? computerArg : null;
+  if (!/^\d{4}-?\d{4}$/.test(code ?? "")) {
+    console.error(T("用法：pair [<IP或电脑名>] <配对码>，配对码是 worker 上显示的 8 位数字", "Usage: pair [<IP or computer name>] <code>; the code is the 8 digits the worker shows"));
+    process.exit(2);
+  }
+  const asAddress = (host) => (/:\d+$/.test(host) ? host : `${host}:${option("port") ?? 8765}`);
+  let address = wanted && /^\d+\.\d+\.\d+\.\d+(:\d+)?$/.test(wanted) ? asAddress(wanted) : null;
+  if (!address) {
+    const found = (await discover()).filter((f) => !wanted || f.computer_name === wanted || f.manager_name === wanted);
+    if (!found.length && wanted?.includes(".")) found.push({ address: asAddress(wanted) }); // a host name such as worker.local
+    if (found.length !== 1) {
+      console.error(found.length
+        ? T(`搜到 ${found.length} 台在等配对的电脑：${found.map((f) => `${f.computer_name}（${f.address}）`).join("、")}。请指定一台：pair <IP或电脑名> <配对码>`,
+            `Found ${found.length} workers waiting to pair: ${found.map((f) => `${f.computer_name} (${f.address})`).join(", ")}. Pick one: pair <IP or computer name> <code>`)
+        : T("没有搜到正在等配对的 worker。请直接给 IP：pair <worker 的 IP> <配对码>（先运行 discover 看看原因提示）。",
+            "No worker waiting to pair was found. Give its address: pair <worker IP> <code> (run discover for hints)."));
+      process.exit(3);
+    }
+    address = found[0].address;
+  }
+  let res;
+  try {
+    res = await fetch(`http://${address}/pair/claim`, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                       body: JSON.stringify({ code }), signal: AbortSignal.timeout(10000) });
+  } catch (error) {
+    console.error(T(`连不上 ${address}：${error.message}。检查 IP、worker 的防火墙，以及两台电脑是否在同一个网络。`,
+                    `Cannot reach ${address}: ${error.message}. Check the IP, the worker's firewall, and that both computers share a network.`));
+    process.exit(3);
+  }
+  const answer = await res.json().catch(() => ({}));
+  if (res.status === 404) {
+    console.error(T("这台 worker 现在没有打开配对窗口（配对码过期、已经用过，或输错太多次）。在 worker 上运行 pair.ps1 生成新的配对码。",
+                    "That worker has no pairing window open (the code expired, was used, or had too many wrong tries). Run pair.ps1 on the worker for a new code."));
+    process.exit(3);
+  }
+  if (!res.ok) {
+    console.error(answer.window_open
+      ? T("配对码不对，请再核对一下 worker 上显示的数字。", "Wrong pairing code; check the digits the worker shows.")
+      : T("配对码不对，输错次数太多，这个配对码已经作废。在 worker 上运行 pair.ps1 生成新的。", "Wrong pairing code, and too many wrong tries closed the window. Run pair.ps1 on the worker for a new code."));
+    process.exit(2);
+  }
+  addComputer(answer, false, "pair");
+  out({ computer: answer.name, manager_name: registry.computers[answer.name]?.manager_name ?? null, main_agent_id: answer.main_agent_id ?? null,
+        main_agent_name: answer.main_agent_name ?? null, url: registry.computers[answer.name]?.url });
   process.exit(0);
 }
 if (cmd === "computers") {

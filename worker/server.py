@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import signal
 import time
@@ -86,6 +87,8 @@ def task_folder_name(task_id, name=None):
     return '_'.join(parts)
 
 
+# Pairing: how long a pairing code stays valid and how many wrong codes close the window.
+PAIRING_SECONDS, PAIRING_ATTEMPTS = 600, 5
 FINISHED = ('completed', 'failed', 'cancelled', 'interrupted', 'timed_out')
 WORKER_RULES = '''你是被派出来执行具体任务的子 agent（worker）。必须遵守：
 1. 只完成交给你的这件任务。做完后，把结果、遇到的问题和需要人处理的事写进最终回复，由派你来的上级（本机的主agent export）处理。
@@ -317,6 +320,7 @@ class TaskManager:
         self.notices = {}  # main agent thread -> finished sub-task ids it has not been told about yet
         # Desktop-app sidebar folders (config codex_app_folders): whether sessions may need filing, and how it went.
         self.folders_pending, self.folders_status, self.folder_task = True, None, None
+        self.pairing = None  # the open pairing window: {'code', 'expires', 'attempts'}
         self._archived_cache = None
         self.notifications_file = self.state / 'notifications.jsonl'
         self.notifications = [json.loads(line) for line in self.notifications_file.read_text(encoding='utf-8').splitlines()
@@ -561,6 +565,53 @@ class TaskManager:
                 'manager_name': self.profile['computer'].get('manager_name'),
                 'workspace': next(iter(self.config.get('main_agent_workspaces', [])), None),
                 'task_id': latest['task_id'] if latest else None, 'status': latest['status'] if latest else None}
+
+    def start_pairing(self):
+        """Open a pairing window: an orchestrator that presents this one-time code within PAIRING_SECONDS gets the
+        connection info (including the token) without anyone copying connection.json. A new window replaces
+        the old one; the code dies after PAIRING_ATTEMPTS wrong tries, one success, or a restart."""
+        digits = f'{secrets.randbelow(10 ** 8):08d}'
+        self.pairing = {'code': digits[:4] + '-' + digits[4:], 'expires': time.monotonic() + PAIRING_SECONDS, 'attempts': 0}
+        return {'code': self.pairing['code'], 'expires_in': PAIRING_SECONDS, **self.addresses()}
+
+    def pairing_open(self):
+        if self.pairing and time.monotonic() > self.pairing['expires']:
+            self.pairing = None
+        return self.pairing is not None
+
+    def addresses(self):
+        return {k: v for k, v in (('lan_url', self.config.get('lan_url')), ('tailscale_url', self.config.get('remote_url')),
+                                  ('local_url', f"http://127.0.0.1:{self.config.get('port', 8765)}/mcp")) if v}
+
+    def pairing_info(self):
+        """What a searching orchestrator may see while the window is open: who this is, never a secret."""
+        return {'service': 'agent-fleet', 'pairing': True, 'computer_name': self.config.get('computer_name'),
+                'main_agent_name': self.config.get('main_agent_name'), 'main_agent_id': self.profile['main_agent_id'],
+                'manager_name': self.profile['computer'].get('manager_name'), 'role': self.profile['computer'].get('role'),
+                'engine': 'claude' if self.config.get('executor') == 'claude' else 'codex', 'language': self.language,
+                'expires_in': max(0, round(self.pairing['expires'] - time.monotonic())), **self.addresses()}
+
+    def claim_pairing(self, code):
+        """The connection info for the right code, once; None for a wrong one."""
+        if not self.pairing_open():
+            return None
+        normalize = lambda value: re.sub(r'\D', '', str(value or ''))
+        if not hmac.compare_digest(normalize(code).encode(), normalize(self.pairing['code']).encode()):
+            self.pairing['attempts'] += 1
+            if self.pairing['attempts'] >= PAIRING_ATTEMPTS:
+                self.pairing = None
+            return None
+        self.pairing = None
+        saved = Path(self.config['state_dir']).parent / 'connection.json'
+        info = json.loads(saved.read_text(encoding='utf-8-sig')) if saved.exists() else {}
+        info.update({'name': self.config.get('computer_name'), 'engine': 'claude' if self.config.get('executor') == 'claude' else 'codex',
+                     'local_url': f"http://127.0.0.1:{self.config.get('port', 8765)}/mcp", 'tailscale_url': self.config.get('remote_url') or '',
+                     'lan_url': self.config.get('lan_url') or '', 'token': Path(self.config['token_file']).read_text(encoding='utf-8').strip(),
+                     'main_agent_workspace': next(iter(self.config.get('main_agent_workspaces', [])), None),
+                     'main_agent_name': self.config.get('main_agent_name'), 'main_agent_id': self.profile['main_agent_id'],
+                     'manager_name': self.profile['computer'].get('manager_name') or info.get('manager_name') or '',
+                     'language': self.language})
+        return info
 
     async def full_profile(self, refresh=False):
         agents = []
@@ -1256,7 +1307,9 @@ class TaskManager:
 
 class BearerMiddleware:
     # The dashboard page itself holds no data; it asks for the token and sends it on every API call.
-    PUBLIC = {('GET', '/dashboard')}
+    # Pairing answers only while a window opened with the token is running, and hands out the token only
+    # for its one-time code.
+    PUBLIC = {('GET', '/dashboard'), ('GET', '/pair/info'), ('POST', '/pair/claim')}
 
     def __init__(self, app, token):
         self.app, self.token = app, token
@@ -1366,6 +1419,29 @@ def build_app(config):
     async def health(request):
         return JSONResponse({'service': 'codex-task-mcp', 'status': 'ok', 'pid': os.getpid(),
                              'quota_wait_until': (manager.quota_wait or {}).get('until')})
+
+    @mcp.custom_route('/pair/start', methods=['POST'])
+    async def pair_start(request):
+        return JSONResponse(manager.start_pairing(), headers={'Cache-Control': 'no-store'})
+
+    @mcp.custom_route('/pair/info', methods=['GET'])
+    async def pair_info(request):
+        if not manager.pairing_open():
+            return JSONResponse({'pairing': False}, status_code=404)
+        return JSONResponse(manager.pairing_info(), headers={'Cache-Control': 'no-store'})
+
+    @mcp.custom_route('/pair/claim', methods=['POST'])
+    async def pair_claim(request):
+        if not manager.pairing_open():
+            return JSONResponse({'error': 'No pairing window is open; start one on the worker'}, status_code=404)
+        try:
+            code = (await request.json()).get('code')
+        except (ValueError, AttributeError):
+            code = None
+        info = manager.claim_pairing(code)
+        if info is None:
+            return JSONResponse({'error': 'Wrong pairing code', 'window_open': manager.pairing_open()}, status_code=403)
+        return JSONResponse(info, headers={'Cache-Control': 'no-store'})
 
     # Read-only dashboard. Viewing never loads a session into Codex, so it takes no writer lock.
     @mcp.custom_route('/dashboard', methods=['GET'])

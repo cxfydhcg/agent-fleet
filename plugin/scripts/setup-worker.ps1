@@ -171,6 +171,12 @@ if (-not $NoAutostart) {
     $localFlag = if ($Connectivity -ne 'Tailscale') { ' -LocalOnly' } else { '' }
     [System.IO.File]::WriteAllText($startup,"@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startScript`" -ConfigPath `"$configPath`"$localFlag`r`n",(New-Object System.Text.UTF8Encoding $false))
 }
+# A pairing code lets a remote orchestrator connect without copying connection.json.
+$pairing = $null
+if ($Connectivity -ne 'Local') {
+    $pairingOutput = & $config.python_executable (Join-Path $deployment 'worker\tools\pairing.py') --config $configPath --json
+    if ($LASTEXITCODE -eq 0) { $pairing = $pairingOutput | Out-String | ConvertFrom-Json }
+}
 $resolvedData = Split-Path $configPath
 $clientHome = Join-Path $resolvedData 'local-client'
 $savedFleetHome = $env:AGENT_FLEET_HOME
@@ -192,4 +198,5 @@ try {
 $desktop = Ensure-DesktopProject
 [ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'service-ready' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$resolvedData;client_home=$clientHome;connection_file=(Join-Path $resolvedData 'connection.json');dashboard="http://127.0.0.1:$($config.port)/dashboard";remote_url=$config.remote_url;lan_url=$config.lan_url;
     firewall_note=$(if ($config.lan_url) { "Allow inbound TCP $($config.port) on Private networks in Windows Firewall (administrator)." } else { '' });
-    full_access=[bool]$FullAccess;desktop=$desktop} | ConvertTo-Json -Depth 5
+    full_access=[bool]$FullAccess;desktop=$desktop;pairing=$pairing;
+    pair_script=(Join-Path $deployment 'worker\pair.ps1')} | ConvertTo-Json -Depth 5

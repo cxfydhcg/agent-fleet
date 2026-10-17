@@ -81,7 +81,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-worker.ps1 -FullAc
 
 装好后 skill 叫 `/agent-fleet:call-agent`。也可以不用插件市场，克隆项目后运行 `install-orchestrator.ps1`，装成 `/call-agent`；加 `-Codex` 同时装到 Codex 里，Codex 也能用同一个 skill。
 
-然后接入每台被管理的电脑，可以让 Claude 帮你运行，也可以自己运行 skill 文件夹里的客户端：
+然后接入每台被管理的电脑。**推荐用配对码，不用拷文件**：
+
+1. worker 用 LAN 或 Tailscale 方式装好后，屏幕上会显示一个配对码（例如 `4821-7395`，10 分钟内有效，只能用一次，输错 5 次作废）。过期了就在 worker 上运行 `worker\pair.ps1` 重新生成。
+2. 在管理端对 Claude 说"搜索并配对新电脑，配对码 4821-7395"。它先自动搜索：局域网里的电脑和在线的 Tailscale 设备，找正在等配对的 worker（`fleet.mjs discover`）；搜到正好一台就直接接入（`fleet.mjs pair 4821-7395`）。
+3. 搜不到（比如不在同一个网段），就把 worker 的 IP 告诉它：`fleet.mjs pair 192.168.1.23 4821-7395`。
+
+配对码就是这一步的安全保证：没有它，同一个网络里的人也拿不到令牌。worker 的防火墙仍然要放行端口（见上面"安装一台被管理的电脑"）。
+
+也可以用老办法：把那台电脑的 `connection.json` 拷过来，运行：
 
 ```powershell
 node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>

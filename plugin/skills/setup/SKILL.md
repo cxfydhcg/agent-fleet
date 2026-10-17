@@ -37,6 +37,11 @@ workers keep theirs; changing it on a worker needs `--reconfigure`.
 For **control** (orchestrator):
 - The private registry is `~/.agent-fleet` unless `AGENT_FLEET_HOME` or
   `--registry-home` names an existing one. Preserve existing workers and tokens.
+- To connect a worker on another computer, prefer pairing over copying files: the worker shows an 8-digit
+  code at the end of its setup (`pairing.code` in the setup result; `pair.ps1` in its `service\worker`
+  folder makes a new one). On the orchestrator run `fleet.mjs discover`, then `fleet.mjs pair <code>` (or
+  `pair <IP> <code>` when the search finds nothing). Tell the user the code and how long it is valid; never
+  pair with a code the user did not give you.
 - If the user has a worker's `connection.json`, pass `--connection PATH`. Add
   `--local` only when that worker is this computer. A local-only worker cannot be
   reached from another computer; set it up with Tailscale or LAN there first.
