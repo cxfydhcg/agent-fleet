@@ -2,7 +2,8 @@
 
 The desktop app (26.1007) does not show app-server projects yet. Its sidebar folders come from its own
 internal file ~/.codex/.codex-global-state.json, which this edits: it may change with any app update.
-Quit the desktop app first; it rewrites the file while running.
+Quit the desktop app first; it rewrites the file while running. The dispatcher does the same on its own
+when its config has codex_app_folders (see sort_into_folders); this script is the manual one-folder version.
 
     python codex_app_folder.py --config <dispatcher config.json> [--folder-name AgentFleet] [--root <path>] [--dry-run]
 
@@ -28,13 +29,15 @@ DESKTOP_PROCESSES = {'nt': ['chatgpt.exe'], 'posix': ['ChatGPT', 'Codex']}
 
 
 def same_path(a, b):
-    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+    # Backslashes count as separators everywhere, so Windows paths from the app's state compare on any OS.
+    norm = lambda p: os.path.normcase(os.path.normpath(p.replace('\\', '/'))).rstrip('/\\')
+    return norm(a) == norm(b)
 
 
-def add_to_folder(state, folder_name, root, thread_ids, now_ms, new_id):
+def add_to_folder(state, folder_name, root, thread_ids, now_ms, new_id, movable=()):
     """Return (new state, report): a local project for root (created if no project has that root), with
     every thread in thread_ids that has no folder yet assigned to it. Threads the user already put in a
-    folder are left alone. Pure: the input is not modified."""
+    folder are left alone, except ones in a folder listed in movable. Pure: the input is not modified."""
     state = json.loads(json.dumps(state))
     projects = state.setdefault('local-projects', {})
     order = state.setdefault('project-order', [])
@@ -46,12 +49,43 @@ def add_to_folder(state, folder_name, root, thread_ids, now_ms, new_id):
         project = {'id': new_id, 'name': folder_name, 'rootPaths': [root], 'createdAt': now_ms, 'updatedAt': now_ms}
         projects[new_id] = project
         order.insert(0, new_id)
-    assigned = [t for t in dict.fromkeys(thread_ids) if t and t not in assignments]
+    assigned = [t for t in dict.fromkeys(thread_ids) if t and (t not in assignments or (
+        assignments[t].get('projectId') in movable and assignments[t].get('projectId') != project['id']))]
     for thread in assigned:
         assignments[thread] = {'projectKind': 'local', 'projectId': project['id']}
     state['projectless-thread-ids'] = [t for t in projectless if t not in set(assigned)]
     return state, {'project_id': project['id'], 'project_name': project['name'], 'created': created,
                    'assigned': assigned, 'already_assigned': len(set(thread_ids) - set(assigned))}
+
+
+def sort_into_folders(state, folders, now_ms, new_id):
+    """Return (new state, reports, changed) for folders [(name, root, thread_ids), ...]: each folder is created
+    if needed, then each thread goes to its folder unless the user filed it elsewhere; threads may move between
+    these folders. new_id() gives an id for each folder that has to be created. Pure, like add_to_folder."""
+    managed, changed = set(), False
+    for name, root, _ in folders:
+        state, report = add_to_folder(state, name, root, [], now_ms, new_id())
+        managed.add(report['project_id'])
+        changed |= report['created']
+    reports = []
+    for name, root, threads in folders:
+        state, report = add_to_folder(state, name, root, threads, now_ms, new_id(), movable=managed)
+        reports.append(report)
+        changed |= bool(report['assigned'])
+    return state, reports, changed
+
+
+def write_state(path, state, expected, backup):
+    """Replace the app's state file atomically after copying it to backup; restore it if the written file
+    does not have the expected {thread: project id} assignments."""
+    shutil.copy2(path, backup)
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps(state, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+    temporary.replace(path)
+    check = json.loads(path.read_text(encoding='utf-8'))
+    if any(check['thread-project-assignments'].get(t, {}).get('projectId') != p for t, p in expected.items()):
+        shutil.copy2(backup, path)
+        raise RuntimeError(f'Validation failed; restored {path.name} from {backup.name}.')
 
 
 def dispatcher_threads(state_dir):
@@ -105,14 +139,10 @@ def main():
     if args.dry_run or (not report['created'] and not report['assigned']):
         return
     backup = path.with_name(f"{path.name}.bak-agent-fleet-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
-    shutil.copy2(path, backup)
-    temporary = path.with_name(path.name + '.tmp')
-    temporary.write_text(json.dumps(updated, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
-    temporary.replace(path)
-    check = json.loads(path.read_text(encoding='utf-8'))
-    if any(check['thread-project-assignments'].get(t, {}).get('projectId') != report['project_id'] for t in report['assigned']):
-        shutil.copy2(backup, path)
-        sys.exit(f'Validation failed; restored {path.name} from {backup.name}.')
+    try:
+        write_state(path, updated, {t: report['project_id'] for t in report['assigned']}, backup)
+    except RuntimeError as error:
+        sys.exit(str(error))
     print(f'Wrote {path} (backup: {backup.name}). Start the Codex desktop app to see the folder.')
 
 

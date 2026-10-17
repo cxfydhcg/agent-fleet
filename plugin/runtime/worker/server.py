@@ -25,6 +25,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import HTMLResponse, JSONResponse
 import uvicorn
 import claude_executor
+from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state
 
 
 def now():
@@ -262,6 +263,8 @@ class TaskManager:
         self.profile.setdefault('computer', {})
         self.profile.setdefault('agents', {})
         self.notices = {}  # main agent thread -> finished sub-task ids it has not been told about yet
+        # Desktop-app sidebar folders (config codex_app_folders): whether sessions may need filing, and how it went.
+        self.folders_pending, self.folders_status, self.folder_task = True, None, None
         self._archived_cache = None
         self.notifications_file = self.state / 'notifications.jsonl'
         self.notifications = [json.loads(line) for line in self.notifications_file.read_text(encoding='utf-8').splitlines()
@@ -475,6 +478,7 @@ class TaskManager:
         machine = await self.machine_info(refresh)
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
                 'machine': machine, 'computer': self.profile['computer'], 'agents': agents, 'quota_wait': self.quota_wait,
+                **({'codex_app_folders': self.folders_status} if self.app_folders() else {}),
                 'busy': {'running': [j.get('name') or j['task_id'] for j in self.jobs.values() if j['status'] == 'running'],
                          'queued': sum(j['status'] == 'queued' for j in self.jobs.values())}}
 
@@ -623,8 +627,60 @@ class TaskManager:
             return next((j['task_id'] for j in running if j.get('thread_id') == thread), None)
         return running[0]['task_id'] if len(running) == 1 and self.config.get('caller_fallback') else None
 
+    def app_folders(self):
+        """The two desktop-app sidebar folders, {side: (name, root)}, or None when codex_app_folders is off.
+        main: the main agent and everything it opened (root: the workspace); other: sessions other agents
+        opened directly (root: tasks_dir). Folders are matched by root, so renaming one in the app keeps it."""
+        setting = self.config.get('codex_app_folders')
+        if not setting or self.config.get('executor') == 'claude':
+            return None
+        names = setting if isinstance(setting, dict) else {}
+        return {'main': (names.get('main') or 'AgentFleet', str(self.root.parent)),
+                'other': (names.get('other') or 'AgentFleet-其他', str(self.root))}
+
+    def folder_threads(self):
+        """Codex threads by folder side, forks and their originals included."""
+        sides = {'main': [], 'other': []}
+        for job in list(self.jobs.values()):
+            if job.get('engine') == 'claude':
+                continue
+            side = 'main' if not self.is_worker(self.session_root(job)) or self.session_owner(job) else 'other'
+            sides[side] += [job[k] for k in ('thread_id', 'forked_from_thread_id') if job.get(k)]
+        return sides
+
+    def file_into_app_folders(self, folders, threads):
+        """Blocking: file the threads into the app's sidebar folders unless the app is open, since it
+        rewrites its state file while running. Returns 'waiting' or 'filed'."""
+        codex_home = Path(self.config.get('codex_home') or os.environ.get('CODEX_HOME') or Path.home() / '.codex')
+        path = codex_home / STATE_FILE
+        if not path.exists() or desktop_app_running():
+            return 'waiting'
+        state = json.loads(path.read_text(encoding='utf-8'))
+        updated, reports, changed = sort_into_folders(
+            state, [(name, root, threads[side]) for side, (name, root) in folders.items()],
+            int(time.time() * 1000), lambda: str(uuid.uuid4()))
+        if changed:
+            write_state(path, updated, {t: r['project_id'] for r in reports for t in r['assigned']},
+                        path.with_name(path.name + '.bak-agent-fleet'))
+        return 'filed'
+
+    async def folder_loop(self):
+        while not self.closing:
+            folders = self.app_folders()
+            if folders and self.folders_pending:
+                try:
+                    result = await asyncio.to_thread(self.file_into_app_folders, folders, self.folder_threads())
+                    self.folders_status = {'result': result, 'checked_at': now()}
+                    self.folders_pending = result == 'waiting'
+                except Exception as error:
+                    # A file the app changed in an unexpected way: don't retry every few seconds; the next finished task tries again.
+                    self.folders_status = {'error': str(error)[-500:], 'checked_at': now()}
+                    self.folders_pending = False
+            await asyncio.sleep(self.config.get('codex_app_folder_interval', 30))
+
     def after_job(self, job):
         """When a sub-task finishes, queue a message that wakes the main agent which dispatched it."""
+        self.folders_pending = True
         parent = self.jobs.get(job.get('parent_task_id') or '')
         if parent and parent.get('thread_id') and job['status'] in FINISHED and self.config.get('wake_parent', True):
             self.notices.setdefault(self.latest_thread(parent['thread_id']), []).append(job['task_id'])
@@ -1088,12 +1144,13 @@ class TaskManager:
 
     async def shutdown(self):
         self.closing = True
-        if self.worker:
-            self.worker.cancel()
-            try:
-                await self.worker
-            except asyncio.CancelledError:
-                pass
+        for task in (self.worker, self.folder_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         for job in self.jobs.values():
             if job['status'] == 'queued':
                 job.update(status='interrupted', finished_at=now(), error='Service shut down before task started')
@@ -1254,6 +1311,7 @@ def build_app(config):
         # Job workers live for the service lifetime, not one MCP request/session.
         async with mcp.session_manager.run():
             manager.worker = asyncio.create_task(manager.work())
+            manager.folder_task = asyncio.create_task(manager.folder_loop())
             try:
                 yield
             finally:

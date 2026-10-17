@@ -141,16 +141,21 @@ node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>
 |---|---|---|
 | `resident_title_suffix` | `" - 固定"` | 登记为常驻（resident）的 Agent，会话标题后面加这个后缀，和一次性任务区分开；主agent export 不加。只改 App 里显示的标题，派任务时还用原名。设成 `""` 关闭。 |
 | `codex_project_id` | 不设 | 新会话放进这个 Codex 项目（用 app-server 的实验接口 `projectId`）。不设时行为不变。 |
+| `codex_app_folders` | 安装时打开 | 把派任务服务的会话自动放进 Codex 桌面 App 侧边栏的两个文件夹：`main`（默认 `AgentFleet`）放主 Agent 自己和它开的所有会话，`other`（默认 `AgentFleet-其他`）放 orchestrator 或其他 Agent 直接开的会话。常驻和一次性的都在里面，常驻的标题带 `resident_title_suffix`。写成 `{"main": "名字", "other": "名字"}` 改名，`true` 用默认名，`false` 关闭。只对 Codex 引擎有效。 |
 
-目前的桌面 App（26.1007）还不显示 app-server 的项目，所以另有一个辅助脚本，把派任务服务的会话放进 App 侧边栏的一个文件夹：
+目前的桌面 App（26.1007）还不显示 app-server 的项目，侧边栏文件夹记在 App 的**内部文件** `~/.codex/.codex-global-state.json` 里，`codex_app_folders` 就是改这个文件：
+
+- App 运行时会覆盖这个文件，所以**只在 App 关着时放**：任务结束后检查一次（之后每 30 秒），App 开着就等它退出后再放。新会话要等下次打开 App 才出现在文件夹里。
+- 两个文件夹按根目录认（`main` 是工作区，`other` 是 `tasks_dir`），在 App 里改了文件夹名字也还认得。你自己拖到别的文件夹的会话不会被移回来。
+- 每次写之前备份为 `.codex-global-state.json.bak-agent-fleet`。这个文件格式不公开，App 更新后可能失效；失效时只是不放，任务照常运行，`get_profile` 的 `codex_app_folders` 里有最近一次的结果。
+
+不想让服务自动改，也可以关掉 `codex_app_folders`，手动运行辅助脚本，把所有会话放进一个文件夹：
 
 ```powershell
-# 先彻底退出 Codex 桌面 App（ChatGPT.exe），App 运行时会覆盖这个文件；脚本检测到它在运行会拒绝执行
+# 先彻底退出 Codex 桌面 App（ChatGPT.exe）；脚本检测到它在运行会拒绝执行
 python worker\tools\codex_app_folder.py --config "$env:LOCALAPPDATA\agent-fleet\config.json" --dry-run
 python worker\tools\codex_app_folder.py --config "$env:LOCALAPPDATA\agent-fleet\config.json" [--folder-name AgentFleet] [--root <文件夹根路径>]
 ```
-
-它修改 App 的**内部文件** `~/.codex/.codex-global-state.json`：没有以 `--root`（默认是工作区，即 `tasks_dir` 的上一级）为根的文件夹就新建一个，再把任务记录里还没归到任何文件夹的会话放进去；用户自己归过类的会话不动。写之前备份为 `.codex-global-state.json.bak-agent-fleet-<时间>`。这个文件格式不公开，App 更新后随时可能变，脚本可能失效。以后派出的新会话不会自动进去，需要再运行一次。
 
 ## 开发
 

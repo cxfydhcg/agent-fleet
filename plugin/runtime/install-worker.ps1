@@ -235,6 +235,11 @@ if (Test-Path $configPath) {
         if (-not $config.Contains($property.Name)) { $config[$property.Name] = $property.Value }
     }
 }
+# Codex sessions go into two desktop-app sidebar folders: what the main agent opened, and what other agents
+# opened directly. Added once, so a user who changed or turned it off keeps that choice.
+if ($Engine -eq 'codex' -and -not $config.Contains('codex_app_folders')) {
+    $config['codex_app_folders'] = [ordered]@{ main = 'AgentFleet'; other = 'AgentFleet-其他' }
+}
 Write-Utf8 $configPath ($config | ConvertTo-Json -Depth 5)
 
 # 8. Start at logon, inside the desktop session (needed to control the screen)

@@ -952,6 +952,69 @@ class SessionControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.caller(ctx), 'main-1')
 
 
+
+class AppSidebarFolderTests(unittest.IsolatedAsyncioTestCase):
+    """codex_app_folders: the dispatcher files its sessions into two desktop-app folders while the app is closed."""
+    asyncSetUp_base, asyncTearDown, add = WakeTests.asyncSetUp, WakeTests.asyncTearDown, WakeTests.add
+
+    async def asyncSetUp(self):
+        await self.asyncSetUp_base()
+        self.codex = Path(self.temp.name) / 'codex'
+        self.codex.mkdir()
+        self.state = self.codex / '.codex-global-state.json'
+        self.state.write_text(json.dumps({'local-projects': {'p-user': {'id': 'p-user', 'name': 'mine', 'rootPaths': ['C:\\mine']}},
+                                          'thread-project-assignments': {'U': {'projectKind': 'local', 'projectId': 'p-user'}}}), encoding='utf-8')
+        self.manager.config.update(codex_home=str(self.codex), codex_app_folders=True, codex_app_folder_interval=0.01)
+        self.add('child', 'C', 'completed', name='剪辑', parent_task_id='main-1')
+        self.add('child-2', 'C2', 'completed', resume_task_id='child', forked_from_thread_id='C')
+        self.add('direct', 'D', 'completed', name='发布员')
+        self.add('user-filed', 'U', 'completed')
+
+    def folders(self):
+        state = json.loads(self.state.read_text(encoding='utf-8'))
+        names = {p['id']: p['name'] for p in state['local-projects'].values()}
+        return {t: names[a['projectId']] for t, a in state['thread-project-assignments'].items()}
+
+    async def test_sessions_are_filed_by_who_opened_them_once_the_app_is_closed(self):
+        folders = self.manager.app_folders()
+        with patch('server.desktop_app_running', return_value=['ChatGPT.exe']):
+            self.assertEqual(self.manager.file_into_app_folders(folders, self.manager.folder_threads()), 'waiting')
+        self.assertEqual(self.folders(), {'U': 'mine'})
+        with patch('server.desktop_app_running', return_value=[]):
+            self.assertEqual(self.manager.file_into_app_folders(folders, self.manager.folder_threads()), 'filed')
+        self.assertEqual(self.folders(), {'P': 'AgentFleet', 'C': 'AgentFleet', 'C2': 'AgentFleet',
+                                          'D': 'AgentFleet-其他', 'U': 'mine'})
+        self.assertTrue(self.state.with_name(self.state.name + '.bak-agent-fleet').exists())
+        # Custom names; the folders are found again by their root, so nothing is duplicated.
+        self.manager.config['codex_app_folders'] = {'main': '主 agent 派的', 'other': '其他'}
+        with patch('server.desktop_app_running', return_value=[]):
+            self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads())
+        self.assertEqual(len(json.loads(self.state.read_text(encoding='utf-8'))['local-projects']), 3)
+        self.manager.config['executor'] = 'claude'
+        self.assertIsNone(self.manager.app_folders())
+
+    async def test_loop_waits_for_the_app_and_retries_after_tasks(self):
+        running = ['ChatGPT.exe']
+        with patch('server.desktop_app_running', side_effect=lambda: running):
+            self.manager.folder_task = asyncio.create_task(self.manager.folder_loop())
+            async with asyncio.timeout(5):
+                while not self.manager.folders_status:
+                    await asyncio.sleep(0.01)
+                self.assertEqual((self.manager.folders_status['result'], self.manager.folders_pending), ('waiting', True))
+                running.clear()
+                while self.manager.folders_pending:
+                    await asyncio.sleep(0.01)
+            self.assertEqual(self.folders()['D'], 'AgentFleet-其他')
+            self.add('later', 'L', 'completed', parent_task_id='main-1')
+            self.manager.after_job(self.manager.jobs['later'])
+            async with asyncio.timeout(5):
+                while 'L' not in self.folders():
+                    await asyncio.sleep(0.01)
+        self.assertEqual(self.folders()['L'], 'AgentFleet')
+        self.manager.closing = True
+        self.manager.folder_task.cancel()
+
+
 class CodexAppFolderTests(unittest.TestCase):
     """The JSON transform of tools/codex_app_folder.py, without touching real files or processes."""
 
