@@ -2,6 +2,8 @@
 
 # agent-fleet
 
+![agent-fleet overview](docs/overview.en.svg)
+
 One AI agent directs AI agents on many computers. It doesn't build a new agent: it adds communication, scheduling and management across computers on top of Codex or Claude Code. Each computer can use either one, and you can mix them.
 
 ```

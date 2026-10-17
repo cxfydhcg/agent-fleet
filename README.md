@@ -2,6 +2,8 @@
 
 # agent-fleet
 
+![agent-fleet 图解](docs/overview.zh.svg)
+
 用一个 AI Agent 指挥多台电脑上的 AI Agent。它不重新开发 Agent，而是在现成的 Codex 或 Claude Code 之上，加一层跨电脑的通信、调度和管理。每台电脑用哪个都行，可以混着用。
 
 ```
