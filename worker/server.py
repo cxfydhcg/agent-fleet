@@ -12,11 +12,13 @@ from datetime import datetime, timezone
 import hmac
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import secrets
 import shutil
 import signal
+import sys
 import time
 import uuid
 from urllib.parse import quote
@@ -243,6 +245,35 @@ $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 '''
 
 
+def mac_machine_info():
+    """The same facts as the Windows script, from sysctl, sw_vers and system_profiler."""
+    import subprocess
+    def run(*command):
+        try:
+            return subprocess.run(command, capture_output=True, text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ''
+    info = {}
+    if run('sw_vers', '-productVersion'):
+        info['os'] = f"macOS {run('sw_vers', '-productVersion')}"
+    if run('sysctl', '-n', 'machdep.cpu.brand_string'):
+        info['cpu'] = run('sysctl', '-n', 'machdep.cpu.brand_string')
+    for key, name in (('cores', 'hw.physicalcpu'), ('threads', 'hw.logicalcpu'), ('ram_bytes', 'hw.memsize')):
+        value = run('sysctl', '-n', name)
+        if value.isdigit():
+            info[key] = int(value)
+    if 'ram_bytes' in info:
+        info['ram_gb'] = round(info.pop('ram_bytes') / 2 ** 30, 1)
+    try:
+        displays = json.loads(run('system_profiler', 'SPDisplaysDataType', '-json') or '{}').get('SPDisplaysDataType', [])
+        info['gpus'] = [{'name': d.get('sppci_model') or d.get('_name'), 'cores': d.get('sppci_cores')} for d in displays]
+    except ValueError:
+        pass
+    usage = shutil.disk_usage('/')
+    info['disks'] = [{'drive': '/', 'total_gb': round(usage.total / 2 ** 30, 1), 'free_gb': round(usage.free / 2 ** 30, 1)}]
+    return info
+
+
 def collect_machine_info(config):
     """Facts about this computer that nobody has to type in: hardware, network, versions."""
     import platform
@@ -258,6 +289,8 @@ def collect_machine_info(config):
             info.update(json.loads(done.stdout))
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
+    elif sys.platform == 'darwin':
+        info.update(mac_machine_info())
     if shutil.which('nvidia-smi'):
         try:
             done = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,memory.used,utilization.gpu',
@@ -287,6 +320,16 @@ def collect_machine_info(config):
     info['codex_version'] = config.get('codex_version')
     info['checked_at'] = now()
     return info
+
+
+def default_data_dir():
+    """Where setup keeps config, token and state: %LOCALAPPDATA%\\agent-fleet on Windows,
+    ~/Library/Application Support/agent-fleet on macOS."""
+    if os.name == 'nt':
+        return Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'agent-fleet'
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support' / 'agent-fleet'
+    return Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local' / 'share') / 'agent-fleet'
 
 
 class TaskManager:
@@ -641,11 +684,15 @@ class TaskManager:
         # Opening a session while a dispatcher turn owns it can contend for its writer lease.
         if any(j['status'] in ('queued', 'running') and j.get('thread_id') == job['thread_id'] for j in self.jobs.values()):
             raise ValueError('Wait for pending work in this session to finish before opening it')
-        if os.name != 'nt':
-            raise ValueError('Opening the desktop app is currently supported on Windows only; use desktop_url locally')
+        if os.name != 'nt' and sys.platform != 'darwin':
+            raise ValueError('Opening the desktop app is supported on Windows and macOS only; use desktop_url locally')
         uuid.UUID(job['thread_id'])
         response = self.public(job)
-        os.startfile(response['desktop_url'])
+        if os.name == 'nt':
+            os.startfile(response['desktop_url'])
+        else:
+            import subprocess
+            subprocess.run(['open', response['desktop_url']], check=True, timeout=15)
         return {**response, 'desktop_open_status': 'requested',
                 'desktop_open_location': 'server computer',
                 'desktop_open_note': 'Requested opening in the Codex desktop app on the server computer. This does not verify that the UI rendered. The desktop app keeps chats it has opened locked until it fully exits, so this dispatcher cannot continue this session until then. For viewing only, use /dashboard instead.'}
@@ -1452,7 +1499,7 @@ def build_app(config):
     @mcp.custom_route('/api/tasks', methods=['GET'])
     async def api_tasks(request):
         jobs = sorted(manager.jobs.values(), key=lambda j: j['created_at'], reverse=True)[:300]
-        return JSONResponse({'computer': config.get('computer_name') or os.environ.get('COMPUTERNAME', ''),
+        return JSONResponse({'computer': config.get('computer_name') or os.environ.get('COMPUTERNAME') or platform.node(),
                              'tasks': [manager.public(j, include_result=True) for j in jobs]},
                             headers={'Cache-Control': 'no-store'})
 
@@ -1498,8 +1545,7 @@ def build_app(config):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    default_config = os.environ.get('AGENT_FLEET_CONFIG') or str(
-        Path(os.environ.get('LOCALAPPDATA') or Path.home() / '.local' / 'share') / 'agent-fleet' / 'config.json')
+    default_config = os.environ.get('AGENT_FLEET_CONFIG') or str(default_data_dir() / 'config.json')
     parser.add_argument('--config', default=default_config)
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding='utf-8-sig'))

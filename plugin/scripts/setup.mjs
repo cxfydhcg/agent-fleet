@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ const values = new Map();
 const flags = new Set();
 const booleans = new Set(['plan', 'local', 'full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop']);
 const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
-  'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
+  'codex-executable', 'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
 const argv = process.argv.slice(2);
 
 function fail(message) { console.error(message); process.exit(2); }
@@ -27,10 +27,10 @@ if (values.has('connectivity') && !['local', 'tailscale', 'lan'].includes(values
 if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--lan-address requires --connectivity lan.');
 if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en.');
 if (role === 'worker' && (values.has('connection') || values.has('registry-home') || flags.has('local'))) fail('Connection/registry options require orchestrator or both.');
-const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'port', 'tailscale-port', 'lan-address'];
+const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'];
 if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
 if (flags.has('local') && !values.has('connection')) fail('--local requires --connection.');
-if (role !== 'orchestrator' && process.platform !== 'win32') fail('Worker setup currently requires Windows.');
+if (role !== 'orchestrator' && !['win32', 'darwin'].includes(process.platform)) fail('Worker setup currently supports Windows and macOS.');
 for (const key of ['port', 'tailscale-port']) {
   if (values.has(key) && (!/^\d+$/.test(values.get(key)) || Number(values.get(key)) < 1 || Number(values.get(key)) > 65535)) fail('Ports must be integers from 1 to 65535.');
 }
@@ -57,8 +57,38 @@ function lastObject(output) {
   throw new Error('Worker did not report its installation settings.');
 }
 
+// macOS: deploy the runtime into the workspace (so autostart does not point into the plugin cache, which
+// changes on updates), run the Mac installer, then register the worker for this computer's main-agent skill.
+function setupMacWorker() {
+  const dataDir = resolve(values.get('data-dir') || join(homedir(), 'Library', 'Application Support', 'agent-fleet'));
+  const configPath = join(dataDir, 'config.json');
+  const previous = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '')) : null;
+  const workspace = resolve(values.get('workspace') || (previous?.tasks_dir ? dirname(previous.tasks_dir) : join(homedir(), 'Documents', 'AgentFleet')));
+  const args = ['--data-dir', dataDir, '--workspace', workspace, '--json'];
+  for (const key of ['engine', 'connectivity', 'name', 'main-agent-name', 'manager-name', 'language', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'])
+    if (values.has(key)) args.push('--' + key, values.get(key));
+  for (const key of ['full-access', 'skip-prerequisites', 'no-autostart', 'plan']) if (flags.has(key)) args.push('--' + key);
+  if (flags.has('plan')) return lastObject(run('bash', [join(root, 'runtime', 'install-worker.sh'), ...args]));
+  const deployment = join(workspace, 'service');
+  mkdirSync(deployment, { recursive: true });
+  cpSync(join(root, 'runtime', 'worker'), join(deployment, 'worker'), { recursive: true, force: true });
+  for (const file of ['install-worker.sh', 'LICENSE']) cpSync(join(root, 'runtime', file), join(deployment, file), { force: true });
+  const result = lastObject(run('bash', [join(deployment, 'install-worker.sh'), ...args]));
+  const clientHome = join(dataDir, 'local-client');
+  const env = { ...process.env, AGENT_FLEET_HOME: clientHome };
+  const client = join(root, 'scripts', 'fleet.mjs');
+  run(process.execPath, [client, 'add-computer', result.connection_file, '--local=1'], env);
+  if (result.status === 'service-ready') {
+    run(process.execPath, [client, 'describe-agent', result.computer, result.main_agent_name,
+      result.language === 'en' ? '--role=Main agent responsible for this worker' : '--role=负责这台电脑的主 Agent', '--type=main'], env);
+  }
+  return { ...result, data_dir: dataDir, client_home: clientHome };
+}
+
 let worker;
-if (role !== 'orchestrator') {
+if (role !== 'orchestrator' && process.platform === 'darwin') {
+  worker = setupMacWorker();
+} else if (role !== 'orchestrator') {
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/setup-worker.ps1'), '-NoDesktop'];
   const mappings = { engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
     name: 'Name', 'main-agent-name': 'MainAgentName', 'manager-name': 'ManagerName', language: 'Language', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };

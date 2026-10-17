@@ -29,6 +29,7 @@ def build():
     runtime = root / 'runtime'
     runtime.mkdir(exist_ok=True)
     shutil.copyfile(ROOT / 'install-worker.ps1', runtime / 'install-worker.ps1')
+    shutil.copy2(ROOT / 'install-worker.sh', runtime / 'install-worker.sh')  # keeps the executable bit
     shutil.copyfile(ROOT / 'LICENSE', runtime / 'LICENSE')
     for path in (ROOT / 'worker').rglob('*'):
         if not path.is_file() or '__pycache__' in path.parts or path.suffix == '.pyc':

@@ -345,6 +345,8 @@ if (cmd === "pair") {
       : T("配对码不对，输错次数太多，这个配对码已经作废。在 worker 上运行 pair.ps1 生成新的。", "Wrong pairing code, and too many wrong tries closed the window. Run pair.ps1 on the worker for a new code."));
     process.exit(2);
   }
+  // A worker without a LAN or Tailscale address (e.g. paired on this computer) is reached where we found it.
+  if (!answer.tailscale_url && !answer.lan_url) answer.lan_url = `http://${address}/mcp`;
   addComputer(answer, false, "pair");
   out({ computer: answer.name, manager_name: registry.computers[answer.name]?.manager_name ?? null, main_agent_id: answer.main_agent_id ?? null,
         main_agent_name: answer.main_agent_name ?? null, url: registry.computers[answer.name]?.url });

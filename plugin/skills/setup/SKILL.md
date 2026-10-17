@@ -46,7 +46,10 @@ For **control** (orchestrator):
   `--local` only when that worker is this computer. A local-only worker cannot be
   reached from another computer; set it up with Tailscale or LAN there first.
 
-For **be controlled** or **both** (worker, Windows only):
+For **be controlled** or **both** (worker, Windows or macOS; the same options work on both. On macOS
+missing Node.js/Tailscale come from Homebrew, data lives in `~/Library/Application Support/agent-fleet`, and
+autostart is a LaunchAgent. With `--full-access` the owner must grant Accessibility and Screen Recording to
+Codex/Terminal in System Settings → Privacy & Security; you cannot do that for them):
 - Respect an existing installation's engine, workspace, data directory and
   network choices. A fresh worker defaults to Codex, local-only connectivity and
   restricted permissions unless the user asks otherwise. `--engine codex|claude`
@@ -129,7 +132,7 @@ To register another worker later, rerun with `--role orchestrator --connection`
 
 ## 6. Desktop app visibility
 
-- Setup registers the workspace under Projects in Codex desktop on Windows and
+- Setup registers the workspace under Projects in Codex desktop on Windows and macOS and
   reports `desktop.status`, including when it reuses an existing worker. Verify
   `registered` and the path with the app's project-list tool when available;
   never report a sidebar project solely because its directory exists. `pending`

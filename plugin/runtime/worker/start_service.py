@@ -1,6 +1,7 @@
 """Start the service without inheriting an agent terminal's capture pipes."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -15,8 +16,10 @@ def main():
     command = [config['python_executable'], '-u', str(Path(__file__).with_name('server.py')),
                '--config', str(args.config.resolve())]
     with (state / 'server.stdout.log').open('wb') as stdout, (state / 'server.stderr.log').open('wb') as stderr:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-                                   close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        # Detached from the caller: no console window on Windows, its own session elsewhere, so closing the
+        # terminal (or a login script exiting) does not stop the service.
+        detach = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session': True}
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, close_fds=True, **detach)
     print(process.pid)
 
 

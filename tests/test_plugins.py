@@ -186,6 +186,7 @@ class PluginSetupTests(unittest.TestCase):
         self.assertEqual(self.orchestrator('--connection').returncode, 2)
         self.assertFalse(self.home.exists())
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows worker setup')
     def test_worker_plan_does_not_install_or_write_data(self):
         data, workspace = self.root / 'private', self.root / 'workspace with spaces'
         result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(WORKER),
@@ -199,6 +200,7 @@ class PluginSetupTests(unittest.TestCase):
         self.assertFalse(data.exists())
         self.assertFalse(workspace.exists())
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows worker setup')
     def test_lan_worker_plan_reports_address_without_writes(self):
         data, workspace = self.root / 'private', self.root / 'workspace'
         run = lambda *extra: subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(WORKER),
@@ -210,6 +212,23 @@ class PluginSetupTests(unittest.TestCase):
         self.assertEqual(value['connectivity'], 'Lan')
         self.assertEqual(value['lan_address'], '192.0.2.10')
         self.assertNotEqual(run('-Connectivity', 'Local', '-LanAddress', '192.0.2.10').returncode, 0)
+        self.assertFalse(data.exists())
+        self.assertFalse(workspace.exists())
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS worker setup')
+    def test_mac_worker_plan_does_not_install_or_write_data(self):
+        data, workspace = self.root / 'private', self.root / 'workspace with spaces'
+        run = lambda *extra: subprocess.run(['node', str(ROOT / 'plugin/scripts/setup.mjs'), '--role', 'worker', '--plan', '--no-desktop',
+            '--data-dir', str(data), '--workspace', str(workspace), *extra], capture_output=True, text=True, encoding='utf-8', timeout=60)
+        result = run('--engine', 'claude')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout[result.stdout.rindex('{\n  "role"'):])['worker']
+        self.assertEqual((value['platform'], value['engine'], value['connectivity'], value['full_access']), ('macos', 'claude', 'local', False))
+        result = run('--connectivity', 'lan', '--lan-address', '192.0.2.10', '--language', 'en')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout[result.stdout.rindex('{\n  "role"'):])['worker']
+        self.assertEqual((value['connectivity'], value['lan_address'], value['main_agent_name']), ('lan', '192.0.2.10', 'Main agent'))
+        self.assertNotEqual(run('--connectivity', 'local', '--lan-address', '192.0.2.10').returncode, 0)
         self.assertFalse(data.exists())
         self.assertFalse(workspace.exists())
 
@@ -228,6 +247,8 @@ class PluginSetupTests(unittest.TestCase):
             self.assertEqual(onboarding, './skills/setup/SKILL.md')
             self.assertTrue((plugin / 'runtime/worker/claude_executor.py').is_file())
             self.assertTrue((plugin / 'runtime/install-worker.ps1').is_file())
+            self.assertTrue((plugin / 'runtime/install-worker.sh').is_file())
+            self.assertTrue((plugin / 'runtime/worker/install_mac.py').is_file())
             self.assertTrue((plugin / 'scripts/setup.mjs').is_file())
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows worker startup')

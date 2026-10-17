@@ -18,6 +18,10 @@ Ask the user which role this computer should have; it can have both:
    The agents' working area is `%USERPROFILE%\AgentFleet\` (`main-agent\`, `tasks\`, `shared\`); pass `-Workspace <path>` to put it elsewhere, e.g. on a bigger disk for video work.
 4. The script writes `%LOCALAPPDATA%\agent-fleet\connection.json`. It contains this computer's **token**: never print it, paste it into chat, or commit it. Tell the user to copy the file to their orchestrator computer.
 
+### Worker (macOS)
+
+Same flow, through `bash install-worker.sh [--connectivity local|tailscale|lan] [--full-access] [--language zh|en] --description "<what this computer is for>"` (run as the normal user, never with sudo). It uses Homebrew for missing Node.js/Tailscale, keeps data in `~/Library/Application Support/agent-fleet/`, and adds a LaunchAgent (`com.agentfleet.worker`) for autostart. The same two human steps apply (Tailscale and `codex login`). With full access, the owner must also grant Accessibility and Screen Recording in System Settings; you cannot do that. `worker/start.sh`, `stop.sh` and `pair.sh` control the service.
+
 ### Orchestrator
 
 1. Preferred: in Claude Code, `/plugin marketplace add cxfydhcg/agent-fleet`, then install the `agent-fleet` plugin. The skill is `/agent-fleet:call-agent`.
@@ -46,5 +50,6 @@ Ask the user which role this computer should have; it can have both:
 - Pairing: `/pair/start` (token) opens a 10-minute window with a one-time 8-digit code; `/pair/info` and `/pair/claim` are public only while it is open, and `/pair/claim` returns the connection info (with the token) for the right code once; 5 wrong codes close it. `fleet.mjs discover` / `pair` are the orchestrator side. Never make the token obtainable without the code.
 - Names: the session title is the user's (the dispatcher sets it only when the title it wants changes), the management name (`manager_name`) belongs to the orchestrator, and `main_agent_id` (in the service's `profile.json`, created at first setup) is the permanent key the orchestrator maps to. Never route the main agent by name when the id is available.
 - `plugin/skills/call-agent/`: the orchestrator skill and its client `fleet.mjs` (Node 18+, no dependencies).
+- Workers run on Windows and macOS. Windows: `install-worker.ps1`, `worker/start.ps1`, `stop.ps1`, `pair.ps1`. macOS: `install-worker.sh` → `worker/install_mac.py`, `worker/service_ctl.py` (start/stop/status; wrapped by `start.sh`, `stop.sh`; `pair.sh`). Keep both installers producing the same config keys and `connection.json` fields, and keep runtime code portable (guard Windows-only calls with `os.name == 'nt'`, macOS with `sys.platform == 'darwin'`). The plugin's `setup.mjs` runs `setup-worker.ps1` on Windows and the Mac installer (deployed to `<workspace>/service`) on macOS.
 - PowerShell scripts must run on Windows PowerShell 5.1: no `&&`, `??` or ternaries. Save them as UTF-8 **with BOM**, because they contain Chinese text. Variable names are case-insensitive: a `$Config` parameter would clobber a `$config` variable.
 - Validate the plugin with `claude plugin validate .` after changing `.claude-plugin/` or `plugin/`.

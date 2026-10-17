@@ -41,7 +41,7 @@ Internal data (config, tokens, task records, profiles, notifications) lives in `
 
 ## Requirements
 
-- Windows 10/11 (only tested on Windows so far; Mac needs its own startup and hardware-detection parts)
+- Managed computers: Windows 10/11 or macOS (the orchestrator works on both)
 - [Tailscale](https://tailscale.com): all computers sign in to the same account to form a private network
 - Codex: signed in with your ChatGPT account (`codex login`)
 - The orchestrator needs [Claude Code](https://claude.com/claude-code) and Node.js
@@ -69,6 +69,25 @@ The script installs any missing Node.js, Python, Tailscale and Codex CLI, deploy
 Only two things need a person: **signing in to Tailscale** and **signing in to Codex**. If either is missing, the script reminds you; sign in and run it again.
 
 `-FullAccess`: sub-agents run without a sandbox and permission requests are approved automatically, which they need to operate the desktop, browsers and other programs. Without it, sub-agents can only read and write their own working directory.
+
+### Mac
+
+On that Mac, as the user you normally sign in with (no sudo):
+
+```bash
+git clone <project URL> agent-fleet
+cd agent-fleet
+bash install-worker.sh --connectivity lan --full-access --description "Mac mini for video editing"
+```
+
+It does the same as on Windows, with these differences:
+- Missing Node.js or Tailscale is installed with Homebrew (without Homebrew it tells you to install them yourself and rerun with `--skip-prerequisites`); Python 3.10 or newer is needed.
+- Data lives in `~/Library/Application Support/agent-fleet/`; the workspace defaults to `~/AgentFleet/` (change it with `--workspace`).
+- Autostart at login uses `~/Library/LaunchAgents/com.agentfleet.worker.plist`; `--no-autostart` skips it.
+- Start, stop, or get a new pairing code: `bash worker/start.sh`, `bash worker/stop.sh`, `bash worker/pair.sh`.
+- Options start with `--`: `--connectivity local|tailscale|lan`, `--lan-address`, `--full-access`, `--language zh|en`, `--main-agent-name`, `--manager-name`, `--engine codex|claude`; `bash install-worker.sh --help` lists them all.
+- Firewall: the macOS firewall is off by default, so nothing to set. If it is on, macOS asks on first start whether Python may accept incoming connections; click Allow.
+- With `--full-access`, for sub-tasks to operate the desktop macOS asks for Accessibility and Screen Recording permission for Codex (or Terminal); allow them in System Settings → Privacy & Security.
 
 ## Install the orchestrator
 

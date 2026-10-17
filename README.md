@@ -41,7 +41,7 @@ AgentFleet\
 
 ## 要求
 
-- Windows 10/11（目前只在 Windows 上测试过；Mac 需要另写启动和硬件检测部分）
+- 被管理的电脑：Windows 10/11 或 macOS（管理端在两种系统上都能用）
 - [Tailscale](https://tailscale.com)：所有电脑登录同一个账号，组成内网
 - Codex：用你的 ChatGPT 账号登录（`codex login`）
 - 管理端需要 [Claude Code](https://claude.com/claude-code) 和 Node.js
@@ -69,6 +69,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-worker.ps1 -FullAc
 只有两件事要人来做：**登录 Tailscale**，**登录 Codex**。没登录的话脚本会提醒，登录后再运行一次即可。
 
 `-FullAccess`：子 agent 不设沙箱，并自动同意权限请求，才能操作桌面、浏览器和其他程序。不加的话，子 agent 只能读写自己的工作目录。
+
+### Mac
+
+在那台 Mac 上，用平时登录的用户运行（不要 sudo）：
+
+```bash
+git clone <本项目地址> agent-fleet
+cd agent-fleet
+bash install-worker.sh --connectivity lan --full-access --description "Mac mini，剪视频"
+```
+
+做的事和 Windows 一样，区别：
+- 缺 Node.js、Tailscale 时用 Homebrew 安装（没有 Homebrew 就提示你自己装，再加 `--skip-prerequisites`）；需要 Python 3.10 以上。
+- 数据在 `~/Library/Application Support/agent-fleet/`，工作区默认 `~/AgentFleet/`（`--workspace` 改）。
+- 登录后自动启动用的是 `~/Library/LaunchAgents/com.agentfleet.worker.plist`；`--no-autostart` 不装。
+- 启动、停止、重新生成配对码：`bash worker/start.sh`、`bash worker/stop.sh`、`bash worker/pair.sh`。
+- 选项都是 `--` 开头：`--connectivity local|tailscale|lan`、`--lan-address`、`--full-access`、`--language zh|en`、`--main-agent-name`、`--manager-name`、`--engine codex|claude`，完整列表用 `bash install-worker.sh --help`。
+- 防火墙：macOS 默认防火墙是关的，不用设置；如果开着，第一次启动时系统会问是否允许 Python 接受传入连接，点"允许"。
+- 用 `--full-access` 让子任务操作桌面时，macOS 会要求给 Codex（或终端）"辅助功能"和"屏幕录制"权限，到 系统设置 → 隐私与安全性 里允许。
 
 ## 安装管理端
 

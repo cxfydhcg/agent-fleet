@@ -15,7 +15,7 @@ export const desktopWorkspaceUrl = workspace => 'codex://new?path=' + encodeURIC
 export async function ensureDesktopProject({ workspace, disabled = false }, runtime = {}) {
   if (disabled) return { status: 'disabled' };
   const platform = runtime.platform || process.platform;
-  if (platform !== 'win32') return { status: 'not-available', reason: 'Automatic desktop registration currently supports Windows.' };
+  if (platform !== 'win32' && platform !== 'darwin') return { status: 'not-available', reason: 'Automatic desktop registration supports Windows and macOS.' };
   workspace = resolve(workspace);
   const statePath = join(runtime.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'), '.codex-global-state.json');
   const readState = runtime.readState || (() => {
@@ -26,6 +26,10 @@ export async function ensureDesktopProject({ workspace, disabled = false }, runt
   const report = project => ({ status: 'registered', project_id: project.id, project_name: project.name, workspace });
   if (known) return report(known);
   const installed = runtime.installed || (() => {
+    // macOS: whether any app handles codex:// links.
+    if (platform === 'darwin') return spawnSync('osascript', ['-l', 'JavaScript', '-e',
+      'ObjC.import("AppKit"); !!$.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("codex://new"))'],
+      { encoding: 'utf8', timeout: 10000 }).stdout.trim() === 'true';
     const result = spawnSync('powershell', ['-NoProfile', '-Command',
       "if (Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\\codex') { exit 0 } else { exit 3 }"],
       { windowsHide: true, encoding: 'utf8', timeout: 10000 });
@@ -37,6 +41,11 @@ export async function ensureDesktopProject({ workspace, disabled = false }, runt
   const createDirectory = runtime.mkdir || (path => mkdirSync(path, { recursive: true }));
   createDirectory(workspace);
   const launch = runtime.launch || (url => {
+    if (platform === 'darwin') {
+      const opened = spawnSync('open', ['-g', url], { encoding: 'utf8', timeout: 15000 });
+      if (opened.error || opened.status !== 0) throw new Error('Could not open the Agent Fleet project in Codex desktop.');
+      return;
+    }
     // The app owns project registration. Never rewrite its global-state file or
     // open the dispatcher's live main-agent thread, which would take its writer lock.
     const result = spawnSync('powershell', ['-NoProfile', '-Command',
