@@ -12,9 +12,10 @@ const tasks = join(workspace, 'custom tasks');
 const workerConfig = { engine: 'codex', codex_app_folders: { main: 'AgentFleet', other: 'AgentFleet-其他' }, tasks_dir: tasks };
 function fakeApp({ pending = false, installed = true } = {}) {
   const state = { 'local-projects': { main: { id: 'main', name: 'My fleet', rootPaths: [workspace] } } };
-  const launches = [], directories = [];
+  const launches = [], directories = [], requests = [];
   const runtime = {
     platform: 'darwin', installed: () => installed, readState: () => state,
+    requestRepair: request => requests.push(request),
     mkdir: path => directories.push(path), sleep: async () => {},
     launch: url => {
       launches.push(url);
@@ -24,28 +25,34 @@ function fakeApp({ pending = false, installed = true } = {}) {
       }
     },
   };
-  return { state, launches, directories, runtime };
+  return { state, launches, directories, requests, runtime };
 }
 
-test('registers missing tasks project through app, retaining main project and custom tasks path', async () => {
+test('requests the configured exact name without opening a tasks project', async () => {
   const app = fakeApp();
   const report = await ensureDesktopProjects({ workspace, workerConfig }, app.runtime);
-  assert.equal(report.status, 'registered');
+  assert.equal(report.status, 'pending');
   assert.equal(report.projects.main.project_name, 'My fleet');
   assert.equal(report.projects.other.workspace, tasks);
-  assert.equal(report.projects.other.project_name, 'custom tasks');
-  assert.deepEqual(app.directories, [tasks]);
-  assert.equal(app.launches.length, 1);
-  assert.equal(new URL(app.launches[0]).searchParams.get('path'), tasks);
+  assert.equal(report.projects.other.expected_name, 'AgentFleet-其他');
+  assert.equal(report.projects.other.reason, 'waiting-for-desktop-close');
+  assert.deepEqual(app.directories, []);
+  assert.equal(app.launches.length, 0);
+  assert.deepEqual(app.requests, [{ version: 1, other: {
+    root: tasks, name: 'AgentFleet-其他', project_id: null, previous_name: null,
+  } }]);
+  // Only a later read of the completed offline registration can report success.
+  app.state['local-projects'].other = { id: 'other', name: 'AgentFleet-其他', rootPaths: [tasks] };
+  assert.equal((await ensureDesktopProjects({ workspace, workerConfig }, app.runtime)).status, 'registered');
 });
 
 test('repeat repair reuses both projects and preserves user names', async () => {
   const app = fakeApp();
-  await ensureDesktopProjects({ workspace, workerConfig }, app.runtime);
-  app.state['local-projects'].other.name = 'Renamed other';
+  app.state['local-projects'].other = { id: 'other', name: 'Renamed other', rootPaths: [tasks] };
   const report = await ensureDesktopProjects({ workspace, workerConfig }, app.runtime);
   assert.equal(report.projects.other.project_name, 'Renamed other');
-  assert.equal(app.launches.length, 1);
+  assert.equal(app.launches.length, 0);
+  assert.equal(app.requests.length, 0);
   assert.equal(Object.keys(app.state['local-projects']).length, 2);
 });
 
@@ -55,11 +62,29 @@ test('pending second project prevents reporting overall success', async () => {
   assert.equal(report.projects.main.status, 'registered');
   assert.equal(report.projects.other.status, 'pending');
   assert.equal(report.status, 'pending');
-  assert.match(report.message, /folder-access/);
+  assert.match(report.message, /Quit Codex completely/);
+});
+
+test('repairs the observed default label without requesting arbitrary user renames', async () => {
+  const app = fakeApp();
+  app.state['local-projects'].other = { id: 'old', name: basename(tasks), rootPaths: [tasks] };
+  const report = await ensureDesktopProjects({ workspace, workerConfig }, app.runtime);
+  assert.equal(report.status, 'pending');
+  assert.equal(app.requests[0].other.project_id, 'old');
+  assert.equal(app.requests[0].other.previous_name, basename(tasks));
+  assert.equal(app.launches.length, 0);
+});
+
+test('English requests use the English folder name', async () => {
+  const app = fakeApp();
+  const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, codex_app_folders: true, language: 'en' } }, app.runtime);
+  assert.equal(report.projects.other.expected_name, 'AgentFleet-Other');
+  assert.equal(app.requests[0].other.name, 'AgentFleet-Other');
 });
 
 test('missing desktop app is reported without pretending the second project was registered', async () => {
   const app = fakeApp({ installed: false });
+  app.state['local-projects'] = {};
   const report = await ensureDesktopProjects({ workspace, workerConfig }, app.runtime);
   assert.equal(report.status, 'not-installed');
   assert.equal(app.launches.length, 0);

@@ -75,7 +75,25 @@ def sort_into_folders(state, folders, now_ms, new_id):
     return state, reports, changed
 
 
-def write_state(path, state, expected, backup):
+def repair_default_project_name(state, folders, request):
+    """One-shot repair of the observed directory-derived label; preserve later user renames."""
+    state = json.loads(json.dumps(state))
+    item = request.get('other', {}) if request.get('version') == 1 else {}
+    if not item or 'other' not in folders:
+        return state, False
+    name, root = folders['other']
+    if not isinstance(item.get('root'), str) or not same_path(item['root'], root) or item.get('name') != name:
+        return state, False
+    default_name = root.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1]
+    project = state.get('local-projects', {}).get(item.get('project_id'))
+    if (not project or item.get('previous_name') != default_name or project.get('name') != default_name or
+            not any(same_path(p, root) for p in project.get('rootPaths', [])) or default_name == name):
+        return state, False
+    project['name'] = name
+    return state, True
+
+
+def write_state(path, state, expected, backup, expected_names=None):
     """Replace the app's state file atomically after copying it to backup; restore it if the written file
     does not have the expected {thread: project id} assignments."""
     shutil.copy2(path, backup)
@@ -83,7 +101,8 @@ def write_state(path, state, expected, backup):
     temporary.write_text(json.dumps(state, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
     temporary.replace(path)
     check = json.loads(path.read_text(encoding='utf-8'))
-    if any(check['thread-project-assignments'].get(t, {}).get('projectId') != p for t, p in expected.items()):
+    if (any(check['thread-project-assignments'].get(t, {}).get('projectId') != p for t, p in expected.items()) or
+            any(check.get('local-projects', {}).get(p, {}).get('name') != name for p, name in (expected_names or {}).items())):
         shutil.copy2(backup, path)
         raise RuntimeError(f'Validation failed; restored {path.name} from {backup.name}.')
 

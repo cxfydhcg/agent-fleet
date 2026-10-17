@@ -65,10 +65,12 @@ node <repository>/plugin/scripts/start.mjs
 It checks authenticated health, reuses an already-running service, and prints the local dashboard URL.
 Use `--config PATH` (or `AGENT_FLEET_CONFIG`) for a custom data directory. No token appears in output.
 
-Setup adds both a Codex worker's workspace and its configured `tasks_dir` to the
-Windows/macOS desktop sidebar and verifies both registrations. It uses the app's workspace URL;
-it does not edit the running app's internal state file or open a live worker
-session. This also runs when setup reuses an existing worker.
+Setup adds a Codex worker's main workspace through the app's workspace URL.
+For the other-agents project it requests the configured display name (Chinese:
+`AgentFleet-其他`, English: `AgentFleet-Other`) from the worker's offline folder
+sorter. It never opens the raw `tasks_dir` URL, which would produce a project
+named `tasks`. It does not edit the running app's internal state file or open a
+live worker session. This also runs when setup reuses an existing worker.
 In Codex desktop, the setup skill also reads and pins the verified main-agent
 chat when app tools are available, so it is visible under its configured name.
 It preserves the same session and never opens it. Claude worker chats remain in
@@ -84,16 +86,18 @@ node <repository>/plugin/scripts/setup.mjs --role worker --language zh --desktop
 ```
 
 Use the installed language and `--data-dir PATH` for a custom data directory.
-Both results appear under `desktop.projects`. If either remains pending, overall
-registration is pending. Registration preserves existing project names; the app
-may initially call the other project `tasks`. The user can rename that project
-to `AgentFleet-其他` or `AgentFleet-Other` in the sidebar. Session sorting still
-runs separately while the app is closed.
+Both results appear under `desktop.projects` when the other project is enabled.
+A missing other project or an observed directory-derived label stays `pending`
+with `reason: waiting-for-desktop-close` and the expected name. Fully quit Codex
+and leave the worker running; its folder loop consumes the one-shot repair
+request after the app closes, backs up state, and verifies the saved names.
+Reopen Codex and verify the project name before reporting success. Existing
+intentional user names are preserved, including renames made after the request.
+The worker checks again immediately before writing in case the app reopened.
 
 Set `codex_app_register_other_project` to `false` in the worker config to opt out
-of registering the tasks directory during setup/desktop repair. This preserves
-the user's removal of that sidebar project without changing task storage or the
-separate offline session sorter.
+of requesting the named other-agents project during setup/desktop repair. This
+does not change task storage or disable the separate offline session sorter.
 
 For orchestrator-only setup, the public project folder defaults to
 `Documents/AgentFleet`; `--workspace PATH` chooses a different folder. Private

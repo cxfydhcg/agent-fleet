@@ -28,7 +28,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import HTMLResponse, JSONResponse
 import uvicorn
 import claude_executor
-from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state
+from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state, repair_default_project_name
 
 
 def now():
@@ -858,18 +858,26 @@ class TaskManager:
         if not path.exists() or desktop_app_running():
             return 'waiting'
         state = json.loads(path.read_text(encoding='utf-8'))
+        request_path = self.state / 'desktop-project-repair.json'
+        request_text = request_path.read_text(encoding='utf-8') if request_path.exists() else None
+        state, renamed = repair_default_project_name(state, folders, json.loads(request_text)) if request_text else (state, False)
         updated, reports, changed = sort_into_folders(
             state, [(name, root, threads[side]) for side, (name, root) in folders.items()],
             int(time.time() * 1000), lambda: str(uuid.uuid4()))
-        if changed:
+        if changed or renamed:
+            if desktop_app_running():
+                return 'waiting'
             write_state(path, updated, {t: r['project_id'] for r in reports for t in r['assigned']},
-                        path.with_name(path.name + '.bak-agent-fleet'))
+                        path.with_name(path.name + '.bak-agent-fleet'),
+                        {r['project_id']: r['project_name'] for r in reports})
+        if request_text and request_path.exists() and request_path.read_text(encoding='utf-8') == request_text:
+            request_path.unlink()
         return 'filed'
 
     async def folder_loop(self):
         while not self.closing:
             folders = self.app_folders()
-            if folders and self.folders_pending:
+            if folders and (self.folders_pending or (self.state / 'desktop-project-repair.json').exists()):
                 try:
                     result = await asyncio.to_thread(self.file_into_app_folders, folders, self.folder_threads())
                     self.folders_status = {'result': result, 'checked_at': now()}

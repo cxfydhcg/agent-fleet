@@ -1040,6 +1040,66 @@ class AppSidebarFolderTests(unittest.IsolatedAsyncioTestCase):
         names = {p['id']: p['name'] for p in state['local-projects'].values()}
         return {t: names[a['projectId']] for t, a in state['thread-project-assignments'].items()}
 
+    def repair_request(self, project_id=None, previous_name=None):
+        request = self.manager.state / 'desktop-project-repair.json'
+        request.write_text(json.dumps({'version': 1, 'other': {
+            'root': str(self.manager.root), 'name': self.manager.app_folders()['other'][0],
+            'project_id': project_id, 'previous_name': previous_name,
+        }}), encoding='utf-8')
+        return request
+
+    async def test_exact_name_repair_waits_for_app_exit_and_backs_up_state(self):
+        state = json.loads(self.state.read_text())
+        state['local-projects']['other'] = {'id': 'other', 'name': self.manager.root.name, 'rootPaths': [str(self.manager.root)]}
+        self.state.write_text(json.dumps(state))
+        original = self.state.read_bytes()
+        request = self.repair_request('other', self.manager.root.name)
+        with patch('server.desktop_app_running', return_value=['Codex']):
+            self.assertEqual(self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads()), 'waiting')
+        self.assertEqual(self.state.read_bytes(), original)
+        self.assertTrue(request.exists())
+        with patch('server.desktop_app_running', return_value=[]):
+            self.assertEqual(self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads()), 'filed')
+        result = json.loads(self.state.read_text())
+        self.assertEqual(result['local-projects']['other']['name'], 'AgentFleet-其他')
+        self.assertEqual(result['local-projects']['other']['rootPaths'], [str(self.manager.root)])
+        self.assertEqual(self.state.with_name(self.state.name + '.bak-agent-fleet').read_bytes(), original)
+        self.assertFalse(request.exists())
+        stable = self.state.read_bytes()
+        with patch('server.desktop_app_running', return_value=[]):
+            self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads())
+        self.assertEqual(self.state.read_bytes(), stable)
+
+    async def test_user_rename_after_request_is_preserved(self):
+        state = json.loads(self.state.read_text())
+        state['local-projects']['other'] = {'id': 'other', 'name': 'My chosen label', 'rootPaths': [str(self.manager.root)]}
+        self.state.write_text(json.dumps(state))
+        self.repair_request('other', self.manager.root.name)
+        with patch('server.desktop_app_running', return_value=[]):
+            self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads())
+        self.assertEqual(json.loads(self.state.read_text())['local-projects']['other']['name'], 'My chosen label')
+
+    async def test_app_reopening_before_write_keeps_state_and_request_untouched(self):
+        request = self.repair_request()
+        original = self.state.read_bytes()
+        with patch('server.desktop_app_running', side_effect=[[], ['Codex']]):
+            self.assertEqual(self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads()), 'waiting')
+        self.assertEqual(self.state.read_bytes(), original)
+        self.assertTrue(request.exists())
+
+    async def test_request_wakes_completed_folder_loop_and_creates_exact_english_name(self):
+        self.manager.config['codex_app_folders'] = {'main': 'AgentFleet', 'other': 'AgentFleet-Other'}
+        self.manager.folders_pending = False
+        request = self.repair_request()
+        with patch('server.desktop_app_running', return_value=[]):
+            self.manager.folder_task = asyncio.create_task(self.manager.folder_loop())
+            async with asyncio.timeout(5):
+                while request.exists():
+                    await asyncio.sleep(0.01)
+        self.assertEqual(self.folders()['D'], 'AgentFleet-Other')
+        self.manager.closing = True
+        self.manager.folder_task.cancel()
+
     async def test_sessions_are_filed_by_who_opened_them_once_the_app_is_closed(self):
         folders = self.manager.app_folders()
         with patch('server.desktop_app_running', return_value=['ChatGPT.exe']):
