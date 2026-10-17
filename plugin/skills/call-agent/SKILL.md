@@ -60,10 +60,9 @@ Session ownership: a main agent can continue, cancel or open only the sessions i
 
 ## Adding a computer
 
-Run this plugin's setup skill and choose worker on the new computer (LAN or Tailscale connectivity). It shows an 8-digit pairing code, valid 10 minutes; `worker\pair.ps1` on the worker makes a new one. Then, on this computer:
-
-1. Search first: `discover` lists workers waiting to pair on the local networks and online Tailscale devices. Show the user what was found.
-2. Ask the user for the code the worker shows (never guess or reuse one), then `pair <code>` if exactly one was found, or `pair <computer name or IP> <code>` to pick one.
-3. If nothing was found, ask the user for the worker's IP and run `pair <IP> <code>`. If that fails, relay the hint (firewall, same network, expired code).
+Use this plugin's pair skill: on the new worker it shows a one-time code, and here it searches the local
+network and Tailscale and connects with the code the user gives (`discover`, then `pair <code>`, or
+`pair <IP> <code>` when nothing is found). If the new computer has no worker yet, run the setup skill there
+first and choose worker with LAN or Tailscale connectivity.
 
 Pairing transfers the worker's token; only run it with a code the user gave you. The fallback is copying the worker's `connection.json` here and running `add-computer <path>`. The registry lives in `~/.agent-fleet/computers.json`.

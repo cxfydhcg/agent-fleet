@@ -9,8 +9,8 @@ Install **one plugin**, then run setup and choose this computer's role:
 | Both | Set up the worker and orchestrator, and register this worker locally automatically. |
 
 The same plugin works in Codex and Claude Code. For a worker, separately choose
-whether its main agent and tasks run Codex or Claude Code. It includes three skills:
-setup, main-agent and call-agent. Setup is the single entry point: it asks whether
+whether its main agent and tasks run Codex or Claude Code. It includes four skills:
+setup, pair, main-agent and call-agent. Setup is the single entry point: it asks whether
 this computer controls other agents, is controlled by another computer, or both,
 and also handles registering workers, renames, reconfiguration and repairs.
 

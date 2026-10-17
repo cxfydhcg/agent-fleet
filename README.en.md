@@ -66,6 +66,8 @@ Claude Code: type in the chat box
 
 It searches the local network and Tailscale; if it finds nothing, it asks for that computer's IP. The code works once, so others on the same network cannot connect without it.
 
+To pair again later (code expired, a new computer, a changed IP), use the pair skill instead of rerunning setup: `/agent-fleet:pair` in Claude Code, `$` → pair in Codex, or just say "get a pairing code" / "search for new computers and pair". On a worker it shows a code; on an orchestrator it searches and connects.
+
 **Permissions**:
 - **Full access** needs your explicit agreement: sub-agents are no longer sandboxed and can operate the desktop, browsers and other programs, which means they can do anything on that computer. Without it, sub-agents can only read and write their own working folder.
 - A Mac with full access asks you to allow Accessibility and Screen Recording in System Settings → Privacy & Security; you must click Allow yourself.

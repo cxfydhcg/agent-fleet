@@ -54,7 +54,8 @@ For **control** (orchestrator):
   code at the end of its setup (`pairing.code` in the setup result; `pair.ps1` in its `service\worker`
   folder makes a new one). On the orchestrator run `fleet.mjs discover`, then `fleet.mjs pair <code>` (or
   `pair <IP> <code>` when the search finds nothing). Tell the user the code and how long it is valid; never
-  pair with a code the user did not give you.
+  pair with a code the user did not give you. Pairing later (expired code, another computer) is the pair
+  skill's job; point the user to it instead of rerunning setup.
 - If the user has a worker's `connection.json`, pass `--connection PATH`. Add
   `--local` only when that worker is this computer. A local-only worker cannot be
   reached from another computer; set it up with Tailscale or LAN there first.
