@@ -61,6 +61,17 @@ scope (Windows: `winget install --id OpenJS.NodeJS.LTS --exact`), then refresh P
 
 Pass the language from step 1 as `--language zh|en` for every role.
 
+For a fresh **worker** or **both** setup, unless the user already chose connectivity, ask how this
+computer should be reachable and always show all three choices together:
+
+- **Only this computer / 仅本机** (`local`, default): listen on loopback only; no other computer can connect.
+- **Trusted local network / 可信局域网** (`lan`): other computers on that network can connect; HTTP is unencrypted.
+- **Tailscale encrypted connection / Tailscale 加密连接** (`tailscale`): connect from the user's Tailscale devices.
+
+Do not restrict the question to "how other computers connect" or omit `local` because the role is
+worker. On reruns preserve the configured connectivity unless the user asks to change it. Choosing
+local needs no remote pairing; report that the worker is usable on this computer only.
+
 For **control** (orchestrator):
 - The private registry is `~/.agent-fleet` unless `AGENT_FLEET_HOME` or
   `--registry-home` names an existing one. Preserve existing workers and tokens.

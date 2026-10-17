@@ -54,7 +54,7 @@ Claude Code: type in the chat box
 >
 > **You**: Be directed; it's for video editing
 >
-> **AI**: How will other computers connect: local network or Tailscale? Should sub-tasks be able to operate the desktop and browsers (full access)? What should the main agent be called, and do you want a management name (e.g. "Manager Cris")?
+> **AI**: How should this computer be reachable: only this computer (default), trusted local network, or Tailscale encrypted connection? Should sub-tasks be able to operate the desktop and browsers (full access)? What should the main agent be called, and do you want a management name (e.g. "Manager Cris")?
 >
 > **You**: Local network, full access, management name Manager Cris
 >
@@ -67,6 +67,10 @@ Claude Code: type in the chat box
 It searches the local network and Tailscale; if it finds nothing, it asks for that computer's IP. The code works once, so others on the same network cannot connect without it.
 
 To pair again later (code expired, a new computer, a changed IP), use the pair skill instead of rerunning setup: `/agent-fleet:pair` in Claude Code, `$` → pair in Codex, or just say "get a pairing code" / "search for new computers and pair". On a worker it shows a code; on an orchestrator it searches and connects.
+
+Outgoing discovery and pairing require completed orchestrator (or both) setup and its configured
+management session. A pure worker can only show its own code; receiving another computer's code does
+not make it an orchestrator. Local-only workers do not need remote pairing.
 
 **Permissions**:
 - **Full access** needs your explicit agreement: sub-agents are no longer sandboxed and can operate the desktop, browsers and other programs, which means they can do anything on that computer. Without it, sub-agents can only read and write their own working folder.

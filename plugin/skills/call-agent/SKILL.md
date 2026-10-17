@@ -62,6 +62,11 @@ Session ownership: a main agent can continue, cancel or open only the sessions i
 
 ## Adding a computer
 
+Outgoing discovery, pairing and remote connection-file import require completed orchestrator/both
+setup in the selected registry. Pure workers may generate their own pairing code but cannot connect
+another computer. Discovery and pairing also require the configured orchestrator session; do not
+change directory to bypass that check.
+
 Use this plugin's pair skill: on the new worker it shows a one-time code, and here it searches the local
 network and Tailscale and connects with the code the user gives (`discover`, then `pair <code>`, or
 `pair <IP> <code>` when nothing is found). If the new computer has no worker yet, run the setup skill there

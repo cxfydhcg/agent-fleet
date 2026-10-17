@@ -201,6 +201,7 @@ python tools/build_plugins.py
 python -m unittest discover -s worker -p "test_*.py"
 python -m unittest discover -s tests -p "test_*.py"
 node --test tests/test_service_start.mjs
+node --test tests/test_pair_roles.mjs
 claude plugin validate .
 claude plugin validate plugin
 ```

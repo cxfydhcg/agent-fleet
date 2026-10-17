@@ -10,11 +10,17 @@ Talk to the user in the language they write in. Resolve the plugin root from thi
 
 ## 1. Which side is this computer on?
 
-- **Worker** if a worker config exists: `%LOCALAPPDATA%\agent-fleet\config.json` on Windows,
-  `~/Library/Application Support/agent-fleet/config.json` on macOS (or the data directory the user names).
-- **Orchestrator** otherwise, or when the user gives a pairing code or asks to find or connect another computer.
-- If both apply and the request doesn't say which, ask one question: "let another computer connect to this
-  one (show a code here)" or "connect this computer to another one (enter a code)".
+- **Worker capability** exists when a worker config exists: `%LOCALAPPDATA%\agent-fleet\config.json` on
+  Windows, `~/Library/Application Support/agent-fleet/config.json` on macOS (or the user's custom data directory).
+- **Orchestrator capability** requires completed orchestrator/both setup: the selected registry's
+  `computers.json` must have an absolute `orchestrator_workspace` set by setup. The registry is
+  `AGENT_FLEET_HOME`, or `~/.agent-fleet` by default. Never print its token files.
+- A pure worker may only generate its own pairing code. If asked to search for or connect another
+  computer, explain that orchestrator or both setup is required. A supplied code does not establish
+  the role and is not permission to change it. With neither capability, use setup first.
+- If both capabilities exist and the request doesn't specify the direction, ask whether to show a
+  code for this computer or connect another computer. Outgoing discovery/pairing must run from the
+  configured orchestrator session; do not change directory to bypass a rejected session check.
 
 ## 2. Worker: show a pairing code
 
@@ -33,6 +39,9 @@ offer to rerun the setup skill with LAN or Tailscale connectivity. If the servic
 ## 3. Orchestrator: search, then pair
 
 The client is `node "<plugin-root>/scripts/fleet.mjs"`. In Codex, network access may need the user's approval.
+It rejects discovery and outgoing pairing without management setup or outside its configured session,
+before making network requests or saving connection data. Remote connection-file imports also require
+management setup; local self-registration during worker setup remains allowed.
 
 1. `discover` lists workers currently waiting to pair (local networks and online Tailscale devices, about
    two seconds). Show what was found: computer name, management name, address, and whether it is already

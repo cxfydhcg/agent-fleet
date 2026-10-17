@@ -45,7 +45,7 @@
 //   node fleet.mjs tools    <电脑>
 // 每台电脑用登记表里的 url（没有就用 local_url）；加 --remote 强制走 Tailscale（或局域网）地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { execFileSync } from "node:child_process";
 import { basename, join, relative, resolve, isAbsolute } from "node:path";
@@ -54,7 +54,6 @@ const MAIN_AGENT = "主agent export";
 const validAgentName = (name) => typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 100 && !/[\u0000-\u001f\u007f]/.test(name) && !name.trim().startsWith('--') && !['__proto__', 'constructor', 'prototype'].includes(name.trim());
 const fleetHome = process.env.AGENT_FLEET_HOME || join(homedir(), ".agent-fleet");
 const registryPath = join(fleetHome, "computers.json");
-mkdirSync(join(fleetHome, "tokens"), { recursive: true });
 const registry = existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, "utf8")) : { computers: {} };
 // Older registries kept a single main_agent_export entry per computer.
 for (const pc of Object.values(registry.computers)) {
@@ -67,7 +66,10 @@ for (const pc of Object.values(registry.computers)) {
   }
 }
 const mainAgentName = (pc) => pc.main_agent_name || MAIN_AGENT;
-const saveRegistry = () => writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+const saveRegistry = () => {
+  mkdirSync(fleetHome, { recursive: true });
+  writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+};
 const systemLanguage = () => { try { return Intl.DateTimeFormat().resolvedOptions().locale; } catch { return ""; } };
 const LANG = (process.env.AGENT_FLEET_LANG || registry.language || (systemLanguage().startsWith("zh") ? "zh" : "en")) === "en" ? "en" : "zh";
 const T = (zh, en) => (LANG === "en" ? en : zh);
@@ -94,7 +96,23 @@ const within = (dir, root) => {
   const path = relative(process.platform === "linux" ? root : root.toLowerCase(), process.platform === "linux" ? dir : dir.toLowerCase());
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 };
-const isOrchestrator = within(resolve(process.cwd()), orchestratorWorkspace);
+const canonicalPath = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+const isOrchestrator = within(canonicalPath(process.cwd()), canonicalPath(orchestratorWorkspace));
+// Only setup-orchestrator writes this field. A worker's local-client registry and the
+// fallback workspace used for task routing do not authorize connecting other computers.
+function requireOrchestrator(checkSession = true) {
+  if (typeof registry.orchestrator_workspace !== 'string' || !isAbsolute(registry.orchestrator_workspace)) {
+    console.error(T('主动接入电脑前，请先运行 Agent Fleet setup，选择管理端或两者都要。纯 worker 只能生成本机配对码。',
+                    'Run Agent Fleet setup as orchestrator or both before connecting computers. A worker can only generate its own pairing code.'));
+    process.exit(2);
+  }
+  if (checkSession && !isOrchestrator) {
+    console.error(T(`请在已配置的管理端会话中搜索和配对电脑，工作目录：${orchestratorWorkspace}。`,
+                    `Search and pair from the configured orchestrator session, in ${orchestratorWorkspace}.`));
+    process.exit(2);
+  }
+}
+if (cmd === 'discover' || cmd === 'pair') requireOrchestrator();
 // The calling session: --from, or the id Claude Code / Codex give their shell commands.
 function callerSession() {
   const id = option("from")?.trim() || process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID;
@@ -211,6 +229,14 @@ function addComputer(info, isThisComputer, source) {
     console.error(T("connection.json 缺少 name、token 或地址", "connection.json is missing the name, token or address"));
     process.exit(2);
   }
+  if (isThisComputer) {
+    let local;
+    try { local = new URL(info.local_url); } catch { /* rejected below */ }
+    if (!local || !['http:', 'https:'].includes(local.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(local.hostname)) {
+      console.error(T('本机登记只能使用回环地址。', 'Local registration requires a loopback address.'));
+      process.exit(2);
+    }
+  }
   if (info.main_agent_name !== undefined && !validAgentName(info.main_agent_name)) {
     console.error('Main agent name must contain 1 to 100 printable characters, without a leading --.');
     process.exit(2);
@@ -232,6 +258,7 @@ function addComputer(info, isThisComputer, source) {
     process.exit(2);
   }
   const tokenFile = join(fleetHome, "tokens", `${info.name}.txt`);
+  mkdirSync(join(fleetHome, 'tokens'), { recursive: true });
   writeFileSync(tokenFile, info.token.trim() + "\n");
   const engine = info.engine || 'codex';
   const agents = { ...(existing.agents ?? {}) };
@@ -264,6 +291,9 @@ function addComputer(info, isThisComputer, source) {
         `Connected ${info.name} (${registry.computers[info.name].url}). You can delete that connection.json; the token is saved in ${tokenFile}.`));
 }
 if (cmd === "add-computer") {
+  // Worker setup may register itself locally. Remote imports require management setup;
+  // setup-orchestrator itself invokes this from the installer, before the project is opened.
+  if (option('local') !== '1') requireOrchestrator(false);
   addComputer(JSON.parse(readFileSync(computer, "utf8").replace(/^\ufeff/, "")), option("local") === "1", "file");
   process.exit(0);
 }
