@@ -31,7 +31,9 @@
 //   node fleet.mjs agent    <电脑> <Agent名> <消息> [--new] [--workspace=绝对路径]
 //                                                     和指定 Agent 对话：续接它的会话，等待并输出回复。
 //                                                     --new：找不到这个名字时，新建一个这样命名的 Agent。
-//   node fleet.mjs export   <电脑> <消息>              Send to that computer's configured main agent.
+//   node fleet.mjs export   <电脑> <消息> [--title=任务名] [--from=会话]
+//                                                     orchestrator 会话：发给那台电脑的主 Agent。其他会话：发给本会话自己的 Agent，
+//                                                     第一次用 --title 的名字新建（重名自动加序号），之后同一个会话一直续接它。
 //   node fleet.mjs submit   <电脑> <prompt> [--name=会话名] [--wait] [--model=模型] [--effort=档位]   直接开新任务（特殊情况用）
 //   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
 //                                                     --model/--effort 平时不加；只在会话一直报 "Selected model is at capacity"
@@ -93,14 +95,15 @@ const within = (dir, root) => {
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 };
 const isOrchestrator = within(resolve(process.cwd()), orchestratorWorkspace);
-function callerAgentName() {
-  const id = option("from")?.trim() || (process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || "").slice(0, 8);
+// The calling session: --from, or the id Claude Code / Codex give their shell commands.
+function callerSession() {
+  const id = option("from")?.trim() || process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID;
   if (!id) {
     console.error(T(`这个会话不在 orchestrator 文件夹（${orchestratorWorkspace}）里，不能直接找主 Agent。加 --from=<本会话的名字或 ID>，任务会交给这个会话自己的 Agent。`,
                     `This session is outside the orchestrator folder (${orchestratorWorkspace}), so it cannot reach main agents. Add --from=<this session's name or id> to use this session's own agent.`));
     process.exit(2);
   }
-  return `${basename(process.cwd()) || "session"} · ${id}`.slice(0, 100);
+  return id;
 }
 // Management names are how people and the orchestrator call a main agent, so they must not collide with
 // another computer's name or management name.
@@ -618,9 +621,32 @@ function talk(agentName, prompt) {
   return agentName === mainAgentName(pc) || (pc.manager_name && agentName === pc.manager_name) ? talkMainOrOwn(prompt) : talkNamed(agentName, prompt);
 }
 
-function talkMainOrOwn(prompt) {
+// A session's own agent is named after its first task (--title), or after its folder and id without one. The
+// registry remembers which agent belongs to which session, so the name never has to be derived again.
+async function ownAgentName() {
+  const session = callerSession();
+  const owned = (pc.session_agents ??= {});
+  if (owned[session]) return owned[session];
+  const fallback = `${basename(process.cwd()) || "session"} · ${session.slice(0, 8)}`.slice(0, 100);
+  const taken = new Set([...Object.keys(pc.agents), ...(await namedSessions()).keys(), mainAgentName(pc), ...Object.values(owned)]);
+  const title = option("title")?.trim();
+  let name = fallback;
+  if (title) {
+    if (!validAgentName(title) || title.length > 90) {
+      console.error(T("--title 要 1 到 90 个可打印字符，不能以 -- 开头。", "--title must be 1 to 90 printable characters, without a leading --."));
+      process.exit(2);
+    }
+    name = title;
+    for (let i = 2; taken.has(name); i++) name = `${title} ${i}`;
+  } // The fallback carries this session's id, so if it exists it is this session's agent from before titles.
+  owned[session] = name;
+  saveRegistry();
+  return name;
+}
+
+async function talkMainOrOwn(prompt) {
   if (isOrchestrator) return talkMain(prompt);
-  const own = callerAgentName();
+  const own = await ownAgentName();
   console.error(T(`这个会话不是 orchestrator 会话，任务不经过主 Agent，交给本会话自己的 Agent「${own}」（在 ${computer} 的「其他」文件夹里）。`,
                   `This is not the orchestrator session, so the task skips the main agent and goes to this session's own agent "${own}" (in ${computer}'s "other" folder).`));
   return talkNamed(own, prompt, true);
