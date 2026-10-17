@@ -120,13 +120,13 @@ class RoleSetupTests(unittest.TestCase):
                 self.wfile.write(b'{"service":"codex-task-mcp","status":"ok"}')
         server = ThreadingHTTPServer(('127.0.0.1',0),Handler)
         thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
-        config = dict(executor='app-server', computer_name='fixture-pc', sandbox='workspace-write',
-                      tasks_dir=str(workspace / 'tasks'), state_dir=str(self.data / 'state'),
+        config = dict(executor='app-server',engine='codex',language='zh',main_agent_name='主agent export',main_agent_id='fixture-main', computer_name='fixture-pc', sandbox='workspace-write',
+                      tasks_dir=str(workspace / 'AgentFleet-其他'), state_dir=str(self.data / 'state'),
                       port=server.server_port, tailscale_port=18766, remote_url='', local_only=True,token_file=str(token))
         config_path = self.data / 'config.json'
         original = json.dumps(config)
         config_path.write_text(original, encoding='utf-8')
-        connection = dict(name='fixture-pc',engine='codex',token='fixture-existing-token',
+        connection = dict(name='fixture-pc',engine='codex',main_agent_name='主agent export',main_agent_id='fixture-main',token='fixture-existing-token',
                           local_url=f'http://127.0.0.1:{server.server_port}/mcp',tailscale_url='',main_agent_workspace=str(workspace/'main'))
         (self.data / 'connection.json').write_text(json.dumps(connection), encoding='utf-8')
         try:
@@ -162,8 +162,8 @@ HTTPServer(('127.0.0.1',c['port']),H).serve_forever()
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
         token=self.data/'token.txt'; token.write_text('fixture-start-token')
-        config=dict(executor='app-server',computer_name='fixture-pc',sandbox='workspace-write',
-            tasks_dir=str(workspace/'tasks'),state_dir=str(self.data/'state'),token_file=str(token),
+        config=dict(executor='app-server',engine='codex',language='zh',main_agent_name='主agent export',main_agent_id='fixture-main',computer_name='fixture-pc',sandbox='workspace-write',
+            tasks_dir=str(workspace/'AgentFleet-其他'),state_dir=str(self.data/'state'),token_file=str(token),
             python_executable=sys.executable,port=port,tailscale_port=18766,remote_url='',local_only=True)
         path=self.data/'config.json'; original=json.dumps(config); path.write_text(original,encoding='utf-8')
         try:
@@ -227,8 +227,8 @@ HTTPServer(('127.0.0.1',c['port']),H).serve_forever()
         (self.data/'state').mkdir(parents=True)
         token = self.data/'token.txt'; token.write_text('fixture-name-token')
         workspace = self.root/'workspace'
-        config = dict(executor='app-server',computer_name='fixture-pc',sandbox='workspace-write',
-            tasks_dir=str(workspace/'tasks'),state_dir=str(self.data/'state'),token_file=str(token),
+        config = dict(executor='app-server',engine='codex',language='zh',main_agent_name='主agent export',main_agent_id='fixture-main',computer_name='fixture-pc',sandbox='workspace-write',
+            tasks_dir=str(workspace/'AgentFleet-其他'),state_dir=str(self.data/'state'),token_file=str(token),
             port=1,tailscale_port=18766,remote_url='',local_only=True)
         before = json.dumps(config)
         (self.data/'config.json').write_text(before,encoding='utf-8')
@@ -252,8 +252,8 @@ HTTPServer(('127.0.0.1',c['port']),H).serve_forever()
     def test_changing_permissions_needs_reconfigure(self):
         self.data.mkdir()
         workspace = self.root/'workspace'
-        config = dict(executor='app-server',computer_name='fixture-pc',sandbox='danger-full-access',auto_approve=True,
-            tasks_dir=str(workspace/'tasks'),state_dir=str(self.data/'state'),token_file=str(self.data/'token.txt'),
+        config = dict(executor='app-server',engine='codex',language='zh',main_agent_name='主agent export',main_agent_id='fixture-main',computer_name='fixture-pc',sandbox='danger-full-access',auto_approve=True,
+            tasks_dir=str(workspace/'AgentFleet-其他'),state_dir=str(self.data/'state'),token_file=str(self.data/'token.txt'),
             port=1,tailscale_port=18766,remote_url='',local_only=True)
         before = json.dumps(config)
         (self.data/'config.json').write_text(before,encoding='utf-8')
