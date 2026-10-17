@@ -38,6 +38,18 @@ infer an answer merely because the plugin was installed:
 - **Both**: this computer controls other agents and also runs its own main agent
   for fleet tasks.
 
+For **be controlled** or **both**, settle the permission mode in the same exchange, so the worker is
+installed with it rather than changed later. Unless the request already says, ask one plain question:
+
+- **Full access** (`--full-access`): sub-tasks can operate the desktop, browsers and other apps
+  (Computer Use), run any command, and every permission request is approved automatically. They can
+  also do anything else on the machine.
+- **Restricted** (default): sub-tasks only write their own working folder; anything that needs
+  approval, including Computer Use on any app, is refused.
+
+Recommend full access when the user wants agents to control apps or the desktop. Pass `--full-access`
+only after the user picks it; installing the plugin does not authorize it.
+
 ## 3. Check Node.js
 
 Node.js 18+ is required. Bootstrap it if missing within the authorized setup
@@ -91,7 +103,12 @@ Codex/Terminal in System Settings → Privacy & Security; you cannot do that for
   This is a CLI permission boundary, not an OS sandbox. `--full-access` removes
   these restrictions and auto-approves agent permissions, including shell,
   desktop and browser actions. Explain that and pass it only with the user's
-  explicit agreement; installing the plugin does not authorize it.
+  explicit agreement (step 2); installing the plugin does not authorize it.
+- Changing the permission mode of an existing worker: rerun setup with `--full-access --reconfigure`
+  (the Mac installer also takes `--restricted` to switch back). The
+  service restarts only when idle; if it was busy, rerun after its tasks finish. Verify the result with
+  call-agent's `fleet.mjs overview`, whose `permissions` field shows what the running service uses;
+  the installer's "Sub-task permissions" line alone is not proof that the service restarted.
 - Connectivity: `local` (default) listens on 127.0.0.1 only. `tailscale` is
   reachable from the user's Tailscale devices, encrypted. `lan` listens on the
   local network at the auto-detected IPv4 address (or `--lan-address`) so

@@ -308,6 +308,7 @@ Write-Host (T "接入信息：$connectionFile（含令牌，只发给你自己�
 Write-Host (T "在管理端电脑上接入：让 Claude 运行 add-computer，或 node <call-agent skill 文件夹>\fleet.mjs add-computer <connection.json 的路径>" "To connect it on the orchestrator: ask Claude to run add-computer, or node <call-agent skill folder>\fleet.mjs add-computer <path to connection.json>")
 Write-Host (T "只读看板：$($connection.dashboard)" "Read-only dashboard: $($connection.dashboard)")
 if ($LanAddress) { Write-Host (T "局域网地址：$lanUrl（明文 HTTP，只在可信网络使用；需要在 Windows 防火墙放行 TCP $Port 端口）" "LAN address: $lanUrl (plain HTTP, trusted networks only; allow TCP port $Port in Windows Firewall)") -ForegroundColor Yellow }
+Write-Host $(if ($FullAccess) { T '子任务权限：完全访问' 'Sub-task permissions: full access' } else { T '子任务权限：受限' 'Sub-task permissions: restricted' })
 if (-not $FullAccess) { Write-Host (T '当前子任务只能写自己的工作目录。要操作桌面和浏览器，用 -FullAccess 重新运行。' 'Sub-tasks can currently write only their own working folder. To let them operate the desktop and browsers, rerun with -FullAccess.') -ForegroundColor Yellow }
 # A pairing code lets the orchestrator connect without copying connection.json (only when others can reach this computer).
 if (-not $NoStart -and ($LanAddress -or ($tsName -and -not $LocalOnly))) {

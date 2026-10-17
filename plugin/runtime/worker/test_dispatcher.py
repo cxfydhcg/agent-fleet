@@ -712,6 +712,9 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agents['B站发布员']['tags'], ['bilibili', '网页'])
         self.assertEqual((agents['B站发布员']['status'], agents['B站发布员']['tasks']), ('completed', 1))
         self.assertEqual(agents['主agent export']['type'], 'main')
+        self.assertFalse(profile['permissions']['full_access'])
+        self.manager.config.update(sandbox='danger-full-access', auto_approve=True)
+        self.assertTrue((await self.manager.full_profile())['permissions']['full_access'])
         # Everything, including the detected hardware, survives a restart; detection runs only on request.
         restarted = TaskManager(self.config)
         self.assertEqual(restarted.profile['computer']['software'], ['剪映 6.0', 'Chrome'])
