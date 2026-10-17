@@ -1,7 +1,7 @@
 """Private Streamable HTTP MCP bridge to the locally authenticated Codex CLI.
 
-Tasks run through `codex app-server` by default, so their sessions show up in the Codex desktop app.
-Set "executor": "exec" in config.json to fall back to headless `codex exec`.
+Codex tasks run through `codex app-server`, so their sessions show up in the Codex desktop app.
+Claude tasks run through the Claude Code adapter.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import HTMLResponse, JSONResponse
 import uvicorn
 import claude_executor
-from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state, repair_default_project_name
+from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state
 
 
 def now():
@@ -154,8 +154,6 @@ def approval_response(method, params):
     Returns None for anything that cannot be answered without a human, such as secret input."""
     if method in ('item/commandExecution/requestApproval', 'item/fileChange/requestApproval'):
         return {'decision': 'accept'}
-    if method in ('applyPatchApproval', 'execCommandApproval'):
-        return {'decision': 'approved'}
     if method == 'mcpServer/elicitation/request':
         return {'action': 'accept', 'content': {}}
     if method == 'item/permissions/requestApproval':
@@ -335,6 +333,8 @@ def default_data_dir():
 class TaskManager:
     def __init__(self, config):
         self.config = config
+        if config.get('executor', 'app-server') not in ('app-server', 'claude'):
+            raise ValueError('executor must be app-server or claude')
         self.language = 'en' if config.get('language') == 'en' else 'zh'
         self.text = TEXT[self.language]
         self.state = Path(config['state_dir']).resolve()
@@ -458,9 +458,6 @@ class TaskManager:
         if not job.get('name'):
             return None
         wanted, root = job['name'] + self.title_suffix(job), self.session_root(job)
-        if 'title_set' not in root:  # Sessions from before titles were tracked got this title on every turn.
-            root['title_set'] = wanted
-            self.save(root)
         return wanted if wanted != root['title_set'] else None
 
     def main_agent_note(self):
@@ -803,8 +800,7 @@ class TaskManager:
 
     def caller(self, ctx):
         """Which running main-agent turn made this MCP call. Codex attaches the calling thread in the request
-        metadata. Calls without it (the orchestrator, scripts) have no parent unless caller_fallback is on,
-        which guesses the single running main-agent turn for clients that don't send metadata."""
+        metadata. Calls without it (the orchestrator, scripts) have no parent."""
         thread = None
         try:
             request = ctx.request_context.request
@@ -827,7 +823,7 @@ class TaskManager:
         running = [j for j in self.jobs.values() if j['status'] == 'running' and not self.is_worker(j)]
         if thread:
             return next((j['task_id'] for j in running if j.get('thread_id') == thread), None)
-        return running[0]['task_id'] if len(running) == 1 and self.config.get('caller_fallback') else None
+        return None
 
     def app_folders(self):
         """The two desktop-app sidebar folders, {side: (name, root)}, or None when codex_app_folders is off.
@@ -858,26 +854,21 @@ class TaskManager:
         if not path.exists() or desktop_app_running():
             return 'waiting'
         state = json.loads(path.read_text(encoding='utf-8'))
-        request_path = self.state / 'desktop-project-repair.json'
-        request_text = request_path.read_text(encoding='utf-8') if request_path.exists() else None
-        state, renamed = repair_default_project_name(state, folders, json.loads(request_text)) if request_text else (state, False)
         updated, reports, changed = sort_into_folders(
             state, [(name, root, threads[side]) for side, (name, root) in folders.items()],
             int(time.time() * 1000), lambda: str(uuid.uuid4()))
-        if changed or renamed:
+        if changed:
             if desktop_app_running():
                 return 'waiting'
             write_state(path, updated, {t: r['project_id'] for r in reports for t in r['assigned']},
                         path.with_name(path.name + '.bak-agent-fleet'),
                         {r['project_id']: r['project_name'] for r in reports})
-        if request_text and request_path.exists() and request_path.read_text(encoding='utf-8') == request_text:
-            request_path.unlink()
         return 'filed'
 
     async def folder_loop(self):
         while not self.closing:
             folders = self.app_folders()
-            if folders and (self.folders_pending or (self.state / 'desktop-project-repair.json').exists()):
+            if folders and self.folders_pending:
                 try:
                     result = await asyncio.to_thread(self.file_into_app_folders, folders, self.folder_threads())
                     self.folders_status = {'result': result, 'checked_at': now()}
@@ -957,7 +948,7 @@ class TaskManager:
         parent = self.get(resume_task_id) if resume_task_id else None
         engine = 'claude' if self.config.get('executor') == 'claude' else 'codex'
         if parent:
-            if parent.get('engine', 'codex') != engine:
+            if parent['engine'] != engine:
                 raise ValueError('Cannot resume a session with a different agent engine; create a new session')
             if parent['status'] in ('queued', 'running') or not parent.get('thread_id'):
                 raise ValueError('Wait for the task to finish and receive a thread_id before continuing')
@@ -1045,29 +1036,14 @@ class TaskManager:
         if job.get('engine') == 'claude':
             await claude_executor.run(self, job)
             return
-        use_app_server = self.config.get('executor', 'app-server') == 'app-server'
-        if not use_app_server:
-            self.mark_running(job)  # app-server tasks stay queued until the quota check passes
         folder = self.jobs_dir / job['task_id']
         executable = self.config.get('codex_executable') or shutil.which('codex')
         if not executable:
             raise RuntimeError('Codex CLI executable not found')
         launcher = self.config.get('codex_launcher_executable', executable)
         launcher_args = self.config.get('codex_launcher_args', [])
-        if use_app_server:
-            # One app-server per task: it creates sessions the desktop app lists, and exiting after the
-            # turn releases the session's writer lock so the user can open and continue it there.
-            command = [launcher, *launcher_args, 'app-server']
-        else:
-            command = [launcher, *launcher_args, '--no-daemon', '--ask-for-approval', 'never',
-                       '--sandbox', self.config.get('sandbox', 'workspace-write'),
-                       '--cd', job['workspace'], 'exec']
-            if job.get('resume_task_id'):
-                command += ['resume', '--skip-git-repo-check', '--json',
-                            '--output-last-message', str(folder / 'result.txt'), job['thread_id'], '-']
-            else:
-                command += ['--skip-git-repo-check', '--json', '--color', 'never',
-                            '--output-last-message', str(folder / 'result.txt'), '-']
+        # One app-server per task; exiting releases the session's writer lock.
+        command = [launcher, *launcher_args, 'app-server']
         env = os.environ.copy()
         # This bridge uses Codex's existing ChatGPT login, not an inherited API key.
         env.pop('OPENAI_API_KEY', None)
@@ -1088,31 +1064,7 @@ class TaskManager:
                 if job['status'] not in ('queued', 'running') or self.closing:
                     return
 
-                async def consume():
-                    async for line in process.stdout:
-                        event_log.write(line)
-                        event_log.flush()
-                        try:
-                            event = json.loads(line)
-                        except (ValueError, UnicodeError):
-                            continue
-                        if event.get('type') == 'thread.started':
-                            job['thread_id'] = event.get('thread_id')
-                        item = event.get('item') or {}
-                        if item.get('type') == 'agent_message':
-                            job['latest_message'] = item.get('text', '')[-4000:]
-                        if event.get('type') in ('turn.failed', 'error'):
-                            job['error'] = str(event.get('error') or event.get('message') or event)[-2000:]
-                        self.save(job)
-                    return await process.wait()
-
-                if use_app_server:
-                    runner = self.drive_app_server(job, process, event_log, folder)
-                else:
-                    process.stdin.write(job['prompt'].encode('utf-8'))
-                    await process.stdin.drain()
-                    process.stdin.close()
-                    runner = consume()
+                runner = self.drive_app_server(job, process, event_log, folder)
 
                 try:
                     job['exit_code'] = await asyncio.wait_for(runner, job['timeout_seconds'])

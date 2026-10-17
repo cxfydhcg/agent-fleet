@@ -19,18 +19,10 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name).resolve()
         self.config = {'state_dir': str(self.root / 'state'), 'tasks_dir': str(self.root / 'tasks'),
                        'allowed_roots': [str(self.root / 'tasks')], 'codex_executable': sys.executable,
-                       'executor': 'exec'}
+                       'executor': 'app-server', 'writer_wait_seconds': 0}
         self.manager = TaskManager(self.config)
         self.fake = self.root / 'fake.py'
-        self.fake.write_text('''import json, pathlib, sys, time
-args = sys.argv[1:]
-result = pathlib.Path(args[args.index('--output-last-message') + 1])
-prompt = sys.stdin.buffer.read().decode('utf-8')
-print(json.dumps({'type': 'thread.started', 'thread_id': 'test-thread'}), flush=True)
-if prompt == 'slow': time.sleep(60)
-result.write_text(prompt, encoding='utf-8')
-print(json.dumps({'type': 'turn.completed'}), flush=True)
-''', encoding='utf-8')
+        self.fake.write_text(FAKE_APP_SERVER, encoding='utf-8')
         original = asyncio.create_subprocess_exec
 
         async def create(*command, **kwargs):
@@ -52,6 +44,10 @@ print(json.dumps({'type': 'turn.completed'}), flush=True)
             while self.manager.get(task_id)['status'] not in status:
                 await asyncio.sleep(0.05)
         return self.manager.get(task_id)
+
+    def test_unsupported_executor_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'executor must be app-server or claude'):
+            TaskManager({**self.config, 'executor': 'exec'})
 
     async def test_submission_retries_and_result_survives_restart(self):
         literal = 'Unicode 中文; $(do-not-execute) `literal` "quotes"'
@@ -75,8 +71,8 @@ print(json.dumps({'type': 'turn.completed'}), flush=True)
         first = self.manager.submit('original', None, 10, None, name='Test [name]')
         await self.wait_for(first['task_id'], {'completed'})
         result = self.manager.public(self.manager.get(first['task_id']))
-        self.assertEqual(result['desktop_url'], 'codex://threads/test-thread')
-        self.assertEqual(result['desktop_link'], '[打开 Test (name)](codex://threads/test-thread)')
+        self.assertEqual(result['desktop_url'], 'codex://threads/as-thread')
+        self.assertEqual(result['desktop_link'], '[打开 Test (name)](codex://threads/as-thread)')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows desktop opening')
     async def test_open_desktop_requires_known_finished_task(self):
@@ -111,7 +107,7 @@ print(json.dumps({'type': 'turn.completed'}), flush=True)
         finished = await self.wait_for(followup['task_id'], {'completed', 'failed'})
         self.assertEqual(finished['status'], 'completed')
         events = (self.manager.jobs_dir / followup['task_id'] / 'events.jsonl').read_text()
-        self.assertIn('test-thread', events)
+        self.assertIn('as-thread', events)
         self.assertEqual(self.manager.public(finished, True)['result'], 'followup')
 
     async def test_continuation_rechecks_revoked_workspace(self):
@@ -351,11 +347,6 @@ class AppServerDispatcherTests(DispatcherTests):
             await self.wait_for(turn['task_id'], {'completed'})
         self.assertEqual([c for c in self.call_log() if c.startswith('thread/name/set')],
                          ['thread/name/set:剪辑员', 'thread/name/set:剪辑员 - 固定'])
-        # Sessions from before titles were tracked are not renamed either.
-        self.manager.jobs[first['task_id']].pop('title_set')
-        turn = self.manager.submit('legacy', None, 10, None, resume_task_id=first['task_id'])
-        await self.wait_for(turn['task_id'], {'completed'})
-        self.assertEqual(len([c for c in self.call_log() if c.startswith('thread/name/set')]), 2)
 
     async def test_english_text(self):
         self.manager.config.update(language='en', codex_app_folders=True)
@@ -549,7 +540,8 @@ class AppServerDispatcherTests(DispatcherTests):
         from server import approval_response
         self.assertEqual(approval_response('item/commandExecution/requestApproval', {}), {'decision': 'accept'})
         self.assertEqual(approval_response('item/fileChange/requestApproval', {}), {'decision': 'accept'})
-        self.assertEqual(approval_response('execCommandApproval', {}), {'decision': 'approved'})
+        self.assertIsNone(approval_response('execCommandApproval', {}))
+        self.assertIsNone(approval_response('applyPatchApproval', {}))
         self.assertEqual(approval_response('mcpServer/elicitation/request', {})['action'], 'accept')
         granted = approval_response('item/permissions/requestApproval', {'permissions': {'network': {'enabled': True}}})
         self.assertEqual(granted['permissions'], {'network': {'enabled': True}})
@@ -668,13 +660,6 @@ class AppServerDispatcherTests(DispatcherTests):
     async def test_queued_and_running_cancellation(self):
         await super().test_queued_and_running_cancellation()
 
-    # Exec-specific checks that do not apply to the app-server path.
-    test_submission_retries_and_result_survives_restart = None
-    test_continuation_preserves_session_and_workspace = None
-    test_continuation_rechecks_revoked_workspace = None
-    test_outside_roots_and_directory_traversal_rejected = None
-    test_shutdown_recovery_does_not_repeat_work = None
-    test_task_returns_desktop_link = None  # Asserts the exec fake's thread id.
 
 
 class ProfileTests(unittest.IsolatedAsyncioTestCase):
@@ -773,7 +758,7 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def add(self, task_id, thread, status, workspace=None, **extra):
-        job = {'task_id': task_id, 'thread_id': thread, 'status': status, 'created_at': f'2026-10-11T00:00:{len(self.manager.jobs):02d}',
+        job = {'task_id': task_id, 'thread_id': thread, 'engine': 'codex', 'status': status, 'created_at': f'2026-10-11T00:00:{len(self.manager.jobs):02d}',
                'workspace': str(workspace or Path(self.config['tasks_dir']) / task_id), 'timeout_seconds': 60, **extra}
         Path(job['workspace']).mkdir(parents=True, exist_ok=True)
         self.manager.jobs[task_id] = job
@@ -799,8 +784,6 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.caller(ctx({'x-codex-turn-metadata': json.dumps({'thread_id': 'P'})})), 'main-1')
         self.assertIsNone(self.manager.caller(ctx({'x-codex-turn-metadata': {'thread_id': 'other'}})))
         self.assertIsNone(self.manager.caller(ctx({})))  # e.g. the orchestrator calling directly
-        self.manager.config['caller_fallback'] = True
-        self.assertEqual(self.manager.caller(ctx({})), 'main-1')
 
     async def test_finished_subtask_wakes_parent_with_result(self):
         self.add('child-1', 'C1', 'running', name='剪辑视频', parent_task_id='main-1')
@@ -1040,65 +1023,11 @@ class AppSidebarFolderTests(unittest.IsolatedAsyncioTestCase):
         names = {p['id']: p['name'] for p in state['local-projects'].values()}
         return {t: names[a['projectId']] for t, a in state['thread-project-assignments'].items()}
 
-    def repair_request(self, project_id=None, previous_name=None):
-        request = self.manager.state / 'desktop-project-repair.json'
-        request.write_text(json.dumps({'version': 1, 'other': {
-            'root': str(self.manager.root), 'name': self.manager.app_folders()['other'][0],
-            'project_id': project_id, 'previous_name': previous_name,
-        }}), encoding='utf-8')
-        return request
-
-    async def test_exact_name_repair_waits_for_app_exit_and_backs_up_state(self):
-        state = json.loads(self.state.read_text())
-        state['local-projects']['other'] = {'id': 'other', 'name': self.manager.root.name, 'rootPaths': [str(self.manager.root)]}
-        self.state.write_text(json.dumps(state))
-        original = self.state.read_bytes()
-        request = self.repair_request('other', self.manager.root.name)
-        with patch('server.desktop_app_running', return_value=['Codex']):
-            self.assertEqual(self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads()), 'waiting')
-        self.assertEqual(self.state.read_bytes(), original)
-        self.assertTrue(request.exists())
-        with patch('server.desktop_app_running', return_value=[]):
-            self.assertEqual(self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads()), 'filed')
-        result = json.loads(self.state.read_text())
-        self.assertEqual(result['local-projects']['other']['name'], 'AgentFleet-其他')
-        self.assertEqual(result['local-projects']['other']['rootPaths'], [str(self.manager.root)])
-        self.assertEqual(self.state.with_name(self.state.name + '.bak-agent-fleet').read_bytes(), original)
-        self.assertFalse(request.exists())
-        stable = self.state.read_bytes()
-        with patch('server.desktop_app_running', return_value=[]):
-            self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads())
-        self.assertEqual(self.state.read_bytes(), stable)
-
-    async def test_user_rename_after_request_is_preserved(self):
-        state = json.loads(self.state.read_text())
-        state['local-projects']['other'] = {'id': 'other', 'name': 'My chosen label', 'rootPaths': [str(self.manager.root)]}
-        self.state.write_text(json.dumps(state))
-        self.repair_request('other', self.manager.root.name)
-        with patch('server.desktop_app_running', return_value=[]):
-            self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads())
-        self.assertEqual(json.loads(self.state.read_text())['local-projects']['other']['name'], 'My chosen label')
-
-    async def test_app_reopening_before_write_keeps_state_and_request_untouched(self):
-        request = self.repair_request()
+    async def test_app_reopening_before_write_keeps_state_untouched(self):
         original = self.state.read_bytes()
         with patch('server.desktop_app_running', side_effect=[[], ['Codex']]):
             self.assertEqual(self.manager.file_into_app_folders(self.manager.app_folders(), self.manager.folder_threads()), 'waiting')
         self.assertEqual(self.state.read_bytes(), original)
-        self.assertTrue(request.exists())
-
-    async def test_request_wakes_completed_folder_loop_and_creates_exact_english_name(self):
-        self.manager.config['codex_app_folders'] = {'main': 'AgentFleet', 'other': 'AgentFleet-Other'}
-        self.manager.folders_pending = False
-        request = self.repair_request()
-        with patch('server.desktop_app_running', return_value=[]):
-            self.manager.folder_task = asyncio.create_task(self.manager.folder_loop())
-            async with asyncio.timeout(5):
-                while request.exists():
-                    await asyncio.sleep(0.01)
-        self.assertEqual(self.folders()['D'], 'AgentFleet-Other')
-        self.manager.closing = True
-        self.manager.folder_task.cancel()
 
     async def test_sessions_are_filed_by_who_opened_them_once_the_app_is_closed(self):
         folders = self.manager.app_folders()

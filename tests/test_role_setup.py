@@ -19,7 +19,7 @@ $ErrorActionPreference='Stop'
 if ($Plan) { @{engine=$Engine;data_dir=$DataDir;plan=$true} | ConvertTo-Json; return }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $path=Join-Path $DataDir 'connection.json'
-$connection=@{name='fixture-pc';engine=$Engine;main_agent_name=$MainAgentName;token='fixture-role-token';local_url='http://127.0.0.1:18765/mcp';tailscale_url='';main_agent_workspace=(Join-Path $DataDir 'main')}
+$connection=@{name='fixture-pc';main_agent_id='fixture-main';engine=$Engine;main_agent_name=$MainAgentName;token='fixture-role-token';local_url='http://127.0.0.1:18765/mcp';tailscale_url='';main_agent_workspace=(Join-Path $DataDir 'main')}
 [System.IO.File]::WriteAllText($path,($connection|ConvertTo-Json),(New-Object System.Text.UTF8Encoding $false))
 $client=Join-Path $DataDir 'local-client'; New-Item -ItemType Directory -Force -Path $client | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $client 'computers.json'),'{"computers":{}}',(New-Object System.Text.UTF8Encoding $false))

@@ -53,7 +53,7 @@ test('only the orchestrator folder reaches the main agent; other sessions get th
   for (const dir of [join(home, 'tokens'), orchestrator, project]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(home, 'tokens', 'pc-1.txt'), 'token\n');
   writeFileSync(join(home, 'computers.json'), JSON.stringify({ orchestrator_workspace: orchestrator,
-    computers: { 'pc-1': { url: worker.url, token_file: join(home, 'tokens', 'pc-1.txt'), agents: {} } } }));
+    computers: { 'pc-1': { main_agent_name: '主agent export', main_agent_id: 'main-1', engine: 'codex', url: worker.url, token_file: join(home, 'tokens', 'pc-1.txt'), agents: {} } } }));
   t.after(() => { worker.server.close(); rmSync(root, { recursive: true, force: true }); });
   const base = { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en' };
   delete base.CLAUDE_CODE_SESSION_ID; delete base.CODEX_THREAD_ID;

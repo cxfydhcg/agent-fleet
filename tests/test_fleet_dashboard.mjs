@@ -46,8 +46,8 @@ test('the fleet board shows every worker without exposing tokens', async (t) => 
   mkdirSync(join(home, 'tokens'));
   writeFileSync(join(home, 'tokens', 'pc-1.txt'), TOKEN + '\n');
   writeFileSync(join(home, 'computers.json'), JSON.stringify({ computers: {
-    'pc-1': { url: worker.url, token_file: join(home, 'tokens', 'pc-1.txt'), manager_name: 'boss', agents: {} },
-    'pc-off': { url: 'http://127.0.0.1:1/mcp', token_file: join(home, 'tokens', 'pc-1.txt'), agents: {} },
+    'pc-1': { main_agent_name: 'Main', main_agent_id: 'main-1', engine: 'codex', url: worker.url, token_file: join(home, 'tokens', 'pc-1.txt'), manager_name: 'boss', agents: {} },
+    'pc-off': { main_agent_name: 'Main', main_agent_id: 'main-2', engine: 'codex', url: 'http://127.0.0.1:1/mcp', token_file: join(home, 'tokens', 'pc-1.txt'), agents: {} },
   } }));
   const board = await startBoard(home);
   t.after(() => { board.child.kill(); worker.server.close(); rmSync(home, { recursive: true, force: true }); });

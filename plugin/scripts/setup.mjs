@@ -73,7 +73,7 @@ if (values.has('connection')) {
   let info;
   try { info = JSON.parse(readFileSync(resolve(values.get('connection')), 'utf8').replace(/^\uFEFF/, '')); }
   catch { fail('Could not read a valid connection file.'); }
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || '') || !info.token || !(flags.has('local') ? info.local_url : (info.tailscale_url || info.lan_url))) fail('Connection is invalid for the selected local/remote mode.');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(info.name || '') || !info.token || !info.main_agent_name || typeof info.main_agent_id !== 'string' || !info.main_agent_id.trim() || !['codex', 'claude'].includes(info.engine) || !(flags.has('local') ? info.local_url : (info.tailscale_url || info.lan_url))) fail('Connection is invalid for the selected local/remote mode.');
 }
 function run(executable, args, env = process.env) {
   const child = spawnSync(executable, args, { env, encoding: 'utf8', windowsHide: true });

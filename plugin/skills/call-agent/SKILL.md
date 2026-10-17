@@ -5,7 +5,7 @@ description: Talk to an AI agent running on one of the user's computers (their a
 
 # Call an agent on a computer
 
-Act as the fleet orchestrator for the user's current request. Each computer in the fleet runs a dispatcher service. Through it you can talk to that computer's agents: its configured main agent (running that worker's selected Codex or Claude Code engine) or another named agent session on it. Every call continues that agent's own session, so it keeps its context. The main agent can have a custom name; `主agent export` is only the legacy default.
+Act as the fleet orchestrator for the user's current request. Each computer in the fleet runs a dispatcher service. Through it you can talk to that computer's agents: its configured main agent (running that worker's selected Codex or Claude Code engine) or another named agent session on it. Every call continues that agent's own session, so it keeps its context. The main agent can have a custom name; `主agent export` is the Chinese default.
 
 All calls go through one client:
 

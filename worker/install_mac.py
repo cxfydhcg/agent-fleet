@@ -38,7 +38,7 @@ class Setup:
         self.data = Path(args.data_dir).expanduser().resolve()
         self.config_path = self.data / 'config.json'
         self.prior = json.loads(self.config_path.read_text(encoding='utf-8-sig')) if self.config_path.exists() else None
-        language = args.language or (('en' if self.prior.get('language') == 'en' else 'zh') if self.prior else
+        language = args.language or (self.prior['language'] if self.prior else
                                      ('zh' if (os.environ.get('LANG') or system_language()).startswith('zh') else 'en'))
         self.language = language
         os.environ['PATH'] = os.pathsep.join([os.environ.get('PATH', '')] + EXTRA_PATH)
@@ -66,10 +66,14 @@ class Setup:
         self.connectivity = a.connectivity or ('lan' if prior.get('lan_url') else
                                                'tailscale' if prior.get('remote_url') and not prior.get('local_only') else 'local')
         self.workspace = Path(a.workspace or (Path(prior['tasks_dir']).parent if prior.get('tasks_dir') else Path.home() / 'AgentFleet')).expanduser().resolve()
-        # Keep an existing task directory across reinstalls. New installations
-        # use the same localized name for the real directory and desktop project.
-        self.tasks_dir = (self.workspace / Path(prior['tasks_dir']).name if prior.get('tasks_dir') else
-                          self.workspace / self.t('AgentFleet-其他', 'AgentFleet-Other'))
+        folders = prior.get('codex_app_folders')
+        task_name = (folders.get('other') if isinstance(folders, dict) else None) or self.t('AgentFleet-其他', 'AgentFleet-Other')
+        if task_name in ('.', '..') or re.search(r'[<>:"/\\|?*\x00-\x1f]', task_name):
+            self.fail('任务项目名称不能包含路径分隔符或无效字符。', 'The task project name cannot contain path separators or invalid characters.')
+        self.tasks_dir = self.workspace / task_name
+        if prior.get('tasks_dir') and Path(prior['tasks_dir']).name != task_name:
+            self.fail('任务目录名称必须与配置的项目名称一致，不支持自动迁移。',
+                      'Task directory name must match the configured project name; automatic migration is not supported.')
         self.name = a.name or prior.get('computer_name') or default_name()
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.name):
             self.fail('电脑名只能用字母、数字、点、下划线和连字符，并以字母或数字开头。',

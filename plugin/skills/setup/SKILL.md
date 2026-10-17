@@ -181,9 +181,8 @@ To register another worker later, rerun with `--role orchestrator --connection`
 - Codex workers register both projects through the app. New installations use
   a real task directory named `AgentFleet-其他` (zh) or `AgentFleet-Other` (en),
   so the other project appears with the right name without restarting Codex.
-  Reinstalls preserve the configured task path. For existing directories whose
-  basename differs from the configured project name, the worker instead creates
-  the correctly named project while Codex is closed; do not open their raw URL.
+  Reinstalls preserve the configured task path. Its basename must match the
+  configured project name; mismatched configuration is rejected, not migrated.
   Respect an explicit `codex_app_register_other_project: false` opt-out, unless
   the user subsequently requests the correctly named other project.
   Check both entries in `desktop.projects` when enabled. A registered main
@@ -191,10 +190,7 @@ To register another worker later, rerun with `--role orchestrator --connection`
   `node "<plugin-root>/scripts/setup.mjs" --role worker --language zh --desktop-only`
   (use the configured language and `--data-dir` if custom). Preview with `--plan`.
   This does not restart the service or change permissions, identity or pairing.
-  `waiting-for-desktop-close` means the owner must fully quit Codex and leave
-  the worker running. The worker backs up state, creates or repairs the name,
-  and preserves intentional user renames. Verify the exact name after reopening
-  Codex before claiming completion. A queued request alone is not success.
+  Verify both project registrations before claiming completion.
 - Setup registers the workspace under Projects in Codex desktop on Windows and macOS and
   reports `desktop.status`, including when it reuses an existing worker. Verify
   `registered` and the path with the app's project-list tool when available;

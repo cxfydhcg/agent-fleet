@@ -46,7 +46,7 @@ async function waitingWorker(t) {
     }
     if (req.url === '/pair/claim' && JSON.parse(body).code === '1234-5678') {
       return send({ name: 'remote-pc', token: 'fixture-remote-token', main_agent_id: 'remote-main',
-        main_agent_name: 'Remote Main', lan_url: address, local_url: address });
+        main_agent_name: 'Remote Main', engine: 'codex', lan_url: address, local_url: address });
     }
     res.writeHead(403); res.end('{}');
   });
@@ -116,7 +116,7 @@ test('other sessions cannot use a configured management registry to pair', async
 test('worker self-registration remains available and cannot import a non-loopback local URL', async t => {
   const f = fixture(t);
   const connection = join(f.root, 'local-connection.json');
-  const info = { name: 'self', token: 'fixture-local-token', main_agent_id: 'local-main',
+  const info = { name: 'self', token: 'fixture-local-token', main_agent_id: 'local-main', main_agent_name: 'Local Main', engine: 'codex',
     local_url: 'http://127.0.0.1:8765/mcp' };
   writeFileSync(connection, JSON.stringify(info));
   let result = await f.client(['add-computer', connection, '--local=1']);
@@ -135,7 +135,7 @@ test('both setup capabilities retain the local worker when another worker is pai
   assert.equal((await f.setup()).code, 0);
   const connection = join(f.root, 'local-connection.json');
   writeFileSync(connection, JSON.stringify({ name: 'self', token: 'fixture-local-token',
-    main_agent_id: 'local-main', local_url: 'http://127.0.0.1:8765/mcp' }));
+    main_agent_id: 'local-main', main_agent_name: 'Local Main', engine: 'codex', local_url: 'http://127.0.0.1:8765/mcp' }));
   assert.equal((await f.client(['add-computer', connection, '--local=1'])).code, 0);
   const result = await f.client(['pair', worker.address, '1234-5678']);
   assert.equal(result.code, 0, result.stderr);

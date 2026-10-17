@@ -37,7 +37,7 @@ Same flow, through `bash install-worker.sh [--connectivity local|tailscale|lan] 
 
 ## Working on the code
 
-- The unified plugin is in `plugin/`; read `PLUGINS.md`. Its setup skill lets the user choose orchestrator, worker or both, and it packages skills for Codex and Claude Code. Run `python tools/build_plugins.py` after shared runtime/client edits to rebuild the bundled worker runtime and fleet client. Older generated role directories are not published in the catalogs or exports.
+- The unified plugin is in `plugin/`; read `PLUGINS.md`. Its setup skill lets the user choose orchestrator, worker or both, and it packages skills for Codex and Claude Code. Run `python tools/build_plugins.py` after shared runtime/client edits to rebuild the bundled worker runtime and fleet client. Only the unified plugin is maintained; do not retain the former split role packages. This project has no deployed users: do not add backward-compatibility shims or automatic migrations. Require the current data and protocol formats.
 - `worker/claude_executor.py` adapts Claude Code print-mode sessions. It uses per-turn MCP task headers for callback attribution, preserves session IDs, and defaults to restricted file tools. Claude's tool permissions are not a Windows OS sandbox. Never add permission bypass flags unless the owner chose full access.
 - Run the dispatcher and Claude adapter tests plus `tests/test_plugins.py`. Claude fixtures never call a model. Validate each plugin and the marketplace with `claude plugin validate`; source distribution must exclude machine data and credentials.
 

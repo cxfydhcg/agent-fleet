@@ -28,14 +28,14 @@ $priorSettings = $null
 if (Test-Path -LiteralPath (Join-Path $DataDir 'config.json')) {
     $priorSettings = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $DataDir 'config.json') -Raw | ConvertFrom-Json
 }
-# Installs from before the language option were Chinese, so they stay Chinese unless told otherwise.
 if (-not $Language) {
-    if ($priorSettings) { $Language = $(if ($priorSettings.language -eq 'en') { 'en' } else { 'zh' }) }
+    if ($priorSettings) { $Language = $priorSettings.language }
     elseif ((Get-Culture).Name -like 'zh*') { $Language = 'zh' } else { $Language = 'en' }
 }
 function T($zh, $en) { if ($Language -eq 'en') { $en } else { $zh } }
-# Keep the configured leaf on reinstalls; use the localized project name for new workers.
-$tasksLeaf = if ($priorSettings -and $priorSettings.tasks_dir) { Split-Path -Leaf $priorSettings.tasks_dir } else { T 'AgentFleet-其他' 'AgentFleet-Other' }
+$tasksLeaf = if ($priorSettings -and $priorSettings.codex_app_folders.other) { $priorSettings.codex_app_folders.other } else { T 'AgentFleet-其他' 'AgentFleet-Other' }
+if ($tasksLeaf -in @('.', '..') -or $tasksLeaf.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { throw 'The task project name must be a valid directory name.' }
+if ($priorSettings -and $priorSettings.tasks_dir -and (Split-Path -Leaf $priorSettings.tasks_dir) -cne $tasksLeaf) { throw 'Task directory name must match the configured project name; automatic migration is not supported.' }
 $tasksDir = Join-Path $Workspace $tasksLeaf
 if (-not $PSBoundParameters.ContainsKey('MainAgentName')) {
     $MainAgentName = $(if ($priorSettings -and $priorSettings.main_agent_name) { $priorSettings.main_agent_name } else { T '主agent export' 'Main agent' })

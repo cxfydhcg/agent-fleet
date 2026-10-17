@@ -45,29 +45,18 @@
 //   node fleet.mjs list     <电脑> [数量]
 //   node fleet.mjs cancel   <电脑> <task_id>...       取消排队中或运行中的任务（已做的改动保留）
 //   node fleet.mjs tools    <电脑>
-// 每台电脑用登记表里的 url（没有就用 local_url）；加 --remote 强制走 Tailscale（或局域网）地址。
+// 每台电脑用登记表里的 url；加 --remote 强制走 Tailscale（或局域网）地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
 import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { execFileSync } from "node:child_process";
 import { basename, join, relative, resolve, isAbsolute } from "node:path";
 
-const MAIN_AGENT = "主agent export";
 const validAgentName = (name) => typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 100 && !/[\u0000-\u001f\u007f]/.test(name) && !name.trim().startsWith('--') && !['__proto__', 'constructor', 'prototype'].includes(name.trim());
 const fleetHome = process.env.AGENT_FLEET_HOME || join(homedir(), ".agent-fleet");
 const registryPath = join(fleetHome, "computers.json");
 const registry = existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, "utf8")) : { computers: {} };
-// Older registries kept a single main_agent_export entry per computer.
-for (const pc of Object.values(registry.computers)) {
-  pc.agents ??= {};
-  if (pc.main_agent_export) {
-    const { name, ...rest } = pc.main_agent_export;
-    pc.agents[name || MAIN_AGENT] ??= rest;
-    pc.main_agent_name ??= name || MAIN_AGENT;
-    delete pc.main_agent_export;
-  }
-}
-const mainAgentName = (pc) => pc.main_agent_name || MAIN_AGENT;
+const mainAgentName = (pc) => pc.main_agent_name;
 const saveRegistry = () => {
   mkdirSync(fleetHome, { recursive: true });
   writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
@@ -139,7 +128,7 @@ let nextId = 1;
 let url, token;
 
 // This computer's own worker is reached locally; others over Tailscale or the LAN.
-const endpoint = (target) => (flag("--remote") ? target.tailscale_url || target.lan_url : target.url || target.local_url || target.tailscale_url || target.lan_url);
+const endpoint = (target) => (flag("--remote") ? target.tailscale_url || target.lan_url : target.url);
 
 function connect(target) {
   url = endpoint(target);
@@ -154,14 +143,13 @@ function summarize(name, profile, online) {
     : (m.gpus ?? []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join(", ") || T("无独立显卡", "no dedicated GPU");
   const pc = registry.computers[name] ?? {};
   return {
-    computer: name, manager_name: pc.manager_name ?? null, main_agent_id: pc.main_agent_id ?? profile?.main_agent?.id ?? null,
+    computer: name, manager_name: pc.manager_name ?? null, main_agent_id: pc.main_agent_id ?? null,
     online, ...(online ? {} : { last_seen: profile?._fetched_at ?? null }),
     hardware: [m.cpu, m.ram_gb && T(`${m.ram_gb}GB 内存`, `${m.ram_gb}GB RAM`), gpu, m.os].filter(Boolean).join(" · ") || null,
     network: [m.egress_country && T(`出口 ${m.egress_country}`, `egress ${m.egress_country}`),
               m.tailscale?.offers_exit_node && T("提供出口节点", "offers an exit node")].filter(Boolean).join(" · ") || null,
     role: c.role ?? null, notes: c.notes ?? null, software: c.software ?? [], accounts: c.accounts ?? [],
     busy: profile?.busy ?? null,
-    // Older workers don't report it; null means unknown, not restricted.
     permissions: profile?.permissions ? (profile.permissions.full_access ? T("完全访问（可操作桌面和应用）", "full access (can operate the desktop and apps)")
       : T(`受限（${profile.permissions.sandbox}，需要批准的操作如 Computer Use 会被拒绝）`, `restricted (${profile.permissions.sandbox}; anything needing approval, such as Computer Use, is refused)`)) : null,
     agents: (profile?.agents ?? []).map((a) => ({ name: a.name, type: a.type, role: a.role, tags: a.tags, status: a.status })),
@@ -185,7 +173,6 @@ if (cmd === "watch") {
   const seen = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
   const saveSeen = () => writeFileSync(statePath, JSON.stringify(seen, null, 2) + "\n");
   for (const [name, target] of Object.entries(registry.computers)) {
-    seen[name] ??= target.last_notification_id; // older versions kept it in the registry
     // First run starts from "now" so old notifications are not replayed.
     if (seen[name] == null) {
       try { seen[name] = (await fetchNotifications(target, 0)).latest_id; } catch { /* offline: start at 0 later */ }
@@ -239,8 +226,13 @@ function addComputer(info, isThisComputer, source) {
       process.exit(2);
     }
   }
-  if (info.main_agent_name !== undefined && !validAgentName(info.main_agent_name)) {
+  if (!validAgentName(info.main_agent_name)) {
     console.error('Main agent name must contain 1 to 100 printable characters, without a leading --.');
+    process.exit(2);
+  }
+  if (typeof info.main_agent_id !== 'string' || !info.main_agent_id.trim() || !['codex', 'claude'].includes(info.engine)) {
+    console.error(T('接入信息缺少有效的 main_agent_id 或 engine，请重新运行工作端设置。',
+                    'Connection needs a valid main_agent_id and engine; rerun worker setup.'));
     process.exit(2);
   }
   // The same main agent (same id) under a new computer name is that computer renamed, not a new one.
@@ -254,7 +246,7 @@ function addComputer(info, isThisComputer, source) {
     process.exit(2);
   }
   const oldMain = mainAgentName(existing);
-  const chosenMain = info.main_agent_name?.trim() || oldMain;
+  const chosenMain = info.main_agent_name.trim();
   if (chosenMain !== oldMain && Object.hasOwn(existing.agents ?? {}, chosenMain)) {
     console.error('An agent already uses the requested main agent name; choose another name.');
     process.exit(2);
@@ -262,9 +254,9 @@ function addComputer(info, isThisComputer, source) {
   const tokenFile = join(fleetHome, "tokens", `${info.name}.txt`);
   mkdirSync(join(fleetHome, 'tokens'), { recursive: true });
   writeFileSync(tokenFile, info.token.trim() + "\n");
-  const engine = info.engine || 'codex';
+  const engine = info.engine;
   const agents = { ...(existing.agents ?? {}) };
-  if (engine !== (existing.engine || 'codex')) {
+  if (existing.engine && engine !== existing.engine) {
     // History remains on the worker, but a different CLI cannot resume those sessions.
     for (const [name, value] of Object.entries(agents)) {
       const { last_task_id, thread_id, ...metadata } = value;
@@ -279,7 +271,7 @@ function addComputer(info, isThisComputer, source) {
   if (renamedFrom) delete registry.computers[renamedFrom];
   registry.computers[info.name] = {
     ...existing, engine, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
-    ...(info.main_agent_id ? { main_agent_id: info.main_agent_id } : {}), ...(managerName ? { manager_name: managerName } : {}),
+    main_agent_id: info.main_agent_id, ...(managerName ? { manager_name: managerName } : {}),
     url: isThisComputer ? info.local_url : info.tailscale_url || info.lan_url,
     local_url: info.local_url, tailscale_url: info.tailscale_url, lan_url: info.lan_url, token_file: tokenFile,
     agents,
@@ -310,7 +302,7 @@ function searchTargets() {
   if (given) return given.map((h) => (/:\d+$/.test(h) ? h : `${h}:${port}`));
   const targets = new Set();
   for (const address of Object.values(networkInterfaces()).flat()) {
-    if (!address || address.internal || !(address.family === "IPv4" || address.family === 4)) continue;
+    if (!address || address.internal || address.family !== "IPv4") continue;
     const ip = ipToInt(address.address), mask = ipToInt(address.netmask || "255.255.255.0");
     if (address.address.startsWith("169.254.") || (ip >= ipToInt("100.64.0.0") && ip <= ipToInt("100.127.255.255"))) continue;
     // The whole subnet when it is small enough, otherwise the /24 around this computer.
@@ -452,7 +444,7 @@ if (cmd === "dashboard") {
   const sameKey = (value) => typeof value === "string" && value.length === key.length && timingSafeEqual(Buffer.from(value), Buffer.from(key));
   async function status() {
     return Promise.all(Object.entries(computers()).map(async ([name, target]) => {
-      const row = { name, label: target.manager_name || name, manager_name: target.manager_name ?? null, main_agent_name: target.main_agent_name || MAIN_AGENT };
+      const row = { name, label: target.manager_name || name, manager_name: target.manager_name ?? null, main_agent_name: target.main_agent_name };
       try {
         const res = await workerGet(target, "/api/profile");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -640,7 +632,7 @@ function syncMain(main) {
 
 async function talkMain(prompt) {
   const main = (await call("get_profile", {})).main_agent;
-  if (!main) return talkNamed(mainAgentName(pc), prompt); // workers from before main agent ids
+  if (!main?.id || !validAgentName(main.name)) throw new Error(T('工作端未提供主 Agent ID 和名称，请重新运行设置。', 'Worker did not provide a main agent ID and name; rerun setup.'));
   syncMain(main);
   if (pc.manager_name !== (main.manager_name ?? undefined)) await call("update_computer_profile", { manager_name: pc.manager_name ?? "" });
   const name = mainAgentName(pc);
@@ -670,7 +662,7 @@ async function ownAgentName() {
     }
     name = title;
     for (let i = 2; taken.has(name); i++) name = `${title} ${i}`;
-  } // The fallback carries this session's id, so if it exists it is this session's agent from before titles.
+  }
   owned[session] = name;
   saveRegistry();
   return name;

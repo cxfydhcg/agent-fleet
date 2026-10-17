@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, join, normalize, win32, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -17,54 +17,26 @@ const stateReader = runtime => runtime.readState || (() => {
   return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) : {};
 });
 
-function requestNamedProject(workerConfig, request, runtime) {
-  if (runtime.requestRepair) return runtime.requestRepair(request);
-  if (typeof workerConfig.state_dir !== 'string' || !isAbsolute(workerConfig.state_dir))
-    throw new Error('Worker state_dir must be absolute. / 工作端状态目录必须是绝对路径。');
-  // This is a worker request, never an edit to the running desktop's state.
-  mkdirSync(workerConfig.state_dir, { recursive: true });
-  const path = join(workerConfig.state_dir, 'desktop-project-repair.json');
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, JSON.stringify(request) + '\n', { mode: 0o600 });
-  renameSync(temporary, path);
-}
-
-// Registration belongs to the running app. The dispatcher's offline thread
-// sorter must not be responsible for making the second project visible.
+// Both projects are registered through the app's public workspace entry point.
 export async function ensureDesktopProjects({ workspace, workerConfig, disabled = false }, runtime = {}) {
   const folders = workerConfig?.codex_app_folders;
   const otherEnabled = !!folders && workerConfig.codex_app_register_other_project !== false &&
-    workerConfig.executor !== 'claude' && workerConfig.engine !== 'claude' && !disabled;
-  if (otherEnabled && (typeof workerConfig.tasks_dir !== 'string' || !isAbsolute(workerConfig.tasks_dir)))
-    throw new Error('Worker tasks_dir must be absolute. / 工作端任务目录必须是绝对路径。');
-  const main = await ensureDesktopProject({ workspace, disabled }, runtime);
-  if (!otherEnabled || !['registered', 'pending'].includes(main.status)) return main;
-  const expectedName = typeof folders === 'object' && folders.other ||
-    (workerConfig.language === 'en' ? 'AgentFleet-Other' : 'AgentFleet-其他');
-  const existing = projectForWorkspace(stateReader(runtime)(), workerConfig.tasks_dir, runtime.platform || process.platform);
-  const defaultName = workerConfig.tasks_dir.replace(/\\/g, '/').split('/').filter(Boolean).at(-1);
-  let other;
-  if (existing && (existing.name === expectedName || existing.name !== defaultName)) {
-    // Keep an intentional user rename, but repair the default directory label.
-    other = { status: 'registered', project_id: existing.id, project_name: existing.name, workspace: workerConfig.tasks_dir };
-  } else if (defaultName === expectedName) {
-    // The real directory has the intended display name, so the app's normal
-    // project entry point can register it immediately, just like the main root.
-    other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir }, runtime);
-  } else {
-    requestNamedProject(workerConfig, { version: 1, other: {
-      root: workerConfig.tasks_dir, name: expectedName, project_id: existing?.id ?? null,
-      previous_name: existing?.name ?? null,
-    } }, runtime);
-    other = { status: 'pending', workspace: workerConfig.tasks_dir, expected_name: expectedName,
-      reason: 'waiting-for-desktop-close',
-      message: `Quit Codex completely; the worker will create or repair "${expectedName}" while it is closed. / 请完全退出 Codex，工作端会在退出后创建或修正“${expectedName}”。` };
+    workerConfig.engine !== 'claude' && !disabled;
+  if (otherEnabled) {
+    if (typeof workerConfig.tasks_dir !== 'string' || !isAbsolute(workerConfig.tasks_dir))
+      throw new Error('Worker tasks_dir must be absolute. / 工作端任务目录必须是绝对路径。');
+    const expectedName = typeof folders === 'object' && folders.other ||
+      (workerConfig.language === 'en' ? 'AgentFleet-Other' : 'AgentFleet-其他');
+    const directoryName = workerConfig.tasks_dir.replace(/\\/g, '/').split('/').filter(Boolean).at(-1);
+    if (directoryName !== expectedName)
+      throw new Error('Task directory name must match the configured project name. / 任务目录名称必须与配置的项目名称一致。');
   }
-  const projects = { main, other };
-  // Keep the main project's existing top-level fields for older callers, but
-  // never report successful registration if either project is still pending.
+  const main = await ensureDesktopProject({ workspace, disabled }, runtime);
+  const projects = { main };
+  if (otherEnabled && ['registered', 'pending'].includes(main.status))
+    projects.other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir }, runtime);
   const incomplete = Object.values(projects).find(project => project.status !== 'registered');
-  return { ...main, status: incomplete?.status || 'registered', projects,
+  return { status: incomplete?.status || 'registered', projects,
     ...(incomplete?.message ? { message: incomplete.message } : {}) };
 }
 

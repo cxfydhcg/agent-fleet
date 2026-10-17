@@ -87,14 +87,9 @@ node <repository>/plugin/scripts/setup.mjs --role worker --language zh --desktop
 
 Use the installed language and `--data-dir PATH` for a custom data directory.
 Both results appear under `desktop.projects` when the other project is enabled.
-For an existing task directory whose basename differs from the configured project
-name, a missing other project or an observed directory-derived label stays `pending`
-with `reason: waiting-for-desktop-close` and the expected name. Fully quit Codex
-and leave the worker running; its folder loop consumes the one-shot repair
-request after the app closes, backs up state, and verifies the saved names.
-Reopen Codex and verify the project name before reporting success. Existing
-intentional user names are preserved, including renames made after the request.
-The worker checks again immediately before writing in case the app reopened.
+The task directory's basename must match the configured project name. Setup
+rejects mismatched configuration; it does not migrate paths or queue project
+renaming. Existing intentional project names chosen in the app are preserved.
 
 Set `codex_app_register_other_project` to `false` in the worker config to opt out
 of requesting the named other-agents project during setup/desktop repair. This
@@ -219,7 +214,7 @@ limits are reported by its CLI, without claiming Codex-style quota-reset support
 
 ## Build and verify
 
-After changing shared runtime or the legacy fleet client, run:
+After changing shared runtime or the fleet client, run:
 
 ```text
 python tools/build_plugins.py

@@ -39,7 +39,7 @@ class PluginSetupTests(unittest.TestCase):
 
     def connection(self, **overrides):
         path = self.root / 'connection.json'
-        info = dict(name='fixture-pc', token='fixture-only-token', local_url='http://127.0.0.1:8765/mcp',
+        info = dict(name='fixture-pc', main_agent_name='主agent export', main_agent_id='fixture-main', engine='codex', token='fixture-only-token', local_url='http://127.0.0.1:8765/mcp',
                     tailscale_url='', main_agent_workspace=str(self.root / 'main'))
         info.update(overrides)
         path.write_text(json.dumps(info), encoding='utf-8')
@@ -121,9 +121,16 @@ class PluginSetupTests(unittest.TestCase):
         self.assertEqual(pc['agents'][chosen]['last_task_id'], 'existing-task')
         self.assertEqual(pc['agents']['another agent']['thread_id'], 'other-session')
         self.assertNotIn('主agent export', pc['agents'])
-        # Older connection files must not reset an already-customized name.
-        self.assertEqual(self.orchestrator('--connection', str(self.connection()), '--local').returncode, 0)
-        self.assertEqual(json.loads(registry.read_text(encoding='utf-8'))['computers']['fixture-pc']['main_agent_name'], chosen)
+
+    def test_incomplete_connection_is_rejected_without_migration(self):
+        for field in ('main_agent_name', 'main_agent_id', 'engine'):
+            path = self.connection()
+            data = json.loads(path.read_text())
+            del data[field]
+            path.write_text(json.dumps(data))
+            result = self.orchestrator('--connection', str(path), '--local')
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertFalse(self.home.exists())
 
     def test_invalid_main_name_is_rejected_before_setup_writes(self):
         for name in ('', 'x' * 101, 'bad\nname', '__proto__', '--new'):
@@ -155,7 +162,9 @@ class PluginSetupTests(unittest.TestCase):
                     result = {}
                 else:
                     params = request['params']; calls.append(params)
-                    task = {'task_id': 'renamed-turn', 'thread_id': 'existing-session', 'status': 'completed', 'result': 'OK'}
+                    task = ({'main_agent': {'id': 'fixture-main', 'name': chosen, 'task_id': 'existing-task'}}
+                            if params['name'] == 'get_profile' else
+                            {'task_id': 'renamed-turn', 'thread_id': 'existing-session', 'status': 'completed', 'result': 'OK'})
                     result = {'content': [{'type':'text','text':json.dumps(task)}]}
                 body = json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}).encode()
                 self.send_response(200); self.end_headers(); self.wfile.write(body)
@@ -176,7 +185,7 @@ class PluginSetupTests(unittest.TestCase):
                 answer = json.loads(result.stdout)
                 self.assertEqual(answer['agent'], chosen)
                 self.assertEqual(answer['thread_id'], 'existing-session')
-                # export first asks for the main agent by id; a worker that has none falls back to the saved session.
+                # export resolves the main agent by id, then continues the task reported by the worker.
                 calls = [c for c in calls if c['name'] != 'get_profile']
                 self.assertEqual(calls[0]['name'], 'continue_task')
                 self.assertEqual(calls[0]['arguments']['task_id'], 'existing-task')
@@ -252,6 +261,20 @@ class PluginSetupTests(unittest.TestCase):
         value = json.loads(result.stdout[result.stdout.rindex('{\n  "role"'):])['worker']
         self.assertEqual(Path(value['tasks_dir']), workspace / 'AgentFleet-Other')
         self.assertEqual(path.read_text(), original)
+        self.assertFalse(workspace.exists())
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS worker setup')
+    def test_mac_setup_rejects_mismatched_task_directory_without_migration(self):
+        data, workspace = self.root / 'private', self.root / 'workspace'
+        data.mkdir()
+        path = data / 'config.json'
+        before = json.dumps({'language': 'zh', 'tasks_dir': str(workspace / 'tasks')})
+        path.write_text(before)
+        result = subprocess.run(['node', str(ROOT / 'plugin/scripts/setup.mjs'), '--role', 'worker', '--plan',
+            '--no-desktop', '--data-dir', str(data)], capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('任务目录名称必须与配置的项目名称一致', result.stderr)
+        self.assertEqual(path.read_text(), before)
         self.assertFalse(workspace.exists())
 
     def test_manifests_and_catalogs_reference_self_contained_plugins(self):

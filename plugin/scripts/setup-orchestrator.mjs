@@ -32,8 +32,11 @@ if (connection) {
     console.error(local ? 'Connection needs name, token and local_url.' : 'Remote connection needs a Tailscale or LAN URL; set up that worker for remote access first.');
     process.exit(2);
   }
-  if (info.main_agent_name !== undefined && (typeof info.main_agent_name !== 'string' || !info.main_agent_name.trim() || info.main_agent_name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(info.main_agent_name) || info.main_agent_name.trim().startsWith('--') || ['__proto__','constructor','prototype'].includes(info.main_agent_name.trim()))) {
+  if ((typeof info.main_agent_name !== 'string' || !info.main_agent_name.trim() || info.main_agent_name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(info.main_agent_name) || info.main_agent_name.trim().startsWith('--') || ['__proto__','constructor','prototype'].includes(info.main_agent_name.trim()))) {
     console.error('Main agent name must contain 1 to 100 printable characters, without a leading --.'); process.exit(2);
+  }
+  if (typeof info.main_agent_id !== 'string' || !info.main_agent_id.trim() || !['codex', 'claude'].includes(info.engine)) {
+    console.error('Connection needs a valid main_agent_id and engine; rerun worker setup.'); process.exit(2);
   }
 }
 const registry = join(home, 'computers.json');
