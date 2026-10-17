@@ -22,6 +22,8 @@
 //                                                     只给配对码时先自动搜索，搜到正好一台就接入它
 //   node fleet.mjs set-manager-name <电脑> <管理名>    给这台电脑的主 Agent 起管理名（比如 经理cris），之后 <电脑> 处可以直接写管理名；
 //                                                     管理名在整个机群里不能重复；写 "" 清除
+//   node fleet.mjs dashboard [--port=8790] [--no-open] 在这台电脑上打开机群看板：一页看所有电脑的任务和会话（只读）；
+//                                                     令牌由这里代为带上，不用在网页里粘贴；--no-open 只输出链接
 //   node fleet.mjs language <zh|en>                   输出的语言（默认跟系统；也可用环境变量 AGENT_FLEET_LANG）
 // <电脑> 可以写电脑名、主 Agent 的管理名，或主 Agent 的 ID。主 Agent 按安装时生成的 ID 认，
 // 改主 Agent 的名字或管理名都不会找错。
@@ -372,6 +374,127 @@ if (cmd === "overview") {
   saveRegistry();
   out(rows);
   process.exit(0);
+}
+// One read-only board for every registered computer, served on this computer only. The page never sees a
+// worker token: this process adds it when it forwards each worker's own dashboard and its /api reads.
+// Opening it needs the one-time key in the printed link (kept in a cookie); the Host check stops DNS rebinding.
+if (cmd === "dashboard") {
+  const { createServer } = await import("node:http");
+  const { randomBytes, timingSafeEqual } = await import("node:crypto");
+  const key = randomBytes(24).toString("hex");
+  const API = new Set(["/api/tasks", "/api/profile", "/api/transcript", "/api/notifications"]);
+  // Re-read the registry so computers paired while the board is open show up.
+  const computers = () => (existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, "utf8")).computers ?? {} : {});
+  const workerGet = (target, path) => fetch(endpoint(target).replace(/\/mcp\/?$/, "") + path, {
+    headers: { Authorization: `Bearer ${readFileSync(target.token_file, "utf8").trim()}` }, cache: "no-store", signal: AbortSignal.timeout(10000) });
+  const send = (res, status, type, body, extra = {}) => {
+    res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                            "Content-Security-Policy": "frame-ancestors 'self'", ...extra });
+    res.end(body);
+  };
+  const sameKey = (value) => typeof value === "string" && value.length === key.length && timingSafeEqual(Buffer.from(value), Buffer.from(key));
+  async function status() {
+    return Promise.all(Object.entries(computers()).map(async ([name, target]) => {
+      const row = { name, label: target.manager_name || name, manager_name: target.manager_name ?? null, main_agent_name: target.main_agent_name || MAIN_AGENT };
+      try {
+        const res = await workerGet(target, "/api/profile");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const profile = await res.json();
+        return { ...row, online: true, busy: profile.busy ?? null, agents: (profile.agents ?? []).length };
+      } catch (error) {
+        return { ...row, online: false, error: String(error.message).slice(0, 160) };
+      }
+    }));
+  }
+  const server = createServer(async (req, res) => {
+    try {
+      const port = server.address().port, here = new URL(req.url, `http://127.0.0.1:${port}`);
+      if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host) || req.method !== "GET") return send(res, 403, "text/plain", "forbidden");
+      if (here.pathname === "/" && here.searchParams.has("k")) {
+        if (!sameKey(here.searchParams.get("k"))) return send(res, 403, "text/plain", "forbidden");
+        return send(res, 302, "text/plain", "", { Location: "/", "Set-Cookie": `fleet_board=${key}; HttpOnly; SameSite=Strict; Path=/` });
+      }
+      const cookie = /(?:^|;\s*)fleet_board=([0-9a-f]+)/.exec(req.headers.cookie ?? "")?.[1];
+      if (!sameKey(cookie)) return send(res, 403, "text/plain; charset=utf-8", T("请用启动看板时给出的链接打开。", "Open the board with the link printed when it started."));
+      if (here.pathname === "/") return send(res, 200, "text/html; charset=utf-8", boardPage());
+      if (here.pathname === "/fleet/status") return send(res, 200, "application/json", JSON.stringify(await status()));
+      const match = /^\/w\/([^/]+)(\/.*)$/.exec(here.pathname);
+      const name = match && decodeURIComponent(match[1]), target = name && Object.hasOwn(computers(), name) ? computers()[name] : null;
+      if (!target) return send(res, 404, "text/plain", "not found");
+      if (match[2] === "/dashboard") {
+        const page = await (await fetch(endpoint(target).replace(/\/mcp\/?$/, "") + "/dashboard", { signal: AbortSignal.timeout(10000) })).text();
+        // The worker page calls /api/... with its own token; route those calls through this board instead.
+        const shim = `<script>(()=>{const p=${JSON.stringify(`/w/${encodeURIComponent(name)}`)};const f=window.fetch.bind(window);`
+          + `window.fetch=(u,o)=>f(typeof u==='string'&&u.startsWith('/api/')?p+u:u,o);try{localStorage.setItem('codexTasksToken','via-orchestrator')}catch{}})();`
+          + `</script><style>#logout{display:none!important}</style>`;
+        return send(res, 200, "text/html; charset=utf-8", page.replace(/<head>/i, (h) => h + shim));
+      }
+      if (API.has(match[2])) {
+        const upstream = await workerGet(target, match[2] + here.search);
+        return send(res, upstream.status, "application/json", await upstream.text());
+      }
+      return send(res, 404, "text/plain", "not found");
+    } catch (error) {
+      send(res, 502, "application/json", JSON.stringify({ error: String(error.message).slice(0, 200) }));
+    }
+  });
+  const first = Number(option("port") ?? 8790);
+  for (let port = first; ; port++) {
+    try {
+      await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, "127.0.0.1", () => { server.off("error", fail); ok(); }); });
+      break;
+    } catch (error) {
+      if (error.code !== "EADDRINUSE" || port >= first + 10) throw error;
+    }
+  }
+  const link = `http://127.0.0.1:${server.address().port}/?k=${key}`;
+  if (flag("--no-open")) console.log(link);
+  else {
+    try {
+      if (process.platform === "win32") execFileSync("cmd", ["/c", "start", "", link], { stdio: "ignore" });
+      else execFileSync(process.platform === "darwin" ? "open" : "xdg-open", [link], { stdio: "ignore" });
+    } catch { console.log(link); }
+  }
+  console.error(T(`机群看板已打开：${link}\n只在这台电脑上能看；关掉这个命令就停止。`,
+                  `Fleet board is open: ${link}\nOnly this computer can see it; stop this command to close it.`));
+  await new Promise(() => {});
+}
+function boardPage() {
+  const text = {
+    title: T("机群看板", "Fleet board"), empty: T("还没有登记任何电脑。用 discover / pair 接入 worker。", "No computers registered yet. Connect a worker with discover / pair."),
+    idle: T("空闲", "Idle"), offline: T("离线", "Offline"), running: T("运行", "running"), queued: T("排队", "queued"),
+    pick: T("选择左边的一台电脑", "Pick a computer on the left"),
+  };
+  return `<!doctype html><html lang="${LANG === "en" ? "en" : "zh-CN"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${text.title}</title><style>
+:root{color-scheme:dark;--bg:#161616;--panel:#1e1e1e;--line:#2c2c2c;--text:#ececec;--dim:#9a9a9a;--ok:#4caf7a;--busy:#e0a63a;--off:#666}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.app{display:flex;height:100%}aside{width:260px;flex:none;border-right:1px solid var(--line);background:var(--panel);overflow:auto}
+h1{font-size:15px;margin:0;padding:14px 16px;border-bottom:1px solid var(--line)}
+.pc{display:flex;gap:10px;align-items:center;width:100%;padding:12px 16px;border:0;border-bottom:1px solid var(--line);background:none;color:inherit;text-align:left;cursor:pointer;font:inherit}
+.pc:hover{background:#252525}.pc.on{background:#2a2f3a}.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--off)}
+.dot.ok{background:var(--ok)}.dot.busy{background:var(--busy)}.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta{min-width:0}
+main{flex:1;min-width:0;display:flex}iframe{flex:1;border:0;background:var(--bg)}.hint{margin:auto;color:var(--dim);padding:24px;text-align:center}
+@media (max-width:720px){.app{flex-direction:column}aside{width:auto;max-height:40%;border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body><div class="app"><aside><h1>${text.title}</h1><div id="list"></div></aside><main id="main"><div class="hint">${text.pick}</div></main></div>
+<script>
+const TEXT=${JSON.stringify(text)};let rows=[];let picked=null;try{picked=localStorage.getItem('fleetBoardPick')}catch{}
+const $=(id)=>document.getElementById(id);
+function show(name){picked=name;try{localStorage.setItem('fleetBoardPick',name)}catch{}
+  const f=document.createElement('iframe');f.src='/w/'+encodeURIComponent(name)+'/dashboard';f.title=name;$('main').replaceChildren(f);render()}
+function render(){const list=$('list');list.replaceChildren();
+  if(!rows.length){const d=document.createElement('div');d.className='hint';d.textContent=TEXT.empty;list.append(d);return}
+  for(const r of rows){const b=document.createElement('button');b.className='pc'+(r.name===picked?' on':'');b.onclick=()=>show(r.name);
+    const dot=document.createElement('span');const busy=r.online&&r.busy&&(r.busy.running?.length||r.busy.queued);
+    dot.className='dot'+(r.online?(busy?' busy':' ok'):'');const m=document.createElement('span');m.className='meta';
+    const n=document.createElement('div');n.className='name';n.textContent=r.label;const s=document.createElement('div');s.className='sub';
+    s.textContent=!r.online?TEXT.offline:busy?TEXT.running+' '+(r.busy.running?.length||0)+' · '+TEXT.queued+' '+(r.busy.queued||0):TEXT.idle;
+    if(r.label!==r.name)s.textContent+=' · '+r.name;m.append(n,s);b.append(dot,m);list.append(b)}}
+async function refresh(){try{rows=await (await fetch('/fleet/status',{cache:'no-store'})).json()}catch{}
+  render();if(!document.querySelector('iframe')&&rows.length)show(rows.some(r=>r.name===picked)?picked:rows[0].name)}
+refresh();setInterval(refresh,10000);
+</script></body></html>`;
 }
 const pc = registry.computers[computer];
 if (!pc) {

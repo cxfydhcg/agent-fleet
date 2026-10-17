@@ -49,7 +49,7 @@ Session ownership: a main agent can continue, cancel or open only the sessions i
 - Relay the agent's `reply` faithfully and briefly. Say which computer and agent answered.
 - `status` other than `completed`: give the `error`. If `hint` mentions a lock, explain it: the session was opened in the Codex desktop app, which keeps it locked until Codex fully exits. Suggest quitting Codex completely, or let 主agent export start a fresh task.
 - Unknown agent (exit code 3): show the available names from the error and ask. Don't add `--new` on your own.
-- Never pass on `codex://` links as something to click. Opening a session in the app locks it. For watching progress, point the user to the read-only dashboard: `http://127.0.0.1:8765/dashboard` on that computer, or the computer's Tailscale address on port 8766 with `/dashboard`.
+- Never pass on `codex://` links as something to click. Opening a session in the app locks it. For watching progress, open the fleet board on this computer: run `node "<this folder>/fleet.mjs" dashboard` in the background (it opens the browser and keeps serving until stopped). It shows every registered computer on one page and adds the tokens itself, so the user never pastes one. Never type a token into a dashboard for the user. Each worker's own `/dashboard` (port 8765 locally, 8766 over Tailscale) still works but asks for that computer's token.
 
 ## Safety
 

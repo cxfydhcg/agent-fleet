@@ -16,7 +16,7 @@ You (phone / computer)
 - **The main agent decides**: the orchestrator gives a goal; the main agent does it itself, sends one sub-agent, or splits it up.
 - **Finished sub-agents wake the main agent**, which keeps going; when the whole job is done it tells the orchestrator, which tells you.
 - **Every computer has a profile**: hardware, purpose, software, account status, and its resident agents with their roles, so work goes to the right computer.
-- **Read-only dashboard**: watch every computer's progress live from a browser or phone without disturbing the agents.
+- **Fleet board**: watch every computer's progress live on one read-only page on the orchestrator, without disturbing the agents.
 
 ## Requirements
 
@@ -88,7 +88,7 @@ On the orchestrator, just say things like:
 
 > Stop 【Manager Cris】 from starting new tasks
 
-Sub-agents' results go into the `shared/` folder of that computer's workspace (by default the `AgentFleet` folder in Documents). To watch progress, open the read-only dashboard: `http://<that computer's address>:8765/dashboard` (port 8766 over Tailscale); the first time, paste that computer's token.
+Sub-agents' results go into the `shared/` folder of that computer's workspace (by default the `AgentFleet` folder in Documents). To watch progress, ask the AI on the orchestrator to open the fleet board (`fleet.mjs dashboard`): one page with every computer's tasks and sessions, no token to paste. Each computer also has its own read-only dashboard at `http://<that computer's address>:8765/dashboard` (port 8766 over Tailscale); the first time, paste that computer's token.
 
 ## Names, language and control
 
