@@ -374,7 +374,8 @@ class AppServerDispatcherTests(DispatcherTests):
         note = english.main_agent_note()
         self.assertIn('"Main agent"', note)
         self.assertIn('"Manager Cris"', note)
-        self.assertIn('Reply in English', note)
+        self.assertIn('Reply in the language the request is written in', note)
+        self.assertIn('use English', note)
         with self.assertRaisesRegex(ValueError, 'orchestrator'):
             english.update_computer('some-main-turn', manager_name='Boss')
         english.update_computer(manager_name='')

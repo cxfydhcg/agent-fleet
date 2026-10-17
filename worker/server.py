@@ -472,7 +472,9 @@ class TaskManager:
         if self.profile['computer'].get('manager_name'):
             parts.append('the orchestrator and the human call you ' + json.dumps(self.profile['computer']['manager_name'],
                          ensure_ascii=False) + ' when they manage the fleet; the session title in the desktop app may differ')
-        return '[Agent Fleet runtime: ' + '; '.join(parts) + '. Reply in ' + ('English' if self.language == 'en' else 'Chinese') + '.]'
+        # The setting is only a default: a person writing in the other language gets an answer in theirs.
+        return ('[Agent Fleet runtime: ' + '; '.join(parts) + '. Reply in the language the request is written in; when that is '
+                'unclear (e.g. an automatic notice), use ' + ('English' if self.language == 'en' else 'Chinese') + '.]')
 
     def title_suffix(self, job):
         """Registered resident agents get a marker in their desktop-app title (config resident_title_suffix,

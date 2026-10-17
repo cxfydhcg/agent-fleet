@@ -151,7 +151,7 @@ Common commands (`node <skill folder>\fleet.mjs …`):
 | Management name | What people and the orchestrator call it when managing the fleet, e.g. `Manager Cris`; unique across the fleet and usable wherever `<computer>` is expected | `fleet.mjs set-manager-name <computer> <name>`, or `-ManagerName` at setup |
 | Main agent id | Generated at the first setup and never changed | Nobody. The orchestrator finds the main agent by it, so renaming the title, the management name or even the computer never loses the link |
 
-The language (`-Language zh|en`, or `--language` in plugin setup) sets every text people see: default session titles and folder names, the resident suffix, the main agent's instructions and reply language, automatic notices, the dashboard, and installer and client messages. Existing computers keep their language (earlier installs are Chinese). The orchestrator client's language is set with `fleet.mjs language zh|en` and follows the system by default.
+The language (`-Language zh|en`, or `--language` in plugin setup) sets every text people see: default session titles and folder names, the resident suffix, the main agent's instruction file, automatic notices, the dashboard, and installer and client messages. The models understand both languages: this setting only covers fixed text, and agents reply in the language you write to them in (falling back to the setting when that is unclear). Existing computers keep their language (earlier installs are Chinese). The orchestrator client's language is set with `fleet.mjs language zh|en` and follows the system by default.
 
 Read-only dashboard: `http://<computer's Tailscale name>:8766/dashboard`; paste that computer's token the first time you open it.
 

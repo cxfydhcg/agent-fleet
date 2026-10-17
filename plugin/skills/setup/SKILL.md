@@ -10,7 +10,23 @@ start a worker. Resolve its root from this skill's directory (`../..`), or use
 `${CLAUDE_PLUGIN_ROOT}` in Claude Code. All setup goes through the bundled
 `scripts/setup.mjs`; do not depend on a checkout outside the plugin.
 
-## 1. Ask how this computer will be used
+## 1. Settle the language first
+
+Before anything else, decide the language, and use it for the whole setup conversation and as
+`--language zh|en`:
+
+- If the user writes in Chinese, use Chinese (`zh`); if in English, English (`en`). Say which one you
+  picked in one short line and that they can switch. These instructions are in English; that is not a
+  reason to answer in English.
+- If it is unclear (e.g. only a slash command or a button), ask this one question first, in both
+  languages: "中文还是 English？/ Chinese or English?" Ask nothing else until it is answered.
+- An existing worker keeps its language unless the user asks to change it (`--reconfigure`).
+
+The setting only decides fixed text people see (default session titles and folder names, the dashboard,
+notices, installer and client messages, the main agent's instruction file). The models understand both
+languages either way, and agents reply in the language a person writes to them in.
+
+## 2. Ask how this computer will be used
 
 If the request already says, use it. Otherwise ask in plain words, and don't
 infer an answer merely because the plugin was installed:
@@ -22,17 +38,14 @@ infer an answer merely because the plugin was installed:
 - **Both**: this computer controls other agents and also runs its own main agent
   for fleet tasks.
 
-## 2. Check Node.js
+## 3. Check Node.js
 
 Node.js 18+ is required. Bootstrap it if missing within the authorized setup
 scope (Windows: `winget install --id OpenJS.NodeJS.LTS --exact`), then refresh PATH.
 
-## 3. Resolve the settings
+## 4. Resolve the settings
 
-For every role, the **language** of everything people see (session titles, sidebar folders, the main agent's
-instructions and replies, notices, the dashboard, installer and client messages): `--language zh|en`. Ask
-during a fresh setup if the user's language is unclear; otherwise follow the language they write in. Existing
-workers keep theirs; changing it on a worker needs `--reconfigure`.
+Pass the language from step 1 as `--language zh|en` for every role.
 
 For **control** (orchestrator):
 - The private registry is `~/.agent-fleet` unless `AGENT_FLEET_HOME` or
@@ -99,7 +112,7 @@ Other options: `--workspace` (also the orchestrator's public project folder),
 `--claude-executable`, `--port`, `--tailscale-port`, `--skip-prerequisites`,
 `--no-autostart`, and `--no-desktop` for headless or Claude Code-only use.
 
-## 4. Preview, then run
+## 5. Preview, then run
 
 Preview with `--plan`; it prints only non-secret settings. Run the same command
 without `--plan` once the settings are resolved:
@@ -112,7 +125,7 @@ without `--plan` once the settings are resolved:
 To register another worker later, rerun with `--role orchestrator --connection`
 (or use call-agent's `add-computer`).
 
-## 5. Sign in and verify
+## 6. Sign in and verify
 
 - The owner signs in personally when needed: `codex login`, `claude auth login`,
   or Tailscale for remote mode. Never create an API key or print credentials. If
@@ -130,7 +143,7 @@ To register another worker later, rerun with `--role orchestrator --connection`
   data directory and, for a worker, its dashboard URL
   (`http://127.0.0.1:8765/dashboard`).
 
-## 6. Desktop app visibility
+## 7. Desktop app visibility
 
 - Setup registers the workspace under Projects in Codex desktop on Windows and macOS and
   reports `desktop.status`, including when it reuses an existing worker. Verify
@@ -146,7 +159,7 @@ To register another worker later, rerun with `--role orchestrator --connection`
   tools are unavailable, say that sidebar visibility wasn't verified. Claude
   worker conversations are viewed through the dashboard.
 
-## 7. Session title
+## 8. Session title
 
 End the final report by reminding the user that this session's title still
 reflects setup, and offer to rename it after the chosen role (for example
