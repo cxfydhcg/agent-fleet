@@ -78,8 +78,8 @@ without installing or creating a registry.
 
 ```text
 node <repository>/plugin/scripts/setup.mjs --role orchestrator
-node <repository>/plugin/scripts/setup.mjs --role worker --engine codex
-node <repository>/plugin/scripts/setup.mjs --role both --engine claude
+node <repository>/plugin/scripts/setup.mjs --role worker --engine codex --full-access
+node <repository>/plugin/scripts/setup.mjs --role both --engine claude --restricted
 ```
 
 Both automatically connects this computer's worker using its local address.
@@ -89,7 +89,7 @@ registry, and --data-dir selects private worker data; these remain separate.
 
 Worker settings include --engine codex|claude, --connectivity local|tailscale|lan,
 --lan-address, --workspace, --name, --description, --port, --tailscale-port, --claude-executable,
---skip-prerequisites and --no-autostart. --full-access requires explicit agreement.
+--skip-prerequisites and --no-autostart. Worker setup needs --full-access or --restricted; ask the owner, since --full-access requires explicit agreement.
 Use --reconfigure for an intentional worker repair/change. Role-specific setup
 scripts remain available for advanced use.
 
@@ -101,13 +101,13 @@ the computer. Removing that worker is a separate, explicit action.
 Choose a main-agent name during setup, independently of the computer name:
 
 ```text
-node <repository>/plugin/scripts/setup.mjs --role worker --main-agent-name "Main Agent Work"
+node <repository>/plugin/scripts/setup.mjs --role worker --main-agent-name "Main Agent Work" --restricted
 ```
 
-To rename an existing main agent, keep its other settings and add `--reconfigure`:
+To rename an existing main agent, keep its other settings (including its current `--full-access` or `--restricted`) and add `--reconfigure`:
 
 ```text
-node <repository>/plugin/scripts/setup.mjs --role worker --main-agent-name "main agent windows pc 1" --reconfigure
+node <repository>/plugin/scripts/setup.mjs --role worker --main-agent-name "main agent windows pc 1" --full-access --reconfigure
 ```
 
 The name supports spaces and Unicode (1 to 100 printable characters). Renaming
