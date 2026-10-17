@@ -1,3 +1,5 @@
+中文 | [English](README.en.md)
+
 # agent-fleet
 
 **Agent Fleet 是一个插件**，可安装到 Codex 或 Claude Code。运行 setup 后选择这台电脑的角色：orchestrator、worker 或 both；worker 可选择 Codex 或 Claude Code 引擎。安装、权限与验证说明见 [PLUGINS.md](PLUGINS.md)。
@@ -113,6 +115,16 @@ node <skill 文件夹>\fleet.mjs add-computer <那台电脑的 connection.json>
 **会话归属**：主 Agent 用 `submit_task` 开的会话归它所有，`continue_task` / `cancel_task` / `open_task` 只对自己开的会话（及其续接）有效；orchestrator 能控制所有会话。`can_dispatch` 和 `locked` 只有 orchestrator 能设置，主 Agent 也不能删掉带这些限制的登记。这些限制针对派任务服务能认出来的主 Agent 调用（Claude 引擎靠每轮的请求头，Codex 靠 turn metadata）；认不出调用者的请求按 orchestrator 处理。它们是管理规则，不是安全边界：拿到令牌的人仍然拥有全部权限。
 
 **同名会话**：登记过的 Agent（常驻或主 Agent）只保留一个会话：已经有会话时，再用这个名字 `submit_task` 会被拒绝，报错里带着该续接的 `task_id`（`get_profile` 里每个 Agent 也有 `task_id`）。用户在 Codex 桌面 App 里归档了旧会话后才能重新开。没登记的一次性任务可以重名。
+
+**名字和语言**：每台电脑的主 Agent 有三样东西，互不影响：
+
+| | 是什么 | 谁来改 |
+|---|---|---|
+| 会话标题 | 在 Codex 桌面 App 里看到的名字（安装时的 `-MainAgentName`，默认 `主agent export`，英文安装是 `Main agent`） | 用户随时在 App 里改，派任务服务不会改回去；只有它自己想要的标题变了（比如刚登记成常驻）才会再设一次 |
+| 管理名 | 管理和编排时怎么叫它，比如 `经理cris`；整个机群里不能重复，`<电脑>` 的位置可以直接写它 | `fleet.mjs set-manager-name <电脑> <管理名>`，或安装时 `-ManagerName` |
+| 主 Agent ID | 第一次安装时生成，之后一直不变 | 不改。管理端按它找主 Agent，所以改标题、改管理名、甚至改电脑名都不会找错 |
+
+语言（`-Language zh|en`，或插件安装时 `--language`）决定所有给人看的文字：会话标题和文件夹的默认名、常驻后缀、主 Agent 的说明和回复语言、自动通知、看板、安装和命令行的提示。已经装好的电脑保持原来的语言（以前的安装都是中文）。管理端命令行的语言用 `fleet.mjs language zh|en` 设置，默认跟系统。
 
 只读看板：`http://<电脑的 Tailscale 名字>:8766/dashboard`，第一次打开时粘贴那台电脑的令牌。
 

@@ -5,7 +5,9 @@
     [string]$Workspace = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'AgentFleet'),
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),
     [string]$Name = $env:COMPUTERNAME.ToLower(),
-    [string]$MainAgentName = '主agent export',
+    [string]$MainAgentName = '',
+    [ValidateSet('', 'zh', 'en')][string]$Language = '',
+    [string]$ManagerName = '',
     [string]$Description = '',
     [string]$ClaudeExecutable = '',
     [int]$Port = 8765, [int]$TailscalePort = 8766,
@@ -38,6 +40,11 @@ if ($previous) {
     if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = $previous.port }
     if (-not $PSBoundParameters.ContainsKey('TailscalePort')) { $TailscalePort = $previous.tailscale_port }
 }
+if (-not $Language) {
+    if ($previous) { $Language = $(if ($previous.language -eq 'en') { 'en' } else { 'zh' }) }
+    elseif ((Get-Culture).Name -like 'zh*') { $Language = 'zh' } else { $Language = 'en' }
+}
+if (-not $MainAgentName) { $MainAgentName = $(if ($Language -eq 'en') { 'Main agent' } else { '主agent export' }) }
 if ($LanAddress -and $Connectivity -ne 'Lan') { throw '-LanAddress requires -Connectivity Lan.' }
 if ($Connectivity -eq 'Lan' -and -not $LanAddress) {
     # The adapter with a default gateway is the one other computers on the network can reach.
@@ -55,14 +62,15 @@ if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $existingRegis
     if ($registeredComputer -and @($registeredComputer.Value.agents.PSObject.Properties | Where-Object { $_.Name -ceq $MainAgentName }).Count) { throw 'An agent already uses the requested main agent name; choose another name.' }
 }
 if ($Plan) {
-    [ordered]@{engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
+    [ordered]@{engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
     return
 }
 if ($previous -and -not $Reconfigure) {
     if ($Engine -ne $oldEngine -or ($FullAccess -and $previous.sandbox -ne 'danger-full-access') -or
         $Connectivity -ne $oldConnectivity -or ($Connectivity -eq 'Lan' -and $LanAddress -ne $previous.lan_address) -or
         $Workspace -ne (Split-Path $previous.tasks_dir) -or $Name -ne $previous.computer_name -or $MainAgentName -cne $oldMainName -or
-        $Port -ne $previous.port -or $TailscalePort -ne $previous.tailscale_port) {
+        $Port -ne $previous.port -or $TailscalePort -ne $previous.tailscale_port -or
+        ($PSBoundParameters.ContainsKey('Language') -and $Language -ne $(if ($previous.language -eq 'en') { 'en' } else { 'zh' }))) {
         throw 'Requested settings differ from the installation. Use -Reconfigure after confirming the change.'
     }
     Write-Output 'Existing worker reused. Use the main-agent skill to check its status. Use -Reconfigure for a repair or change.'
@@ -112,6 +120,8 @@ Copy-Item -LiteralPath (Join-Path $runtime 'worker') -Destination $deployment -R
 Copy-Item -LiteralPath (Join-Path $runtime 'install-worker.ps1'),(Join-Path $runtime 'LICENSE') -Destination $deployment -Force
 $installArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $deployment 'install-worker.ps1'),
     '-Engine',$Engine,'-Workspace',$Workspace,'-DataDir',$DataDir,'-Name',$Name,'-MainAgentName',$MainAgentName,'-Port',"$Port",'-TailscalePort',"$TailscalePort",'-NoStart','-NoAutostart')
+$installArgs += @('-Language',$Language)
+if ($ManagerName) { $installArgs += @('-ManagerName',$ManagerName) }
 if ($Description) { $installArgs += @('-Description',$Description) }
 if ($Connectivity -ne 'Tailscale') { $installArgs += '-LocalOnly' }
 if ($Connectivity -eq 'Lan') { $installArgs += @('-LanAddress',$LanAddress) }
@@ -169,7 +179,7 @@ try {
     $client = Join-Path $PSScriptRoot 'fleet.mjs'
     & node $client add-computer (Join-Path $resolvedData 'connection.json') --local=1
     if ($LASTEXITCODE -ne 0) { throw 'Worker started, but local registration failed.' }
-    & node $client describe-agent $Name $MainAgentName '--role=Main agent responsible for this worker' '--type=main'
+    & node $client describe-agent $Name $MainAgentName $(if ($Language -eq 'en') { '--role=Main agent responsible for this worker' } else { '--role=负责这台电脑的主 Agent' }) '--type=main'
     if ($LASTEXITCODE -ne 0) { throw 'Worker started, but main-agent profile registration failed.' }
     if ($MainAgentName -cne $oldMainName) {
         $updatedProfile = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $config.state_dir 'profile.json') -Raw | ConvertFrom-Json

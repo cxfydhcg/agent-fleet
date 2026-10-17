@@ -16,6 +16,11 @@
 //   node fleet.mjs notifications <电脑> [--after=编号] 读通知全文（默认最近 10 条）
 //   node fleet.mjs add-computer <connection.json>      接入一台新电脑（文件由那台电脑的 install-worker.ps1 生成）
 //   node fleet.mjs computers                          列出已登记的电脑和 Agent
+//   node fleet.mjs set-manager-name <电脑> <管理名>    给这台电脑的主 Agent 起管理名（比如 经理cris），之后 <电脑> 处可以直接写管理名；
+//                                                     管理名在整个机群里不能重复；写 "" 清除
+//   node fleet.mjs language <zh|en>                   输出的语言（默认跟系统；也可用环境变量 AGENT_FLEET_LANG）
+// <电脑> 可以写电脑名、主 Agent 的管理名，或主 Agent 的 ID。主 Agent 按安装时生成的 ID 认，
+// 改主 Agent 的名字或管理名都不会找错。
 //   node fleet.mjs agents   <电脑>                    列出这台电脑上能对话的 Agent（已登记的 + 派任务服务里有名字的会话）
 //   node fleet.mjs agent    <电脑> <Agent名> <消息> [--new] [--workspace=绝对路径]
 //                                                     和指定 Agent 对话：续接它的会话，等待并输出回复。
@@ -54,12 +59,30 @@ for (const pc of Object.values(registry.computers)) {
 }
 const mainAgentName = (pc) => pc.main_agent_name || MAIN_AGENT;
 const saveRegistry = () => writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+const systemLanguage = () => { try { return Intl.DateTimeFormat().resolvedOptions().locale; } catch { return ""; } };
+const LANG = (process.env.AGENT_FLEET_LANG || registry.language || (systemLanguage().startsWith("zh") ? "zh" : "en")) === "en" ? "en" : "zh";
+const T = (zh, en) => (LANG === "en" ? en : zh);
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
 const option = (name) => argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
-const [cmd, computer, ...rest] = argv.filter((a) => !a.startsWith("--"));
+const [cmd, computerArg, ...rest] = argv.filter((a) => !a.startsWith("--"));
 const out = (o) => console.log(JSON.stringify(o, null, 2));
+// A computer is named by its registry name, its main agent's management name, or its main agent's id.
+function resolveComputer(key) {
+  if (key == null || Object.hasOwn(registry.computers, key)) return key;
+  const wanted = key.trim().toLowerCase();
+  return Object.keys(registry.computers).find((n) => registry.computers[n].manager_name?.toLowerCase() === wanted ||
+                                                     registry.computers[n].main_agent_id === key.trim()) ?? key;
+}
+const computer = cmd === "add-computer" ? computerArg : resolveComputer(computerArg);
+// Management names are how people and the orchestrator call a main agent, so they must not collide with
+// another computer's name or management name.
+function managerNameConflict(name, self) {
+  const wanted = name.trim().toLowerCase();
+  return Object.entries(registry.computers).find(([n, other]) => n !== self &&
+    (n.toLowerCase() === wanted || other.manager_name?.toLowerCase() === wanted))?.[0];
+}
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted", "timed_out"]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -79,11 +102,14 @@ function connect(target) {
 function summarize(name, profile, online) {
   const m = profile?.machine ?? {}, c = profile?.computer ?? {};
   const gpu = m.nvidia?.length ? m.nvidia.map((g) => `${g.name} ${Math.round(g.vram_total_mb / 1024)}GB`).join(", ")
-    : (m.gpus ?? []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join(", ") || "无独立显卡";
+    : (m.gpus ?? []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join(", ") || T("无独立显卡", "no dedicated GPU");
+  const pc = registry.computers[name] ?? {};
   return {
-    computer: name, online, ...(online ? {} : { last_seen: profile?._fetched_at ?? null }),
-    hardware: [m.cpu, m.ram_gb && `${m.ram_gb}GB 内存`, gpu, m.os].filter(Boolean).join(" · ") || null,
-    network: [m.egress_country && `出口 ${m.egress_country}`, m.tailscale?.offers_exit_node && "提供出口节点"].filter(Boolean).join(" · ") || null,
+    computer: name, manager_name: pc.manager_name ?? null, main_agent_id: pc.main_agent_id ?? profile?.main_agent?.id ?? null,
+    online, ...(online ? {} : { last_seen: profile?._fetched_at ?? null }),
+    hardware: [m.cpu, m.ram_gb && T(`${m.ram_gb}GB 内存`, `${m.ram_gb}GB RAM`), gpu, m.os].filter(Boolean).join(" · ") || null,
+    network: [m.egress_country && T(`出口 ${m.egress_country}`, `egress ${m.egress_country}`),
+              m.tailscale?.offers_exit_node && T("提供出口节点", "offers an exit node")].filter(Boolean).join(" · ") || null,
     role: c.role ?? null, notes: c.notes ?? null, software: c.software ?? [], accounts: c.accounts ?? [],
     busy: profile?.busy ?? null,
     agents: (profile?.agents ?? []).map((a) => ({ name: a.name, type: a.type, role: a.role, tags: a.tags, status: a.status })),
@@ -119,7 +145,7 @@ if (cmd === "watch") {
       try {
         const { notifications } = await fetchNotifications(target, seen[name] ?? 0);
         for (const n of notifications) {
-          console.log(`[${name}] #${n.id} ${n.needs_human ? "【需要人处理】" : ""}${n.sender || "agent"}：${n.title}`);
+          console.log(`[${registry.computers[name].manager_name || name}] #${n.id} ${n.needs_human ? T("【需要人处理】", "[needs a person] ") : ""}${n.sender || "agent"}${T("：", ": ")}${n.title}`);
           seen[name] = n.id;
         }
         if (notifications.length) saveSeen();
@@ -128,9 +154,16 @@ if (cmd === "watch") {
     await sleep(15000);
   }
 }
+if (cmd === "language") {
+  if (!["zh", "en"].includes(computerArg)) { console.error("language <zh|en>"); process.exit(2); }
+  registry.language = computerArg;
+  saveRegistry();
+  console.error(computerArg === "en" ? "Output language: English." : "输出语言：中文。");
+  process.exit(0);
+}
 if (cmd === "notifications") {
   const target = registry.computers[computer];
-  if (!target) { console.error(`未知电脑: ${computer}`); process.exit(2); }
+  if (!target) { console.error(T(`未知电脑: ${computer}`, `Unknown computer: ${computer}`)); process.exit(2); }
   const data = await fetchNotifications(target, Number(option("after") ?? 0));
   out(option("after") ? data.notifications : data.notifications.slice(-10));
   process.exit(0);
@@ -143,14 +176,23 @@ if (cmd === "add-computer") {
     process.exit(2);
   }
   if (!info.name || !info.token || !(info.tailscale_url || info.lan_url || info.local_url)) {
-    console.error("connection.json 缺少 name、token 或地址");
+    console.error(T("connection.json 缺少 name、token 或地址", "connection.json is missing the name, token or address"));
     process.exit(2);
   }
   if (info.main_agent_name !== undefined && !validAgentName(info.main_agent_name)) {
     console.error('Main agent name must contain 1 to 100 printable characters, without a leading --.');
     process.exit(2);
   }
-  const existing = registry.computers[info.name] ?? {};
+  // The same main agent (same id) under a new computer name is that computer renamed, not a new one.
+  const renamedFrom = info.main_agent_id && Object.keys(registry.computers).find((n) => n !== info.name &&
+    registry.computers[n].main_agent_id === info.main_agent_id);
+  const existing = registry.computers[info.name] ?? (renamedFrom ? registry.computers[renamedFrom] : {});
+  const managerName = (info.manager_name?.trim() || existing.manager_name || "").trim();
+  if (managerName && (!validAgentName(managerName) || managerNameConflict(managerName, renamedFrom || info.name))) {
+    console.error(T(`管理名「${managerName}」无效，或已经被 ${managerNameConflict(managerName, renamedFrom || info.name)} 用了。`,
+                    `The management name "${managerName}" is invalid or already used by ${managerNameConflict(managerName, renamedFrom || info.name)}.`));
+    process.exit(2);
+  }
   const oldMain = mainAgentName(existing);
   const chosenMain = info.main_agent_name?.trim() || oldMain;
   if (chosenMain !== oldMain && Object.hasOwn(existing.agents ?? {}, chosenMain)) {
@@ -174,18 +216,24 @@ if (cmd === "add-computer") {
   }
   agents[chosenMain] = { ...(agents[chosenMain] ?? {}), ...(info.main_agent_workspace ? { workspace: info.main_agent_workspace } : {}) };
   const isThisComputer = option("local") === "1";
+  if (renamedFrom) delete registry.computers[renamedFrom];
   registry.computers[info.name] = {
     ...existing, engine, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
+    ...(info.main_agent_id ? { main_agent_id: info.main_agent_id } : {}), ...(managerName ? { manager_name: managerName } : {}),
     url: isThisComputer ? info.local_url : info.tailscale_url || info.lan_url,
     local_url: info.local_url, tailscale_url: info.tailscale_url, lan_url: info.lan_url, token_file: tokenFile,
     agents,
   };
   saveRegistry();
-  console.error(`已接入 ${info.name}（${registry.computers[info.name].url}）。可以删除这份 connection.json 了，令牌已保存在 ${tokenFile}。`);
+  if (renamedFrom) console.error(T(`${renamedFrom} 改名为 ${info.name}（同一个主 Agent），原来的设置都保留。`,
+                                    `${renamedFrom} was renamed to ${info.name} (same main agent); its settings are kept.`));
+  console.error(T(`已接入 ${info.name}（${registry.computers[info.name].url}）。可以删除这份 connection.json 了，令牌已保存在 ${tokenFile}。`,
+                  `Connected ${info.name} (${registry.computers[info.name].url}). You can delete that connection.json; the token is saved in ${tokenFile}.`));
   process.exit(0);
 }
 if (cmd === "computers") {
-  out(Object.fromEntries(Object.entries(registry.computers).map(([n, pc]) => [n, { description: pc.description, main_agent_name: mainAgentName(pc), agents: Object.keys(pc.agents) }])));
+  out(Object.fromEntries(Object.entries(registry.computers).map(([n, pc]) => [n, { description: pc.description, manager_name: pc.manager_name ?? null,
+    main_agent_id: pc.main_agent_id ?? null, main_agent_name: mainAgentName(pc), agents: Object.keys(pc.agents) }])));
   process.exit(0);
 }
 if (cmd === "overview") {
@@ -206,7 +254,8 @@ if (cmd === "overview") {
 }
 const pc = registry.computers[computer];
 if (!pc) {
-  console.error(`未知电脑: ${computer}。已登记: ${Object.keys(registry.computers).join(", ")}`);
+  const known = Object.entries(registry.computers).map(([n, c]) => (c.manager_name ? `${n}（${c.manager_name}）` : n));
+  console.error(T(`未知电脑: ${computer}。已登记: ${known.join(", ")}`, `Unknown computer: ${computer}. Registered: ${known.join(", ")}`));
   process.exit(2);
 }
 
@@ -265,14 +314,45 @@ async function continueWhenFree(taskId, prompt) {
       return await call("continue_task", { task_id: taskId, prompt });
     } catch (error) {
       if (!/pending work|Wait for the task to finish/.test(error.message)) throw error;
-      if (i === 0) console.error("  对方正在处理别的事（例如子任务完成后的自动通知），排队等它空闲...");
+      if (i === 0) console.error(T("  对方正在处理别的事（例如子任务完成后的自动通知），排队等它空闲...",
+                                   "  The agent is busy (e.g. with an automatic notice about a finished sub-task); waiting for it..."));
       await sleep(5000);
     }
   }
-  throw new Error("等了 30 分钟对方仍在忙");
+  throw new Error(T("等了 30 分钟对方仍在忙", "Still busy after 30 minutes"));
 }
 
-async function talk(agentName, prompt) {
+// The registry follows the worker's main agent by its id: a new name or management name is picked up here.
+function syncMain(main) {
+  if (pc.main_agent_id && pc.main_agent_id !== main.id) {
+    console.error(T(`注意：${computer} 的主 Agent ID 变了（重新安装过？），改用新的主 Agent。`,
+                    `Note: ${computer}'s main agent id changed (reinstalled?); using the new main agent.`));
+  }
+  pc.main_agent_id = main.id;
+  const oldName = mainAgentName(pc);
+  if (main.name && main.name !== oldName) {
+    if (Object.hasOwn(pc.agents, oldName)) { pc.agents[main.name] = { ...pc.agents[oldName], ...(pc.agents[main.name] ?? {}) }; delete pc.agents[oldName]; }
+    pc.main_agent_name = main.name;
+  }
+  if (!pc.manager_name && main.manager_name && !managerNameConflict(main.manager_name, computer)) pc.manager_name = main.manager_name;
+}
+
+async function talkMain(prompt) {
+  const main = (await call("get_profile", {})).main_agent;
+  if (!main) return talkNamed(mainAgentName(pc), prompt); // workers from before main agent ids
+  syncMain(main);
+  if (pc.manager_name !== (main.manager_name ?? undefined)) await call("update_computer_profile", { manager_name: pc.manager_name ?? "" });
+  const name = mainAgentName(pc);
+  const started = main.task_id ? await continueWhenFree(main.task_id, prompt)
+    : await call("submit_task", { prompt, name, ...(main.workspace ? { workspace: main.workspace } : {}) });
+  return report(name, started, (pc.agents[name] ??= {}));
+}
+
+function talk(agentName, prompt) {
+  return agentName === mainAgentName(pc) || (pc.manager_name && agentName === pc.manager_name) ? talkMain(prompt) : talkNamed(agentName, prompt);
+}
+
+async function talkNamed(agentName, prompt) {
   let agent = pc.agents[agentName];
   let started;
   if (agent?.last_task_id) {
@@ -281,7 +361,8 @@ async function talk(agentName, prompt) {
     // Look for an existing session even when the agent is in the registry: a registered agent can't get a second one.
     const found = (await namedSessions()).get(agentName);
     if (found?.latest) {
-      if (found.sessions.size > 1) console.error(`注意：有 ${found.sessions.size} 个叫「${agentName}」的会话，使用最近的一个。`);
+      if (found.sessions.size > 1) console.error(T(`注意：有 ${found.sessions.size} 个叫「${agentName}」的会话，使用最近的一个。`,
+                                                   `Note: ${found.sessions.size} sessions are named "${agentName}"; using the newest.`));
       started = await continueWhenFree(found.latest.task_id, prompt);
       agent = pc.agents[agentName] = { ...(agent ?? {}) };
     } else if (agent || flag("--new")) {
@@ -290,20 +371,27 @@ async function talk(agentName, prompt) {
       agent = pc.agents[agentName] = { ...(agent ?? {}), ...(workspace ? { workspace } : {}) };
     } else {
       const names = [...new Set([...Object.keys(pc.agents), ...(await namedSessions()).keys()])];
-      console.error(`电脑 ${computer} 上没有叫「${agentName}」的 Agent。可用: ${names.join("、") || "（无）"}。要新建请加 --new。`);
+      console.error(T(`电脑 ${computer} 上没有叫「${agentName}」的 Agent。可用: ${names.join("、") || "（无）"}。要新建请加 --new。`,
+                      `No agent named "${agentName}" on ${computer}. Available: ${names.join(", ") || "(none)"}. Add --new to create it.`));
       process.exit(3);
     }
   }
-  console.error(`已发给 ${computer} 的「${agentName}」（任务 ${started.task_id}），等待回复...`);
+  return report(agentName, started, agent);
+}
+
+async function report(agentName, started, agent) {
+  console.error(T(`已发给 ${computer} 的「${agentName}」（任务 ${started.task_id}），等待回复...`,
+                  `Sent to "${agentName}" on ${computer} (task ${started.task_id}); waiting for the reply...`));
   const done = await wait(started.task_id);
   if (done.status === "completed") {
     Object.assign(agent, { last_task_id: done.task_id, thread_id: done.thread_id });
     saveRegistry();
   }
   const locked = /held by another Codex window|桌面 App 里打开过/.test(done.error || "");
-  out({ computer, agent: agentName, task_id: done.task_id, thread_id: done.thread_id, status: done.status,
-        reply: done.result, error: done.error,
-        ...(locked ? { hint: "这个会话在 Codex App 里被打开过，被 App 锁住了。彻底退出 Codex App 后再试，或让主agent export 另开一个任务。" } : {}) });
+  out({ computer, ...(pc.manager_name ? { manager_name: pc.manager_name } : {}), agent: agentName, task_id: done.task_id,
+        thread_id: done.thread_id, status: done.status, reply: done.result, error: done.error,
+        ...(locked ? { hint: T("这个会话在 Codex App 里被打开过，被 App 锁住了。彻底退出 Codex App 后再试，或让主 Agent 另开一个任务。",
+                               "This session was opened in the Codex app, which keeps it locked. Quit the Codex app completely and retry, or let the main agent start a new task.") } : {}) });
 }
 
 await connect(pc);
@@ -350,8 +438,23 @@ switch (cmd) {
     await talk(rest[0], rest.slice(1).join(" "));
     break;
   case "export":
-    await talk(mainAgentName(pc), rest.join(" "));
+    await talkMain(rest.join(" "));
     break;
+  case "set-manager-name": {
+    const name = (rest[0] ?? "").trim();
+    const taken = name && managerNameConflict(name, computer);
+    if (name && (!validAgentName(name) || taken)) {
+      console.error(T(`管理名「${name}」无效${taken ? `，已经被 ${taken} 用了` : ""}。`, `The management name "${name}" is invalid${taken ? `; ${taken} already uses it` : ""}.`));
+      process.exit(2);
+    }
+    if (name) pc.manager_name = name; else delete pc.manager_name;
+    await call("update_computer_profile", { manager_name: name });
+    const main = (await call("get_profile", {})).main_agent;
+    if (main) syncMain(main);
+    saveRegistry();
+    out({ computer, manager_name: pc.manager_name ?? null, main_agent_id: pc.main_agent_id ?? null, main_agent_name: mainAgentName(pc) });
+    break;
+  }
   case "tools":
     out((await rpc("tools/list", {})).tools.map((t) => t.name));
     break;
@@ -377,6 +480,6 @@ switch (cmd) {
     for (const taskId of rest) out(await call("cancel_task", { task_id: taskId }));
     break;
   default:
-    console.error("未知命令，见文件开头的用法说明");
+    console.error(T("未知命令，见文件开头的用法说明", "Unknown command; see the usage at the top of this file"));
     process.exit(2);
 }

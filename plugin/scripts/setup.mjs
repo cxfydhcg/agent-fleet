@@ -9,7 +9,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const values = new Map();
 const flags = new Set();
 const booleans = new Set(['plan', 'local', 'full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop']);
-const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'description',
+const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
   'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
 const argv = process.argv.slice(2);
 
@@ -25,8 +25,9 @@ if (!['orchestrator', 'worker', 'both'].includes(role)) fail('Choose a role: orc
 if (values.has('engine') && !['codex', 'claude'].includes(values.get('engine'))) fail('Engine must be codex or claude.');
 if (values.has('connectivity') && !['local', 'tailscale', 'lan'].includes(values.get('connectivity'))) fail('Connectivity must be local, tailscale or lan.');
 if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--lan-address requires --connectivity lan.');
+if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en.');
 if (role === 'worker' && (values.has('connection') || values.has('registry-home') || flags.has('local'))) fail('Connection/registry options require orchestrator or both.');
-const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'description', 'claude-executable', 'port', 'tailscale-port', 'lan-address'];
+const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'port', 'tailscale-port', 'lan-address'];
 if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
 if (flags.has('local') && !values.has('connection')) fail('--local requires --connection.');
 if (role !== 'orchestrator' && process.platform !== 'win32') fail('Worker setup currently requires Windows.');
@@ -60,7 +61,7 @@ let worker;
 if (role !== 'orchestrator') {
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/setup-worker.ps1'), '-NoDesktop'];
   const mappings = { engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
-    name: 'Name', 'main-agent-name': 'MainAgentName', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };
+    name: 'Name', 'main-agent-name': 'MainAgentName', 'manager-name': 'ManagerName', language: 'Language', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };
   for (const [key, parameter] of Object.entries(mappings)) if (values.has(key)) args.push('-' + parameter, values.get(key));
   const switches = { plan: 'Plan', 'full-access': 'FullAccess', 'skip-prerequisites': 'SkipPrerequisites', 'no-autostart': 'NoAutostart', reconfigure: 'Reconfigure' };
   for (const [key, parameter] of Object.entries(switches)) if (flags.has(key)) args.push('-' + parameter);
@@ -76,6 +77,7 @@ if (role !== 'worker') {
   const env = { ...process.env, AGENT_FLEET_HOME: registryHome };
   const setup = join(root, 'scripts/setup-orchestrator.mjs');
   run(process.execPath, [setup, '--no-desktop'], env);
+  if (values.has('language')) run(process.execPath, [join(root, 'skills/call-agent/fleet.mjs'), 'language', values.get('language')], env);
   if (role === 'both') {
     if (!worker.connection_file || !existsSync(worker.connection_file)) throw new Error('Worker connection file is missing; no local worker was registered.');
     run(process.execPath, [setup, '--connection', worker.connection_file, '--local', '--no-desktop'], env);

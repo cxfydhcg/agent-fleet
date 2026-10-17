@@ -316,7 +316,8 @@ class AppServerDispatcherTests(DispatcherTests):
         followup = self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])
         job = await self.wait_for(followup['task_id'], {'completed', 'failed'})
         self.assertEqual(job['status'], 'completed', job.get('error'))
-        self.assertEqual(self.call_log().count('thread/name/set:发布员 - 固定'), 2)  # set again when resumed
+        # Set once: a resumed turn leaves the title alone, so a name the user gave it in the app stays.
+        self.assertEqual(self.call_log().count('thread/name/set:发布员 - 固定'), 1)
         self.assertEqual(job['name'], '发布员')  # the dispatch name stays plain
         # Main agents and unregistered tasks keep their plain title; an empty suffix turns it off.
         self.calls.unlink()
@@ -336,6 +337,48 @@ class AppServerDispatcherTests(DispatcherTests):
         job = await self.wait_for(forked['task_id'], {'completed', 'failed'})
         self.assertEqual(job['status'], 'completed', job.get('error'))
         self.assertTrue(any(c.startswith('thread/name/set:发布员（续') and c.endswith(' - 固定') for c in self.call_log()))
+
+    async def test_title_changes_only_when_the_wanted_title_changes(self):
+        first = self.manager.submit('original', None, 10, None, name='剪辑员')
+        await self.wait_for(first['task_id'], {'completed'})
+        again = self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])
+        await self.wait_for(again['task_id'], {'completed'})
+        self.assertEqual([c for c in self.call_log() if c.startswith('thread/name/set')], ['thread/name/set:剪辑员'])
+        # Registered as resident later: the next turn marks it once, the turn after leaves it alone.
+        self.manager.register_agent('剪辑员', '剪视频')
+        for prompt in ('marked', 'left alone'):
+            turn = self.manager.submit(prompt, None, 10, None, resume_task_id=first['task_id'])
+            await self.wait_for(turn['task_id'], {'completed'})
+        self.assertEqual([c for c in self.call_log() if c.startswith('thread/name/set')],
+                         ['thread/name/set:剪辑员', 'thread/name/set:剪辑员 - 固定'])
+        # Sessions from before titles were tracked are not renamed either.
+        self.manager.jobs[first['task_id']].pop('title_set')
+        turn = self.manager.submit('legacy', None, 10, None, resume_task_id=first['task_id'])
+        await self.wait_for(turn['task_id'], {'completed'})
+        self.assertEqual(len([c for c in self.call_log() if c.startswith('thread/name/set')]), 2)
+
+    async def test_english_text(self):
+        self.manager.config.update(language='en', codex_app_folders=True)
+        import server
+        english = server.TaskManager(self.manager.config)
+        self.assertEqual(english.title_suffix({'name': 'x'}), '')
+        english.register_agent('Publisher', 'publish')
+        self.assertEqual(english.title_suffix({'name': 'Publisher'}), ' - resident')
+        self.assertEqual(english.app_folders()['other'][0], 'AgentFleet-Other')
+        self.assertTrue(english.worker_rules().startswith('You are a sub-agent'))
+        self.assertEqual(str(server.QuotaExhausted(['weekly'], None, 'en')),
+                         'Waiting for the Codex quota to reset: the weekly quota is used up; checking every 10 minutes, starts automatically once it is back')
+        self.assertEqual(server.quota_exhausted({'rateLimits': {'primary': {'usedPercent': 100}}}, 100, 'en'), (['5-hour'], None))
+        english.config['main_agent_name'] = 'Main agent'
+        english.update_computer(manager_name='Manager Cris')
+        note = english.main_agent_note()
+        self.assertIn('"Main agent"', note)
+        self.assertIn('"Manager Cris"', note)
+        self.assertIn('Reply in English', note)
+        with self.assertRaisesRegex(ValueError, 'orchestrator'):
+            english.update_computer('some-main-turn', manager_name='Boss')
+        english.update_computer(manager_name='')
+        self.assertNotIn('manager_name', english.profile['computer'])
 
     async def test_session_open_elsewhere_fails_by_default(self):
         first = self.manager.submit('original', None, 10, None)
@@ -942,6 +985,24 @@ class SessionControlTests(unittest.IsolatedAsyncioTestCase):
         self.manager.register_agent('主agent export', '总负责', agent_type='main')
         with self.assertRaisesRegex(ValueError, 'main-1'):
             self.manager.submit('pretend', None, 60, None, name='主agent export')
+
+    async def test_main_agent_is_found_by_its_permanent_id_whatever_its_names(self):
+        self.manager.removed = lambda job: False
+        main_id = self.manager.profile['main_agent_id']
+        self.assertTrue(main_id)
+        self.assertEqual(self.manager.main_agent()['task_id'], 'main-1')
+        # Renamed by config, given a management name, a newer turn: still the same id, pointing at the newest turn.
+        self.manager.config['main_agent_name'] = '经理'
+        self.manager.update_computer(manager_name='经理cris')
+        self.add('main-2', 'P', 'completed', workspace=self.main_ws, name='经理', resume_task_id='main-1')
+        self.child('剪辑')
+        found = self.manager.main_agent()
+        self.assertEqual((found['id'], found['name'], found['manager_name'], found['task_id']), (main_id, '经理', '经理cris', 'main-2'))
+        # The id survives a restart and a config that names another one (the service's own record wins).
+        again = TaskManager({**self.config, 'main_agent_id': 'from-config'})
+        self.assertEqual(again.profile['main_agent_id'], main_id)
+        fresh = Path(self.temp.name) / 'fresh'
+        self.assertEqual(TaskManager({**self.config, 'state_dir': str(fresh), 'main_agent_id': 'from-config'}).profile['main_agent_id'], 'from-config')
 
     async def test_header_identifies_the_caller_even_after_a_profile_change(self):
         from types import SimpleNamespace

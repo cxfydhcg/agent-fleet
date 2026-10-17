@@ -174,6 +174,8 @@ class PluginSetupTests(unittest.TestCase):
                 answer = json.loads(result.stdout)
                 self.assertEqual(answer['agent'], chosen)
                 self.assertEqual(answer['thread_id'], 'existing-session')
+                # export first asks for the main agent by id; a worker that has none falls back to the saved session.
+                calls = [c for c in calls if c['name'] != 'get_profile']
                 self.assertEqual(calls[0]['name'], 'continue_task')
                 self.assertEqual(calls[0]['arguments']['task_id'], 'existing-task')
                 self.assertNotIn('submit_task',[c['name'] for c in calls])

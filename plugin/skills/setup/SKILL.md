@@ -29,6 +29,11 @@ scope (Windows: `winget install --id OpenJS.NodeJS.LTS --exact`), then refresh P
 
 ## 3. Resolve the settings
 
+For every role, the **language** of everything people see (session titles, sidebar folders, the main agent's
+instructions and replies, notices, the dashboard, installer and client messages): `--language zh|en`. Ask
+during a fresh setup if the user's language is unclear; otherwise follow the language they write in. Existing
+workers keep theirs; changing it on a worker needs `--reconfigure`.
+
 For **control** (orchestrator):
 - The private registry is `~/.agent-fleet` unless `AGENT_FLEET_HOME` or
   `--registry-home` names an existing one. Preserve existing workers and tokens.
@@ -44,10 +49,18 @@ For **be controlled** or **both** (worker, Windows only):
 - Offer a main-agent name during fresh setup unless the user gave one, e.g.
   `--main-agent-name "Main Agent Work"` (1-100 printable characters; spaces and
   Unicode are fine). `--name` identifies the computer, not the agent. Preserve the
-  name on reruns. To rename, rerun with the existing settings plus
+  name on reruns. This is the session title the user sees in the app; the user may also rename the session
+  in the app at any time, and the dispatcher keeps that title. To change the configured name, rerun with the existing settings plus
   `--main-agent-name "<new name>" --reconfigure`; this keeps the conversation and
   workspace and refuses to overwrite another agent's name. Remote orchestrators
   must then import the updated connection file again.
+- Optionally offer a **management name** for the main agent, `--manager-name "经理cris"`: what the user and
+  the orchestrator call this computer's main agent when managing the fleet. It must be unique across the
+  fleet and can be used wherever a computer is expected (e.g. `【经理cris】…`). It can be set or changed later
+  from the orchestrator with `fleet.mjs set-manager-name <computer> <name>`.
+- Every main agent gets a permanent id at its first setup (kept on reruns). The orchestrator maps the
+  computer to that id, so renaming the main agent, changing its management name, or renaming the computer
+  (same id in a new connection file) never loses the link.
 - To change any other setting of an existing worker, keep everything else and add
   `--reconfigure`; the script refuses to interrupt active tasks.
 - Permissions: default Codex mode uses workspace-write. Default Claude Code mode

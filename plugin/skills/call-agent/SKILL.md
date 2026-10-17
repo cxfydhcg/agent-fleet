@@ -19,7 +19,7 @@ node "${CLAUDE_SKILL_DIR}/fleet.mjs" <command> ...
 
 The expected form is `【电脑名】【Agent名】消息`. Brackets are optional, so also accept `电脑名 Agent名 消息`.
 
-- **Computer**: the first token. If it isn't a registered computer, run `computers` and ask the user which one they meant.
+- **Computer**: the first token. It may be a computer name, a main agent's **management name** (e.g. `经理cris`, set with `set-manager-name <电脑> <管理名>`), or a main agent id; `fleet.mjs` accepts all three wherever `<电脑>` appears. A management name alone (`【经理cris】消息`) means that computer's main agent. If it matches nothing, run `computers` (it lists each computer's `manager_name` and `main_agent_id`) and ask the user which one they meant.
 - **Agent**: Agent names can contain spaces (e.g. `主agent export`). If no brackets were used, run `agents <电脑>`, then take the **longest** known agent name that the remaining text starts with.
   - If no agent is given, or the text doesn't start with a known name, use `export <电脑> "<消息>"` to route to the configured main agent and treat the whole rest as the message. `computers` reports each computer's `main_agent_name`; `agents` marks it as `default`.
 - **Message**: everything after that. If the user gave only a computer (and maybe an agent), list the agents with `agents <电脑>` and ask what to send.
@@ -39,6 +39,8 @@ MSG
 - To follow up on that work, send another message, for example asking it to check the sub-tasks and report. You can also wait on one sub-task with `wait <电脑> <task_id>`, then ask the main agent for the report.
 
 Talking to an agent other than the configured main agent is the **special case** of bypassing the computer's main agent. Do it when the user names that agent explicitly. To create a brand-new named agent, add `--new` (and optionally `--workspace=<absolute path on that computer>`). Do this only when the user asked for a new agent.
+
+The main agent is mapped by its permanent id, not by name: `export` asks the computer which session belongs to that id, so it still works after the main agent or its management name was renamed. Reply in the user's language; `fleet.mjs language zh|en` sets the client's own messages.
 
 Session ownership: a main agent can continue, cancel or open only the sessions it opened itself; you (the orchestrator) control every session. When the user wants an agent kept out of dispatching, or a resident agent reserved for you, use `describe-agent <电脑> "<Agent名>" --role=... --can-dispatch=off` or `--locked=on` (`on`/`off` to undo; omit to keep). Only do this when the user asks.
 

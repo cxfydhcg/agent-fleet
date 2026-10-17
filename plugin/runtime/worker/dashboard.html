@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Codex 任务看板</title>
+<title data-i18n="title"></title>
 <style>
   :root {
     --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e4e3df;
@@ -76,25 +76,87 @@
 </head>
 <body>
 <header>
-  <h1>Codex 任务看板</h1>
+  <h1 data-i18n="title"></h1>
   <span id="computer" class="badge" style="color: var(--muted)"></span>
-  <div class="meta"><span id="updated"></span><button id="logout" type="button">更换令牌</button></div>
+  <div class="meta"><span id="updated"></span><button id="logout" type="button" data-i18n="logout"></button></div>
 </header>
 <main>
-  <div id="list"><div class="empty">加载中…</div></div>
-  <div id="detail"><div class="empty">选择左侧的一个会话查看对话内容</div></div>
+  <div id="list"><div class="empty" data-i18n="loading"></div></div>
+  <div id="detail"><div class="empty" data-i18n="pickSession"></div></div>
 </main>
 <div id="login">
   <form id="login-form">
-    <h2>输入服务令牌</h2>
-    <p>令牌在派任务服务的 client.local.json 或 token.txt 里。只保存在这个浏览器中，用来读取任务数据。</p>
-    <input id="token" type="password" autocomplete="off" placeholder="粘贴令牌" required>
-    <div class="row"><button class="primary" type="submit">查看</button></div>
+    <h2 data-i18n="loginTitle"></h2>
+    <p data-i18n="loginHelp"></p>
+    <input id="token" type="password" autocomplete="off" data-i18n-placeholder="tokenPlaceholder" required>
+    <div class="row"><button class="primary" type="submit" data-i18n="view"></button></div>
   </form>
 </div>
 <script>
 (() => {
-  const STATUS = { completed: '完成', running: '运行中', queued: '排队', failed: '失败', timed_out: '超时', interrupted: '中断', cancelled: '已取消' };
+  // Every user-visible string. Values are text with {0}, {1} placeholders, a function, or a word map.
+  // Agent-generated content (task names, messages, transcripts) is data and is never translated.
+  const I18N = {
+    zh: {
+      title: 'Codex 任务看板', logout: '更换令牌', loading: '加载中…', pickSession: '选择左侧的一个会话查看对话内容',
+      loginTitle: '输入服务令牌', loginHelp: '令牌在派任务服务的 client.local.json 或 token.txt 里。只保存在这个浏览器中，用来读取任务数据。',
+      tokenPlaceholder: '粘贴令牌', view: '查看',
+      status: { completed: '完成', running: '运行中', queued: '排队', failed: '失败', timed_out: '超时', interrupted: '中断', cancelled: '已取消' },
+      accountStatus: { logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' },
+      who: { user: '收到的指令', agent: 'Agent 回复', fork: '分叉' },
+      listSep: '、', untitled: '未命名任务', thisComputer: '本机', busy: '忙：{0}', idle: '空闲', quotaWait: '等待额度',
+      noGpu: '无独立显卡', ramGb: '{0}GB 内存', egress: '出口 {0}', computerFold: '电脑档案', hwChecked: '硬件信息检测于 {0}',
+      role: '用途：{0}', roleMissing: '用途：未填写', software: '软件：{0}', account: '账号：{0}', accountName: '（{0}）', unknown: '未知',
+      agentsFold: '常驻 Agent（{0}）', mainBadge: '（主）', lockedBadge: '（锁定）', noDispatchBadge: '（不能派任务）',
+      sameNameBadge: '（{0} 个同名会话）', sessions: '会话', noTasks: '还没有任务', turns: '{0} 轮', forks: '分叉 {0}',
+      back: '← 返回', workdir: '工作目录 {0}', sessionLabel: '会话 ', notCreated: '尚未创建',
+      readOnlyNote: '这里只读查看，不会占用会话。', openPrefix: ' 想亲自接着聊时可以 ', openInApp: '在 Codex App 中打开',
+      openSuffix: '。注意：打开后这个会话就归你了，在 Codex 完全退出之前，Agent 不能再往里面派任务。只想看进度的话，留在这个页面就好。',
+      noConversation: '还没有对话内容', toolCall: '工具调用 · {0} · {1}', transcriptFailed: '读取对话失败：{0}',
+      taskFailed: '任务 {0} {1}：{2}', updated: '更新于 {0}', connFailed: '连接失败，稍后重试',
+    },
+    en: {
+      title: 'Codex task board', logout: 'Change token', loading: 'Loading…', pickSession: 'Select a session on the left to view its conversation',
+      loginTitle: 'Enter the service token', loginHelp: 'The token is in the dispatcher\'s client.local.json or token.txt. It is stored only in this browser and is used to read task data.',
+      tokenPlaceholder: 'Paste the token', view: 'View',
+      status: { completed: 'Completed', running: 'Running', queued: 'Queued', failed: 'Failed', timed_out: 'Timed out', interrupted: 'Interrupted', cancelled: 'Cancelled' },
+      accountStatus: { logged_in: 'signed in', logged_out: 'signed out', needs_verification: 'needs verification' },
+      who: { user: 'Instruction received', agent: 'Agent reply', fork: 'Fork' },
+      listSep: ', ', untitled: 'Untitled task', thisComputer: 'This computer', busy: 'Busy: {0}', idle: 'Idle', quotaWait: 'Waiting for quota',
+      noGpu: 'No dedicated GPU', ramGb: '{0} GB RAM', egress: 'Egress {0}', computerFold: 'Computer profile', hwChecked: 'Hardware checked at {0}',
+      role: 'Purpose: {0}', roleMissing: 'Purpose: not set', software: 'Software: {0}', account: 'Account: {0}', accountName: ' ({0})', unknown: 'unknown',
+      agentsFold: 'Resident agents ({0})', mainBadge: ' (main)', lockedBadge: ' (locked)', noDispatchBadge: ' (cannot dispatch)',
+      sameNameBadge: ' ({0} sessions with this name)', sessions: 'Sessions', noTasks: 'No tasks yet',
+      turns: (n) => n + (n === 1 ? ' turn' : ' turns'), forks: (n) => n + (n === 1 ? ' fork' : ' forks'),
+      back: '← Back', workdir: 'working folder {0}', sessionLabel: 'session ', notCreated: 'not created yet',
+      readOnlyNote: 'This view is read-only and does not take over the session.', openPrefix: ' To continue the conversation yourself, you can ',
+      openInApp: 'open it in the Codex app',
+      openSuffix: '. Note: once you open it, the session is yours, and agents cannot dispatch tasks to it until Codex fully exits. If you only want to follow progress, stay on this page.',
+      noConversation: 'No conversation yet', toolCall: 'Tool call · {0} · {1}', transcriptFailed: 'Could not load the conversation: {0}',
+      taskFailed: 'Task {0} {1}: {2}', updated: 'Updated {0}', connFailed: 'Connection failed, retrying shortly',
+    },
+  };
+  const navLang = () => (/^zh/i.test(navigator.language || '') ? 'zh' : 'en');
+  let lang = navLang();
+  const t = (key, ...args) => {
+    const v = key in I18N[lang] ? I18N[lang][key] : I18N.zh[key];
+    if (typeof v === 'function') return v(...args);
+    return typeof v === 'string' ? v.replace(/\{(\d+)\}/g, (_, i) => String(args[i] ?? '')) : key;
+  };
+  const word = (map, value, fallback) => (I18N[lang][map] || {})[value] || fallback;
+  const statusName = (s) => word('status', s, s);
+  const locale = () => (lang === 'zh' ? 'zh-CN' : 'en');
+  function applyStatic() {
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+    for (const n of document.querySelectorAll('[data-i18n]')) n.textContent = t(n.dataset.i18n);
+    for (const n of document.querySelectorAll('[data-i18n-placeholder]')) n.placeholder = t(n.dataset.i18nPlaceholder);
+  }
+  // The profile's language wins once it is known; until then the browser language is used.
+  function setLang(next) {
+    next = next === 'zh' || next === 'en' ? next : navLang();
+    if (next === lang) return;
+    lang = next; transcriptKey = ''; applyStatic();
+  }
   const store = {
     get() { try { return localStorage.getItem('codexTasksToken') || ''; } catch { return ''; } },
     set(v) { try { localStorage.setItem('codexTasksToken', v); } catch {} },
@@ -106,7 +168,7 @@
   let transcriptKey = '';
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
-  const time = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+  const time = (iso) => iso ? new Date(iso).toLocaleString(locale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 
   async function api(path) {
     const res = await fetch(path, { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
@@ -134,7 +196,7 @@
     return [...byRoot.values()].map((g) => {
       const latest = g.tasks[g.tasks.length - 1];
       const busy = g.tasks.find((t) => t.status === 'running' || t.status === 'queued');
-      return { ...g, latest, name: g.tasks[0].name || '未命名任务', status: busy ? busy.status : latest.status,
+      return { ...g, latest, name: g.tasks[0].name || t('untitled'), status: busy ? busy.status : latest.status,
                thread: [...g.tasks].reverse().find((t) => t.thread_id)?.thread_id,
                forks: new Set(g.tasks.map((t) => t.thread_id).filter(Boolean)).size - 1,
                updated: latest.finished_at || latest.started_at || latest.created_at };
@@ -162,27 +224,27 @@
     const box = el('div'); box.id = 'profile';
     if (!profile) return box;
     const m = profile.machine || {}, c = profile.computer || {};
-    const title = el('div', 'title'); title.append(el('span', null, profile.computer_name || m.hostname || '本机'));
-    if (profile.busy && profile.busy.running.length) title.append(el('span', 'badge s-running', '忙：' + profile.busy.running.join('、')));
-    else if (!profile.quota_wait) title.append(el('span', 'badge s-completed', '空闲'));
+    const title = el('div', 'title'); title.append(el('span', null, profile.computer_name || m.hostname || t('thisComputer')));
+    if (profile.busy && profile.busy.running.length) title.append(el('span', 'badge s-running', t('busy', profile.busy.running.join(t('listSep')))));
+    else if (!profile.quota_wait) title.append(el('span', 'badge s-completed', t('idle')));
     if (profile.quota_wait) { // the queue is paused until the Codex quota resets
-      const until = profile.quota_wait.until ? ' ' + new Date(profile.quota_wait.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
-      const badge = el('span', 'badge s-queued', '等待额度' + until); badge.title = profile.quota_wait.message || ''; title.append(badge);
+      const until = profile.quota_wait.until ? ' ' + new Date(profile.quota_wait.until).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) : '';
+      const badge = el('span', 'badge s-queued', t('quotaWait') + until); badge.title = profile.quota_wait.message || ''; title.append(badge);
     }
-    const gpu = (m.nvidia && m.nvidia.length) ? m.nvidia.map((g) => g.name + ' ' + Math.round(g.vram_total_mb / 1024) + 'GB').join('、')
-      : (m.gpus || []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join('、') || '无独立显卡';
-    const facts = [m.cpu, m.ram_gb && (m.ram_gb + 'GB 内存'), gpu, m.os, m.egress_country && ('出口 ' + m.egress_country)].filter(Boolean).join(' · ');
-    box.append(title, fold('computer', '电脑档案', false, (part) => {
+    const gpu = (m.nvidia && m.nvidia.length) ? m.nvidia.map((g) => g.name + ' ' + Math.round(g.vram_total_mb / 1024) + 'GB').join(t('listSep'))
+      : (m.gpus || []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join(t('listSep')) || t('noGpu');
+    const facts = [m.cpu, m.ram_gb && t('ramGb', m.ram_gb), gpu, m.os, m.egress_country && t('egress', m.egress_country)].filter(Boolean).join(' · ');
+    box.append(title, fold('computer', t('computerFold'), false, (part) => {
       part.append(el('div', 'facts', facts));
-      if (m.checked_at) part.append(el('div', 'facts', '硬件信息检测于 ' + time(m.checked_at)));
-      part.append(el('div', 'role', c.role ? '用途：' + c.role : '用途：未填写'));
-      if (c.software && c.software.length) part.append(el('div', 'facts', '软件：' + c.software.join('、')));
-      for (const a of c.accounts || []) part.append(el('div', 'facts', '账号：' + a.site + (a.account ? '（' + a.account + '）' : '') + ' · ' + ({ logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' }[a.status] || a.status || '未知')));
+      if (m.checked_at) part.append(el('div', 'facts', t('hwChecked', time(m.checked_at))));
+      part.append(el('div', 'role', c.role ? t('role', c.role) : t('roleMissing')));
+      if (c.software && c.software.length) part.append(el('div', 'facts', t('software', c.software.join(t('listSep')))));
+      for (const a of c.accounts || []) part.append(el('div', 'facts', t('account', a.site + (a.account ? t('accountName', a.account) : '') + ' · ' + word('accountStatus', a.status, a.status || t('unknown')))));
     }));
-    box.append(fold('agents', '常驻 Agent（' + (profile.agents || []).length + '）', true, (part) => { for (const a of profile.agents || []) {
+    box.append(fold('agents', t('agentsFold', (profile.agents || []).length), true, (part) => { for (const a of profile.agents || []) {
       const card = el('div', 'agent');
-      const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? '（主）' : '') + (a.locked ? '（锁定）' : '') + (a.can_dispatch === false ? '（不能派任务）' : '') + (a.sessions > 1 ? '（' + a.sessions + ' 个同名会话）' : '')));
-      if (a.status) head.append(document.createTextNode(' '), el('span', 'badge s-' + a.status, STATUS[a.status] || a.status));
+      const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? t('mainBadge') : '') + (a.locked ? t('lockedBadge') : '') + (a.can_dispatch === false ? t('noDispatchBadge') : '') + (a.sessions > 1 ? t('sameNameBadge', a.sessions) : '')));
+      if (a.status) head.append(document.createTextNode(' '), el('span', 'badge s-' + a.status, statusName(a.status)));
       card.append(head, el('div', null, a.role || ''));
       if (a.tags && a.tags.length) card.append(el('div', 'tags', a.tags.map((t) => '#' + t).join(' ')));
       card.addEventListener('click', () => {
@@ -195,13 +257,13 @@
   }
 
   function renderList() {
-    const list = $('list'); list.replaceChildren(renderProfile(), el('div', 'section', '会话'));
-    if (!groups.length) { list.append(el('div', 'empty', '还没有任务')); return; }
+    const list = $('list'); list.replaceChildren(renderProfile(), el('div', 'section', t('sessions')));
+    if (!groups.length) { list.append(el('div', 'empty', t('noTasks'))); return; }
     for (const g of groups) {
       const row = el('div', 'session' + (selected === g.key ? ' active' : ''));
-      const name = el('div', 'name'); name.append(el('span', null, g.name), el('span', 'badge s-' + g.status, STATUS[g.status] || g.status));
+      const name = el('div', 'name'); name.append(el('span', null, g.name), el('span', 'badge s-' + g.status, statusName(g.status)));
       const last = g.latest.latest_message || g.latest.error || g.latest.result || '';
-      row.append(name, el('div', 'sub', time(g.updated) + ' · ' + g.tasks.length + ' 轮' + (g.forks ? ' · 分叉 ' + g.forks : '')), el('div', 'sub', last.replace(/\s+/g, ' ')));
+      row.append(name, el('div', 'sub', time(g.updated) + ' · ' + t('turns', g.tasks.length) + (g.forks ? ' · ' + t('forks', g.forks) : '')), el('div', 'sub', last.replace(/\s+/g, ' ')));
       row.addEventListener('click', () => { selected = g.key; transcriptKey = ''; document.body.classList.add('viewing'); renderList(); renderDetail(true); });
       list.append(row);
     }
@@ -215,36 +277,36 @@
     transcriptKey = key;
     const detail = $('detail');
     const head = el('div', 'head');
-    const back = el('button', 'back', '← 返回'); back.type = 'button';
+    const back = el('button', 'back', t('back')); back.type = 'button';
     back.addEventListener('click', () => { document.body.classList.remove('viewing'); selected = null; renderList(); });
-    head.append(back, el('h2', null, g.name), el('span', 'badge s-' + g.status, STATUS[g.status] || g.status));
+    head.append(back, el('h2', null, g.name), el('span', 'badge s-' + g.status, statusName(g.status)));
     const info = el('div', 'info');
-    info.append(document.createTextNode(g.tasks.length + ' 轮 · 工作目录 ' + (g.latest.workspace || '') + ' · 会话 '), el('code', null, g.thread || '尚未创建'));
+    info.append(document.createTextNode(t('turns', g.tasks.length) + ' · ' + t('workdir', g.latest.workspace || '') + ' · ' + t('sessionLabel')), el('code', null, g.thread || t('notCreated')));
     const note = el('div', 'note');
-    note.append(document.createTextNode('这里只读查看，不会占用会话。'));
+    note.append(document.createTextNode(t('readOnlyNote')));
     if (g.thread && g.latest.engine !== 'claude') {
-      const open = el('a', 'link', '在 Codex App 中打开'); open.href = 'codex://threads/' + encodeURIComponent(g.thread);
-      note.append(document.createTextNode(' 想亲自接着聊时可以 '), open, document.createTextNode('。注意：打开后这个会话就归你了，在 Codex 完全退出之前，Agent 不能再往里面派任务。只想看进度的话，留在这个页面就好。'));
+      const open = el('a', 'link', t('openInApp')); open.href = 'codex://threads/' + encodeURIComponent(g.thread);
+      note.append(document.createTextNode(t('openPrefix')), open, document.createTextNode(t('openSuffix')));
     }
     const body = el('div');
     if (g.thread) {
       try {
         const { entries } = await api('/api/transcript?thread_id=' + encodeURIComponent(g.thread));
-        if (!entries.length) body.append(el('div', 'empty', '还没有对话内容'));
+        if (!entries.length) body.append(el('div', 'empty', t('noConversation')));
         for (const e of entries) {
           if (e.kind === 'tool') {
-            const d = el('details', 'tool'); d.append(el('summary', null, '工具调用 · ' + e.type + ' · ' + time(e.time)), el('pre', null, e.text)); body.append(d);
+            const d = el('details', 'tool'); d.append(el('summary', null, t('toolCall', e.type, time(e.time))), el('pre', null, e.text)); body.append(d);
           } else {
             const m = el('div', 'msg ' + e.kind);
-            const who = { user: '收到的指令', agent: 'Agent 回复', fork: '分叉' }[e.kind] || e.kind;
+            const who = word('who', e.kind, e.kind);
             m.append(el('div', 'who', who + ' · ' + time(e.time)), document.createTextNode(e.text));
             body.append(m);
           }
         }
-      } catch (err) { if (err.message !== 'unauthorized') body.append(el('div', 'empty', '读取对话失败：' + err.message)); }
+      } catch (err) { if (err.message !== 'unauthorized') body.append(el('div', 'empty', t('transcriptFailed', err.message))); }
     }
-    for (const t of g.tasks.filter((t) => t.status === 'failed' || t.status === 'timed_out')) {
-      const m = el('div', 'msg fork'); m.textContent = '任务 ' + t.task_id.slice(0, 8) + ' ' + (STATUS[t.status] || t.status) + '：' + (t.error || ''); body.append(m);
+    for (const task of g.tasks.filter((x) => x.status === 'failed' || x.status === 'timed_out')) {
+      const m = el('div', 'msg fork'); m.textContent = t('taskFailed', task.task_id.slice(0, 8), statusName(task.status), task.error || ''); body.append(m);
     }
     const stick = detail.scrollTop + detail.clientHeight >= detail.scrollHeight - 40;
     detail.replaceChildren(head, info, note, body);
@@ -255,16 +317,17 @@
     if (!token) { showLogin(); return; }
     try {
       if (!profile || Date.now() - (profile._loaded || 0) > 30000) {
-        profile = await api('/api/profile'); profile._loaded = Date.now();
+        profile = await api('/api/profile'); profile._loaded = Date.now(); setLang(profile.language);
       }
       const data = await api('/api/tasks');
       $('computer').textContent = data.computer || '';
       groups = buildGroups(data.tasks.filter((t) => !t.archived)); // archived in the Codex app = removed by the user
       renderList();
       if (selected) await renderDetail(false);
-      $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN');
-    } catch (err) { if (err.message !== 'unauthorized') $('updated').textContent = '连接失败，稍后重试'; }
+      $('updated').textContent = t('updated', new Date().toLocaleTimeString(locale()));
+    } catch (err) { if (err.message !== 'unauthorized') $('updated').textContent = t('connFailed'); }
   }
+  applyStatic();
   refresh();
   setInterval(refresh, 4000);
 })();

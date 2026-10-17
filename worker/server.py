@@ -41,11 +41,10 @@ def local_clock(timestamp):
 # Quota guard: wait this long after the reported reset, at most this long in one go, and re-check this often
 # when Codex does not say when the window resets. Module constants, so tests can shrink them.
 QUOTA_SLACK_SECONDS, QUOTA_MAX_WAIT_SECONDS, QUOTA_RECHECK_SECONDS, QUOTA_CHECK_TIMEOUT = 60, 6 * 3600, 600, 15
-QUOTA_NOTE = '等待 Codex 额度重置：'
-QUOTA_WINDOWS = (('primary', '5 小时'), ('secondary', '每周'))
+QUOTA_WINDOWS = ('primary', 'secondary')  # the 5-hour and the weekly window
 
 
-def quota_exhausted(result, threshold):
+def quota_exhausted(result, threshold, language='zh'):
     """Read an account/rateLimits/read answer: (labels of the windows at or over threshold percent, unix time
     the last of them resets or None). None when nothing is used up or the shape is unknown, so an
     unexpected answer never blocks work."""
@@ -54,10 +53,10 @@ def quota_exhausted(result, threshold):
         return None
     number = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool)
     labels, resets = [], []
-    for key, label in QUOTA_WINDOWS:
+    for key in QUOTA_WINDOWS:
         window = limits.get(key) if isinstance(limits.get(key), dict) else {}
         if number(window.get('usedPercent')) and window['usedPercent'] >= threshold:
-            labels.append(label)
+            labels.append(TEXT[language]['windows'][key])
             if number(window.get('resetsAt')):
                 resets.append(window['resetsAt'])
     return (labels, max(resets) if resets else None) if labels else None
@@ -66,11 +65,12 @@ def quota_exhausted(result, threshold):
 class QuotaExhausted(Exception):
     """The Codex quota is used up; raised before any session is started, so the job can simply wait its turn."""
 
-    def __init__(self, labels, resets_at):
+    def __init__(self, labels, resets_at, language='zh'):
         self.labels, self.resets_at = labels, resets_at
-        when = (f'预计 {local_clock(resets_at)}（本地时间）后自动开始' if resets_at else
-                f'每 {max(1, round(QUOTA_RECHECK_SECONDS / 60))} 分钟检查一次，恢复后自动开始')
-        super().__init__(f"{QUOTA_NOTE}{'和'.join(labels)}额度已用完，{when}")
+        text = TEXT[language]
+        when = (text['quota_at'].format(time=local_clock(resets_at)) if resets_at else
+                text['quota_poll'].format(minutes=max(1, round(QUOTA_RECHECK_SECONDS / 60))))
+        super().__init__(text['quota_note'] + text['quota_used'].format(labels=text['quota_joiner'].join(labels), when=when))
 
 
 class AppServerError(RuntimeError):
@@ -87,13 +87,59 @@ def task_folder_name(task_id, name=None):
 
 
 FINISHED = ('completed', 'failed', 'cancelled', 'interrupted', 'timed_out')
-WAKE_HEADER = '【自动通知 · 派任务服务】'
 WORKER_RULES = '''你是被派出来执行具体任务的子 agent（worker）。必须遵守：
 1. 只完成交给你的这件任务。做完后，把结果、遇到的问题和需要人处理的事写进最终回复，由派你来的上级（本机的主agent export）处理。
 2. 不要调用本机的派任务服务（codex_tasks / Codex Task Dispatcher，地址如 127.0.0.1:8765 或 :8766/mcp）：不要派新任务，不要取消或修改别的任务，不要修改电脑档案。
 3. 不要读取、打印或使用任何访问令牌、密码或 cookie，例如 token.txt、client*.json、.codex/config.toml 里的令牌。
 4. 需要别的 agent 帮忙、需要更多信息，或档案需要更新时，在最终回复里说明，由上级安排。
 '''
+WORKER_RULES_EN = '''You are a sub-agent (worker) sent to do one specific task. You must follow these rules:
+1. Do only the task you were given. When done, put the result, any problems and anything a person must handle in your final reply; the agent that sent you (this computer's main agent) takes it from there.
+2. Do not call this computer's dispatcher (codex_tasks / Codex Task Dispatcher, at an address like 127.0.0.1:8765 or :8766/mcp): do not dispatch new tasks, do not cancel or change other tasks, do not change the computer profile.
+3. Do not read, print or use any access token, password or cookie, such as the token in token.txt, client*.json or .codex/config.toml.
+4. If you need another agent's help, more information, or a profile update, say so in your final reply and your superior will arrange it.
+'''
+# Everything the dispatcher writes for people to read, by config language ('zh' or 'en'). Tool errors and
+# notes meant for the calling agent stay in English.
+TEXT = {
+    'zh': {
+        'quota_note': '等待 Codex 额度重置：', 'windows': {'primary': '5 小时', 'secondary': '每周'}, 'quota_joiner': '和',
+        'quota_at': '预计 {time}（本地时间）后自动开始', 'quota_poll': '每 {minutes} 分钟检查一次，恢复后自动开始',
+        'quota_used': '{labels}额度已用完，{when}',
+        'quota_back_title': 'Codex 额度已恢复，任务继续', 'quota_back': '排队的任务按原顺序继续运行，先从「{name}」开始。',
+        'quota_paused_title': 'Codex 额度用完，任务暂停', 'quota_paused_until': '到 {time}',
+        'quota_paused': '{reason}。排队中的 {queued} 个任务会按原顺序等到那时再开始，不需要人处理。',
+        'wake_header': '【自动通知 · 派任务服务】', 'wake_intro': '你派出的子任务已结束：\n',
+        'wake_line': '- 「{name}」 task_id={task_id} 状态={status}\n  结果：{result}', 'wake_unnamed': '未命名', 'wake_none': '（无）',
+        'wake_progress': '\n  最后进度：{progress}',
+        'wake_tail': ('\n\n请根据结果决定下一步：还有工作就继续派任务（派完立即结束本轮）；全部完成就写一份简短汇报作为本轮回复；'
+                      '需要人处理就在汇报里说明。这条消息由派任务服务自动发送，不是 orchestrator 的新指令。'),
+        'open_link': '打开 {label}', 'fork_title': '{base}（续 {time}）{suffix}',
+        'fork_note': '原会话在桌面 App 里打开过、被占用，以下内容在一个带完整历史的副本里继续。',
+        'resident_suffix': ' - 固定', 'folder_main': 'AgentFleet', 'folder_other': 'AgentFleet-其他',
+        'worker_rules': WORKER_RULES,
+    },
+    'en': {
+        'quota_note': 'Waiting for the Codex quota to reset: ', 'windows': {'primary': '5-hour', 'secondary': 'weekly'},
+        'quota_joiner': ' and ', 'quota_at': 'starts automatically after about {time} (local time)',
+        'quota_poll': 'checking every {minutes} minutes, starts automatically once it is back',
+        'quota_used': 'the {labels} quota is used up; {when}',
+        'quota_back_title': 'Codex quota is back, tasks continue',
+        'quota_back': 'Queued tasks continue in their original order, starting with "{name}".',
+        'quota_paused_title': 'Codex quota used up, tasks paused', 'quota_paused_until': ' until {time}',
+        'quota_paused': '{reason}. The {queued} queued task(s) wait until then, in their original order; nobody needs to act.',
+        'wake_header': '[Automatic notice · dispatcher]', 'wake_intro': 'Sub-tasks you dispatched have finished:\n',
+        'wake_line': '- "{name}" task_id={task_id} status={status}\n  Result: {result}', 'wake_unnamed': 'unnamed',
+        'wake_none': '(none)', 'wake_progress': '\n  Last progress: {progress}',
+        'wake_tail': ('\n\nDecide the next step from the results: if work remains, dispatch it (and end this turn right after); '
+                      'if everything is done, write a short report as this turn\'s reply; if a person must act, say so in the report. '
+                      'This message was sent automatically by the dispatcher; it is not a new instruction from the orchestrator.'),
+        'open_link': 'Open {label}', 'fork_title': '{base} (cont. {time}){suffix}',
+        'fork_note': 'The original session was opened in the desktop app and is held there; this continues in a copy with the full history.',
+        'resident_suffix': ' - resident', 'folder_main': 'AgentFleet', 'folder_other': 'AgentFleet-Other',
+        'worker_rules': WORKER_RULES_EN,
+    },
+}
 SECRET_FIELD = re.compile(r'pass|secret|token|cookie|key|otp', re.IGNORECASE)
 APPROVE_LABEL = re.compile(r'accept|allow|approve|yes|continue|同意|允许|批准|继续', re.IGNORECASE)
 
@@ -243,6 +289,8 @@ def collect_machine_info(config):
 class TaskManager:
     def __init__(self, config):
         self.config = config
+        self.language = 'en' if config.get('language') == 'en' else 'zh'
+        self.text = TEXT[self.language]
         self.state = Path(config['state_dir']).resolve()
         self.state.mkdir(parents=True, exist_ok=True)
         self.jobs_dir = self.state / 'jobs'
@@ -262,6 +310,10 @@ class TaskManager:
         self.profile = json.loads(self.profile_file.read_text(encoding='utf-8')) if self.profile_file.exists() else {}
         self.profile.setdefault('computer', {})
         self.profile.setdefault('agents', {})
+        # The main agent's permanent id, kept in the service's own record so it survives config rewrites.
+        if not self.profile.get('main_agent_id'):
+            self.profile['main_agent_id'] = config.get('main_agent_id') or str(uuid.uuid4())
+            self.save_profile()
         self.notices = {}  # main agent thread -> finished sub-task ids it has not been told about yet
         # Desktop-app sidebar folders (config codex_app_folders): whether sessions may need filing, and how it went.
         self.folders_pending, self.folders_status, self.folder_task = True, None, None
@@ -319,7 +371,7 @@ class TaskManager:
         if job.get('thread_id') and job.get('engine') != 'claude':
             response['desktop_url'] = 'codex://threads/' + quote(job['thread_id'], safe='')
             label = (job.get('name') or 'Codex task').replace('[', '(').replace(']', ')').replace('\n', ' ')
-            response['desktop_link'] = f"[打开 {label}]({response['desktop_url']})"
+            response['desktop_link'] = f"[{self.text['open_link'].format(label=label)}]({response['desktop_url']})"
         if include_result and job['status'] in ('completed', 'failed', 'cancelled', 'interrupted', 'timed_out'):
             result = self.jobs_dir / job['task_id'] / 'result.txt'
             response['result'] = result.read_text(encoding='utf-8')[:1_000_000] if result.exists() else ''
@@ -342,7 +394,7 @@ class TaskManager:
             text = Path(path).read_text(encoding='utf-8-sig').strip()
             if text:
                 return text
-        return WORKER_RULES
+        return self.text['worker_rules']
 
     def is_worker(self, job):
         """Everything except a computer's main agent is a worker. Main agents are recognized by their
@@ -352,10 +404,33 @@ class TaskManager:
             return False
         return (self.profile['agents'].get(job.get('name') or '') or {}).get('type') != 'main'
 
+    def changed_title(self, job):
+        """The title to set on a resumed session, or None to leave it alone. It is set only when the title the
+        dispatcher wants changed since it last set one (the agent was registered as resident, the main agent
+        was renamed), so a title the user gave the session in the desktop app stays."""
+        if not job.get('name'):
+            return None
+        wanted, root = job['name'] + self.title_suffix(job), self.session_root(job)
+        if 'title_set' not in root:  # Sessions from before titles were tracked got this title on every turn.
+            root['title_set'] = wanted
+            self.save(root)
+        return wanted if wanted != root['title_set'] else None
+
+    def main_agent_note(self):
+        """Runtime facts a main-agent turn starts with: its current names, which override older ones in its instructions."""
+        parts = []
+        if self.config.get('main_agent_name'):
+            parts.append('your current main-agent name is ' + json.dumps(self.config['main_agent_name'], ensure_ascii=False) +
+                         '. This replaces any older name in the conversation or workspace instructions')
+        if self.profile['computer'].get('manager_name'):
+            parts.append('the orchestrator and the human call you ' + json.dumps(self.profile['computer']['manager_name'],
+                         ensure_ascii=False) + ' when they manage the fleet; the session title in the desktop app may differ')
+        return '[Agent Fleet runtime: ' + '; '.join(parts) + '. Reply in ' + ('English' if self.language == 'en' else 'Chinese') + '.]'
+
     def title_suffix(self, job):
         """Registered resident agents get a marker in their desktop-app title (config resident_title_suffix,
-        default " - 固定"; "" turns it off), so they stand out from one-off tasks. Only the title changes."""
-        suffix = self.config.get('resident_title_suffix', ' - 固定')
+        default " - 固定", or " - resident" in English; "" turns it off), so they stand out from one-off tasks."""
+        suffix = self.config.get('resident_title_suffix', self.text['resident_suffix'])
         agent = self.profile['agents'].get(job.get('name') or '') or {}
         return suffix if suffix and agent.get('type') == 'resident' else ''
 
@@ -364,12 +439,22 @@ class TaskManager:
         temporary.write_text(json.dumps(self.profile, ensure_ascii=False, indent=2), encoding='utf-8')
         temporary.replace(self.profile_file)
 
-    def update_computer(self, **fields):
-        """Hand-written facts about this computer: its role, notes, key software and account login status."""
+    def update_computer(self, caller=None, **fields):
+        """Hand-written facts about this computer: its role, notes, key software and account login status, and the
+        main agent's management name (manager_name, set by the orchestrator only; "" clears it)."""
         computer = self.profile['computer']
+        if caller and fields.get('manager_name') is not None:
+            raise ValueError('Only the orchestrator can set manager_name')
         for key, value in fields.items():
             if value is None:
                 continue
+            if key == 'manager_name':
+                value = value.strip()
+                if len(value) > 100 or re.search(r'[\x00-\x1f\x7f]', value):
+                    raise ValueError('manager_name must contain at most 100 printable characters')
+                if not value:
+                    computer.pop(key, None)
+                    continue
             if key == 'accounts':
                 for account in value:
                     if not isinstance(account, dict) or not account.get('site'):
@@ -465,6 +550,18 @@ class TaskManager:
         if self.session_owner(job) != mine:
             raise ValueError(f'You did not open this session; only the agent that opened it or the orchestrator can {action} it')
 
+    def main_agent(self):
+        """This computer's main agent by its permanent id, whatever it is called now: its current names and the
+        task to continue to reach it (the newest live session in a main-agent workspace)."""
+        mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
+        jobs = [j for j in self.jobs.values() if j.get('workspace') and str(Path(j['workspace']).resolve()).lower() in mains and
+                (j['status'] in ('queued', 'running') or (j.get('thread_id') and not self.removed(j)))]
+        latest = max(jobs, key=lambda j: j['created_at']) if jobs else None
+        return {'id': self.profile['main_agent_id'], 'name': self.config.get('main_agent_name'),
+                'manager_name': self.profile['computer'].get('manager_name'),
+                'workspace': next(iter(self.config.get('main_agent_workspaces', [])), None),
+                'task_id': latest['task_id'] if latest else None, 'status': latest['status'] if latest else None}
+
     async def full_profile(self, refresh=False):
         agents = []
         for name, agent in self.profile['agents'].items():
@@ -477,6 +574,7 @@ class TaskManager:
                            'last_active': (latest.get('finished_at') or latest.get('started_at') or latest['created_at']) if latest else None})
         machine = await self.machine_info(refresh)
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
+                'language': self.language, 'main_agent_name': self.config.get('main_agent_name'), 'main_agent': self.main_agent(),
                 'machine': machine, 'computer': self.profile['computer'], 'agents': agents, 'quota_wait': self.quota_wait,
                 **({'codex_app_folders': self.folders_status} if self.app_folders() else {}),
                 'busy': {'running': [j.get('name') or j['task_id'] for j in self.jobs.values() if j['status'] == 'running'],
@@ -571,7 +669,7 @@ class TaskManager:
                 parent = payload['forked_from_id']
                 if parent in self.known_threads():
                     entries += self.transcript(parent, payload.get('forked_from_ordinal_exclusive'), depth + 1)
-                    entries.append({'kind': 'fork', 'time': record.get('timestamp'), 'text': '原会话在桌面 App 里打开过、被占用，以下内容在一个带完整历史的副本里继续。'})
+                    entries.append({'kind': 'fork', 'time': record.get('timestamp'), 'text': self.text['fork_note']})
             if record.get('type') != 'event_msg' or payload.get('type') != 'item_completed':
                 continue
             item = payload.get('item') or {}
@@ -635,8 +733,8 @@ class TaskManager:
         if not setting or self.config.get('executor') == 'claude':
             return None
         names = setting if isinstance(setting, dict) else {}
-        return {'main': (names.get('main') or 'AgentFleet', str(self.root.parent)),
-                'other': (names.get('other') or 'AgentFleet-其他', str(self.root))}
+        return {'main': (names.get('main') or self.text['folder_main'], str(self.root.parent)),
+                'other': (names.get('other') or self.text['folder_other'], str(self.root))}
 
     def folder_threads(self):
         """Codex threads by folder side, forks and their originals included."""
@@ -708,15 +806,13 @@ class TaskManager:
             child = self.jobs[child_id]
             result_file = self.jobs_dir / child_id / 'result.txt'
             text = result_file.read_text(encoding='utf-8')[:1500] if result_file.exists() else ''
-            line = (f"- 「{child.get('name') or '未命名'}」 task_id={child_id} 状态={child['status']}\n"
-                    f"  结果：{text or child.get('error') or '（无）'}")
+            line = self.text['wake_line'].format(name=child.get('name') or self.text['wake_unnamed'], task_id=child_id,
+                                                 status=child['status'], result=text or child.get('error') or self.text['wake_none'])
             # A failure can come after real work (e.g. drafts saved, then "model at capacity"); say how far it got.
             if (child['status'] != 'completed' or not text) and child.get('latest_message'):
-                line += f"\n  最后进度：{child['latest_message'][-800:]}"
+                line += self.text['wake_progress'].format(progress=child['latest_message'][-800:])
             lines.append(line)
-        prompt = (WAKE_HEADER + '你派出的子任务已结束：\n' + '\n'.join(lines) +
-                  '\n\n请根据结果决定下一步：还有工作就继续派任务（派完立即结束本轮）；全部完成就写一份简短汇报作为本轮回复；'
-                  '需要人处理就在汇报里说明。这条消息由派任务服务自动发送，不是 orchestrator 的新指令。')
+        prompt = self.text['wake_header'] + self.text['wake_intro'] + '\n'.join(lines) + self.text['wake_tail']
         woken = self.submit(prompt, None, self.config.get('wake_timeout_seconds', 1800), None, resume_task_id=turns[-1]['task_id'])
         self.jobs[woken['task_id']].update(auto_wake=True, wakes_for=children)
         self.save(self.jobs[woken['task_id']])
@@ -978,8 +1074,7 @@ class TaskManager:
             suffix = self.title_suffix(job)
             if job.get('resume_task_id'):
                 forked = await self.resume_or_fork(connection, job, policy)
-                # A resumed resident session gets its marked title even if it was registered later.
-                name = job['name'] + suffix if not forked and (suffix or (self.config.get('main_agent_name') and not self.is_worker(job))) else None
+                name = None if forked else self.changed_title(job)
             else:
                 started = await connection.request('thread/start', {
                     'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {}),
@@ -990,13 +1085,14 @@ class TaskManager:
             if name:
                 try:
                     await connection.request('thread/name/set', {'threadId': job['thread_id'], 'name': name})
+                    root = self.session_root(job)
+                    root['title_set'] = name
+                    self.save(root)
                 except AppServerError:
                     pass  # The name is cosmetic; the task can still run.
             turn_input = job['prompt']
-            if self.config.get('main_agent_name') and not self.is_worker(job):
-                turn_input = ('[Agent Fleet runtime: your current main-agent name is ' +
-                              json.dumps(self.config['main_agent_name'], ensure_ascii=False) +
-                              '. This replaces any older name in the conversation or workspace instructions.]\n\n' + turn_input)
+            if not self.is_worker(job) and (self.config.get('main_agent_name') or self.profile['computer'].get('manager_name')):
+                turn_input = self.main_agent_note() + '\n\n' + turn_input
             turn_params = {'threadId': job['thread_id'], 'input': [{'type': 'text', 'text': turn_input}],
                            'approvalPolicy': policy['approvalPolicy']}  # turn/start takes no developerInstructions
             turn_params.update({k: job[k] for k in ('model', 'effort') if job.get(k)})
@@ -1044,16 +1140,15 @@ class TaskManager:
             log_line((json.dumps({'dispatcher': 'quota check skipped', 'error': str(error) or type(error).__name__},
                                  ensure_ascii=False) + '\n').encode('utf-8'))
             result = None
-        blocked = quota_exhausted(result, self.config.get('quota_guard_threshold', 100))
+        blocked = quota_exhausted(result, self.config.get('quota_guard_threshold', 100), self.language)
         if blocked:
-            raise QuotaExhausted(*blocked)
-        if (job.get('latest_message') or '').startswith(QUOTA_NOTE):
+            raise QuotaExhausted(*blocked, self.language)
+        if (job.get('latest_message') or '').startswith(tuple(t['quota_note'] for t in TEXT.values())):
             job.pop('latest_message')
             self.save(job)
         if self.quota_paused:
             self.quota_paused = False
-            self.notify('Codex 额度已恢复，任务继续',
-                        f"排队的任务按原顺序继续运行，先从「{job.get('name') or job['task_id'][:8]}」开始。",
+            self.notify(self.text['quota_back_title'], self.text['quota_back'].format(name=job.get('name') or job['task_id'][:8]),
                         task_ids=[job['task_id']], sender='dispatcher')
 
     async def wait_for_quota(self, job, paused):
@@ -1066,8 +1161,9 @@ class TaskManager:
         if not self.quota_paused:
             self.quota_paused = True
             queued = sum(j['status'] == 'queued' for j in self.jobs.values())
-            self.notify('Codex 额度用完，任务暂停' + (f'到 {local_clock(paused.resets_at)}' if paused.resets_at else ''),
-                        f'{paused}。排队中的 {queued} 个任务会按原顺序等到那时再开始，不需要人处理。',
+            self.notify(self.text['quota_paused_title'] + (self.text['quota_paused_until'].format(time=local_clock(paused.resets_at))
+                                                           if paused.resets_at else ''),
+                        self.text['quota_paused'].format(reason=paused, queued=queued),
                         task_ids=[job['task_id']], sender='dispatcher')
         delay = QUOTA_RECHECK_SECONDS if paused.resets_at is None else max(paused.resets_at - time.time(), 0) + QUOTA_SLACK_SECONDS
         deadline = time.monotonic() + min(delay, QUOTA_MAX_WAIT_SECONDS)
@@ -1108,7 +1204,8 @@ class TaskManager:
         base = job.get('name') or 'Codex task'
         try:
             await connection.request('thread/name/set', {
-                'threadId': job['thread_id'], 'name': f"{base}（续 {datetime.now().strftime('%m-%d %H:%M')}）{self.title_suffix(job)}"})
+                'threadId': job['thread_id'], 'name': self.text['fork_title'].format(
+                    base=base, time=datetime.now().strftime('%m-%d %H:%M'), suffix=self.title_suffix(job))})
         except AppServerError:
             pass
         return True
@@ -1183,7 +1280,7 @@ def build_app(config):
     manager = TaskManager(config)
 
     busy_note = ('continuing such a session automatically forks a copy with the full history (thread_id changes, '
-                 'forked_from_thread_id is set, the copy is named "…（续 time）"), and later continue_task calls follow the newest copy.'
+                 'forked_from_thread_id is set, the copy is named "…（续 time）" or "… (cont. time)"), and later continue_task calls follow the newest copy.'
                  if config.get('fork_when_busy', False) else
                  'continuing such a session fails with an explanation; tell the human, or start a new task instead.')
     mcp = FastMCP('Codex Task Dispatcher',
@@ -1241,9 +1338,11 @@ def build_app(config):
 
     @mcp.tool()
     async def update_computer_profile(role: str | None = None, notes: str | None = None,
-                                      software: list[str] | None = None, accounts: list[dict] | None = None) -> dict:
-        """Update the hand-written part of this computer's profile. Only the fields you pass are replaced. role: what this computer is for (e.g. "视频剪辑机，有 GPU"). software: key installed apps with versions if known. accounts: [{"site": "bilibili", "account": "name", "status": "logged_in|logged_out|needs_verification", "expires": "...", "checked_at": "ISO time"}]. Never include passwords, tokens or cookies."""
-        return manager.update_computer(role=role, notes=notes, software=software, accounts=accounts)
+                                      software: list[str] | None = None, accounts: list[dict] | None = None,
+                                      manager_name: str | None = None, ctx: Context = None) -> dict:
+        """Update the hand-written part of this computer's profile. Only the fields you pass are replaced. role: what this computer is for (e.g. "视频剪辑机，有 GPU"). software: key installed apps with versions if known. accounts: [{"site": "bilibili", "account": "name", "status": "logged_in|logged_out|needs_verification", "expires": "...", "checked_at": "ISO time"}]. Never include passwords, tokens or cookies. manager_name: orchestrator only; the name the orchestrator and the human use for this computer's main agent when managing the fleet (e.g. "经理cris"), separate from the session title shown in the app; "" clears it."""
+        return manager.update_computer(manager.caller(ctx), role=role, notes=notes, software=software, accounts=accounts,
+                                       manager_name=manager_name)
 
     @mcp.tool()
     async def register_agent(name: str, role: str, tags: list[str] | None = None, agent_type: str = 'resident',
