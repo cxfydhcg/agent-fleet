@@ -48,7 +48,9 @@ installed with it rather than changed later. Unless the request already says, as
   approval, including Computer Use on any app, is refused.
 
 Recommend full access when the user wants agents to control apps or the desktop. Pass `--full-access`
-only after the user picks it; installing the plugin does not authorize it.
+only after the user picks it; installing the plugin does not authorize it. Worker setup refuses to run
+without `--full-access` or `--restricted`, so this question is never skipped. On a rerun, first show the
+current mode (`full_access` in the `--plan` output) and ask whether to keep it.
 
 ## 3. Check Node.js
 
@@ -105,7 +107,7 @@ Codex/Terminal in System Settings → Privacy & Security; you cannot do that for
   desktop and browser actions. Explain that and pass it only with the user's
   explicit agreement (step 2); installing the plugin does not authorize it.
 - Changing the permission mode of an existing worker: rerun setup with `--full-access --reconfigure`
-  (the Mac installer also takes `--restricted` to switch back). The
+  (or `--restricted --reconfigure` to switch back). The
   service restarts only when idle; if it was busy, rerun after its tasks finish. Verify the result with
   call-agent's `fleet.mjs overview`, whose `permissions` field shows what the running service uses;
   the installer's "Sub-task permissions" line alone is not proof that the service restarted.
@@ -137,8 +139,8 @@ without `--plan` once the settings are resolved:
 
 - `node "<plugin-root>/scripts/setup.mjs" --role orchestrator`
 - `node "<plugin-root>/scripts/setup.mjs" --role orchestrator --connection "<path>"`
-- `node "<plugin-root>/scripts/setup.mjs" --role worker --engine codex`
-- `node "<plugin-root>/scripts/setup.mjs" --role both --engine claude`
+- `node "<plugin-root>/scripts/setup.mjs" --role worker --engine codex --full-access`
+- `node "<plugin-root>/scripts/setup.mjs" --role both --engine claude --restricted`
 
 To register another worker later, rerun with `--role orchestrator --connection`
 (or use call-agent's `add-computer`).

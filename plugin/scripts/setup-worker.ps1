@@ -11,11 +11,12 @@
     [string]$Description = '',
     [string]$ClaudeExecutable = '',
     [int]$Port = 8765, [int]$TailscalePort = 8766,
-    [switch]$FullAccess, [switch]$NoAutostart, [switch]$SkipPrerequisites,
+    [switch]$FullAccess, [switch]$Restricted, [switch]$NoAutostart, [switch]$SkipPrerequisites,
     [switch]$Reconfigure, [switch]$Plan, [switch]$NoDesktop
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+if ($Restricted -and $FullAccess) { throw 'Pass either -FullAccess or -Restricted, not both.' }
 $configPath = Join-Path $DataDir 'config.json'
 function Ensure-DesktopProject {
     $desktopArgs = @((Join-Path $PSScriptRoot 'setup-desktop.mjs'),'--workspace',$Workspace)
@@ -40,6 +41,7 @@ if ($previous) {
     if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = $previous.port }
     if (-not $PSBoundParameters.ContainsKey('TailscalePort')) { $TailscalePort = $previous.tailscale_port }
 }
+if ($Restricted) { $FullAccess = $false }
 if (-not $Language) {
     if ($previous) { $Language = $(if ($previous.language -eq 'en') { 'en' } else { 'zh' }) }
     elseif ((Get-Culture).Name -like 'zh*') { $Language = 'zh' } else { $Language = 'en' }
@@ -66,7 +68,7 @@ if ($Plan) {
     return
 }
 if ($previous -and -not $Reconfigure) {
-    if ($Engine -ne $oldEngine -or ($FullAccess -and $previous.sandbox -ne 'danger-full-access') -or
+    if ($Engine -ne $oldEngine -or ([bool]$FullAccess -ne ($previous.sandbox -eq 'danger-full-access')) -or
         $Connectivity -ne $oldConnectivity -or ($Connectivity -eq 'Lan' -and $LanAddress -ne $previous.lan_address) -or
         $Workspace -ne (Split-Path $previous.tasks_dir) -or $Name -ne $previous.computer_name -or $MainAgentName -cne $oldMainName -or
         $Port -ne $previous.port -or $TailscalePort -ne $previous.tailscale_port -or

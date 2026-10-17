@@ -8,7 +8,7 @@ import { ensureDesktopProject } from './setup-desktop.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const values = new Map();
 const flags = new Set();
-const booleans = new Set(['plan', 'local', 'full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop']);
+const booleans = new Set(['plan', 'local', 'full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop']);
 const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
   'codex-executable', 'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
 const argv = process.argv.slice(2);
@@ -28,7 +28,13 @@ if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--l
 if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en.');
 if (role === 'worker' && (values.has('connection') || values.has('registry-home') || flags.has('local'))) fail('Connection/registry options require orchestrator or both.');
 const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'];
-if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
+if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
+// A worker's permissions are never left to a default: whoever runs setup must ask the owner and pass the choice.
+if (flags.has('full-access') && flags.has('restricted')) fail('Pass either --full-access or --restricted, not both.');
+if (role !== 'orchestrator' && !flags.has('plan') && !flags.has('full-access') && !flags.has('restricted'))
+  fail('Ask the owner how much this worker may do, then pass --full-access (sub-tasks can operate the desktop and apps, ' +
+       'including Computer Use; every permission request is approved) or --restricted (sub-tasks only write their working ' +
+       'folder; Computer Use is refused). --plan shows the current mode.');
 if (flags.has('local') && !values.has('connection')) fail('--local requires --connection.');
 if (role !== 'orchestrator' && !['win32', 'darwin'].includes(process.platform)) fail('Worker setup currently supports Windows and macOS.');
 for (const key of ['port', 'tailscale-port']) {
@@ -67,7 +73,7 @@ function setupMacWorker() {
   const args = ['--data-dir', dataDir, '--workspace', workspace, '--json'];
   for (const key of ['engine', 'connectivity', 'name', 'main-agent-name', 'manager-name', 'language', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'])
     if (values.has(key)) args.push('--' + key, values.get(key));
-  for (const key of ['full-access', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'plan']) if (flags.has(key)) args.push('--' + key);
+  for (const key of ['full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'plan']) if (flags.has(key)) args.push('--' + key);
   if (flags.has('plan')) return lastObject(run('bash', [join(root, 'runtime', 'install-worker.sh'), ...args]));
   const deployment = join(workspace, 'service');
   mkdirSync(deployment, { recursive: true });
@@ -93,7 +99,7 @@ if (role !== 'orchestrator' && process.platform === 'darwin') {
   const mappings = { engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
     name: 'Name', 'main-agent-name': 'MainAgentName', 'manager-name': 'ManagerName', language: 'Language', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };
   for (const [key, parameter] of Object.entries(mappings)) if (values.has(key)) args.push('-' + parameter, values.get(key));
-  const switches = { plan: 'Plan', 'full-access': 'FullAccess', 'skip-prerequisites': 'SkipPrerequisites', 'no-autostart': 'NoAutostart', reconfigure: 'Reconfigure' };
+  const switches = { plan: 'Plan', 'full-access': 'FullAccess', restricted: 'Restricted', 'skip-prerequisites': 'SkipPrerequisites', 'no-autostart': 'NoAutostart', reconfigure: 'Reconfigure' };
   for (const [key, parameter] of Object.entries(switches)) if (flags.has(key)) args.push('-' + parameter);
   worker = lastObject(run('powershell', args));
 }
