@@ -5,7 +5,7 @@ import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ('README.md', 'PLUGINS.md', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', '.gitignore',
-         'Install-Plugins.ps1', 'install-worker.ps1', 'install-orchestrator.ps1')
+         'Install-Plugins.ps1', 'install-worker.ps1', 'install-worker.sh')
 DIRECTORIES = ('.agents', '.claude-plugin', 'plugin', 'worker', 'tools', 'tests')
 
 

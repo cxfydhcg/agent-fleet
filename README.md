@@ -23,9 +23,8 @@
 | 目录 / 文件 | 装在哪里 | 作用 |
 |---|---|---|
 | `worker/` | 每台被管理的电脑 | 派任务服务（MCP over HTTP）、只读看板、主agent export 的说明模板 |
-| `install-worker.ps1` | 每台被管理的电脑 | 一键安装 worker |
-| `plugin/` | 管理端电脑 | Claude Code 插件：`/call-agent` skill 和它自带的 `fleet.mjs` 命令行客户端 |
-| `install-orchestrator.ps1` | 管理端电脑 | 不用插件市场时，手动安装 skill（也可以装到 Codex） |
+| `install-worker.ps1` / `install-worker.sh` | 每台被管理的电脑 | 一键安装 worker（Windows / Mac） |
+| `plugin/` | 每台电脑 | Codex / Claude Code 插件：setup、call-agent、main-agent 三个技能，自带 worker 运行时和 `fleet.mjs` 命令行客户端 |
 | `AGENTS.md` / `CLAUDE.md` | — | 写给 AI 的安装和开发说明 |
 
 每台被管理的电脑上有一个工作区，默认是 `%USERPROFILE%\AgentFleet\`，可以用 `-Workspace` 改：
@@ -98,7 +97,14 @@ bash install-worker.sh --connectivity lan --full-access --description "Mac mini�
 /plugin install agent-fleet@agent-fleet
 ```
 
-装好后 skill 叫 `/agent-fleet:call-agent`。也可以不用插件市场，克隆项目后运行 `install-orchestrator.ps1`，装成 `/call-agent`；加 `-Codex` 同时装到 Codex 里，Codex 也能用同一个 skill。
+装好后 skill 叫 `/agent-fleet:call-agent`。在 Codex 里安装：
+
+```
+codex plugin marketplace add cxfydhcg/agent-fleet
+codex plugin add agent-fleet@agent-fleet
+```
+
+然后新开一个对话，说"用 Agent Fleet setup 设置这台电脑"，选管理端。以后更新用 `codex plugin marketplace upgrade`。
 
 然后接入每台被管理的电脑。**推荐用配对码，不用拷文件**：
 

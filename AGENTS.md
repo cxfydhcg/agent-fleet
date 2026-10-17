@@ -25,8 +25,8 @@ Same flow, through `bash install-worker.sh [--connectivity local|tailscale|lan] 
 ### Orchestrator
 
 1. Preferred: in Claude Code, `/plugin marketplace add cxfydhcg/agent-fleet`, then install the `agent-fleet` plugin. The skill is `/agent-fleet:call-agent`.
-   Without the plugin: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install-orchestrator.ps1` installs it as `/call-agent`. Add `-Codex` to also install it for Codex.
-2. For each worker: `node <skill folder>/fleet.mjs add-computer <path to its connection.json>`. If the orchestrator is also a worker, add `--local=1`. Afterwards the user can delete the `connection.json` file.
+   In Codex: `codex plugin marketplace add cxfydhcg/agent-fleet`, then `codex plugin add agent-fleet@agent-fleet`, and start a new chat.
+2. For each worker: preferably pair with the code the worker shows (`fleet.mjs discover`, then `fleet.mjs pair <code>`, or `pair <IP> <code>`); otherwise `node <skill folder>/fleet.mjs add-computer <path to its connection.json>`. If the orchestrator is also a worker, add `--local=1`. Afterwards the user can delete the `connection.json` file.
 3. Verify with `node <skill folder>/fleet.mjs overview`. Then send a harmless message, e.g. `/call-agent 【<computer>】 reply with "ok", don't use tools`.
 
 ### Rules while helping

@@ -23,9 +23,8 @@ You (phone / computer)
 | Folder / file | Installed on | Purpose |
 |---|---|---|
 | `worker/` | each managed computer | the dispatcher (MCP over HTTP), the read-only dashboard, and the main agent's instruction template |
-| `install-worker.ps1` | each managed computer | one-step worker install |
-| `plugin/` | orchestrator computer | Claude Code plugin: the `/call-agent` skill and its bundled `fleet.mjs` command-line client |
-| `install-orchestrator.ps1` | orchestrator computer | installs the skill manually when you don't use the plugin marketplace (can also install it into Codex) |
+| `install-worker.ps1` / `install-worker.sh` | each managed computer | one-step worker install (Windows / Mac) |
+| `plugin/` | every computer | Codex / Claude Code plugin: the setup, call-agent and main-agent skills, with the bundled worker runtime and the `fleet.mjs` command-line client |
 | `AGENTS.md` / `CLAUDE.md` | — | install and development instructions for AI agents |
 
 Each managed computer has a workspace, by default `%USERPROFILE%\AgentFleet\`; change it with `-Workspace`:
@@ -98,7 +97,14 @@ On the computer that runs Claude Code, install from the plugin marketplace (reco
 /plugin install agent-fleet@agent-fleet
 ```
 
-Once installed, the skill is called `/agent-fleet:call-agent`. You can also skip the marketplace: clone the project and run `install-orchestrator.ps1` to install it as `/call-agent`; add `-Codex` to also install it into Codex, so Codex can use the same skill.
+Once installed, the skill is called `/agent-fleet:call-agent`. To install it in Codex:
+
+```
+codex plugin marketplace add cxfydhcg/agent-fleet
+codex plugin add agent-fleet@agent-fleet
+```
+
+Then open a new chat, say "Use Agent Fleet setup to set up this computer", and choose orchestrator. Update later with `codex plugin marketplace upgrade`.
 
 Then connect each managed computer. **Pairing codes are recommended; no file copying**:
 
