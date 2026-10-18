@@ -219,6 +219,15 @@ for line in sys.stdin:
             send({'id': message['id'], 'result': {'thread': {'id': params['threadId']}}})
     elif method == 'thread/fork':
         send({'id': message['id'], 'result': {'thread': {'id': 'as-fork', 'forkedFromId': params['threadId']}}})
+    elif method == 'project/list':
+        listed = json.loads((here / 'projects.json').read_text(encoding='utf-8')) if (here / 'projects.json').exists() else []
+        send({'id': message['id'], 'result': {'data': listed, 'nextCursor': None}})
+    elif method == 'project/create':
+        log('create:%s:%s' % (params['name'], params['roots'][0]['path']))
+        send({'id': message['id'], 'result': {'project': {'id': 'new-' + params['name'], 'roots': params['roots']}}})
+    elif method == 'thread/metadata/update':
+        log('assign:%s:%s' % (params['threadId'], params['projectId']))
+        send({'id': message['id'], 'result': {}})
     elif method == 'turn/start':
         pending, thread = params['input'][0]['text'], params['threadId']
         send({'id': message['id'], 'result': {'turn': {'id': 'turn-1'}}})
@@ -519,6 +528,26 @@ class AppServerDispatcherTests(DispatcherTests):
         calls = self.call_log()
         self.assertEqual(calls.count('capabilities:{"experimentalApi": true}'), 2)
         self.assertEqual([c for c in calls if c.startswith('project:')], ['project:thread/start:proj-123'])
+
+    async def test_sessions_are_filed_into_the_sidebar_folders_through_app_server(self):
+        self.manager.config['codex_app_folders'] = True
+        tasks = str(Path(self.config['tasks_dir']).resolve())
+        (self.root / 'projects.json').write_text(json.dumps([
+            {'id': 'p-other', 'name': 'AgentFleet-其他', 'roots': [{'path': tasks.upper()}]}]), encoding='utf-8')
+        first = self.manager.submit('direct', None, 10, None, name='发布员')
+        await self.wait_for(first['task_id'], {'completed'})
+        self.assertIn('project:thread/start:p-other', self.call_log(), 'opened directly: AgentFleet-Other, found by root')
+        followup = self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])
+        await self.wait_for(followup['task_id'], {'completed'})
+        self.assertIn('assign:as-thread:p-other', self.call_log())
+        self.calls.unlink()
+        child = self.manager.submit('child', None, 10, None, name='剪辑', parent_task_id=first['task_id'])
+        self.manager.jobs[first['task_id']]['name'] = '主agent export'
+        self.manager.profile['agents']['主agent export'] = {'type': 'main'}
+        await self.wait_for(child['task_id'], {'completed'})
+        workspace = str(Path(tasks).parent)
+        self.assertIn('create:AgentFleet:' + workspace, self.call_log(), 'the main agent\'s folder is created when missing')
+        self.assertIn('project:thread/start:new-AgentFleet', self.call_log())
 
     async def test_worker_rules_come_from_the_editable_file(self):
         rules = self.root / 'worker-rules.md'

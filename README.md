@@ -123,7 +123,7 @@ AgentFleet\                    ← 工作区，桌面版侧边栏里的 “Agent
 └── worker-rules.md            ← 给子 agent 的规矩：只做交给它的事，不能再派任务，不碰令牌
 ```
 
-数据目录里是 `config.json`（设置）、`token.txt` 和 `connection.json`（访问令牌，不要分享）、`venv`（Python 环境）和 `state`（每个任务的记录，在 `state/jobs/<任务id>/`）。Claude 引擎的 worker 不在工作区留配置文件：设置和派任务服务的连接在每次运行时用命令行参数传给 `claude`。
+数据目录里是 `config.json`（设置）、`token.txt` 和 `connection.json`（访问令牌，不要分享）、`venv`（Python 环境）和 `state`（每个任务的记录，在 `state/jobs/<任务id>/`）。Claude 引擎的 worker 不在工作区留配置文件：设置和派任务服务的连接在每次运行时用命令行参数传给 `claude`。Claude 桌面版按会话的启动目录分组，所以 Claude 引擎的会话从这两个文件夹之一启动（各自仍在自己的文件夹里干活）。两种引擎的分组规则相同：主 agent 和它开的子任务在 “AgentFleet”，别的电脑直接开的会话在 “AgentFleet-其他”。
 
 机群看板的「文件」页和 `fleet.mjs files` / `fetch` 只能访问 `shared` 和 `AgentFleet-其他`。
 

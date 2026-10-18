@@ -68,6 +68,30 @@ def show_in_desktop(session_id):
         pass
 
 
+def rule_path(path):
+    """A path as a Claude permission rule spells it: absolute, forward slashes, /c/... for a Windows drive."""
+    path = Path(path).resolve().as_posix()
+    if len(path) > 1 and path[1] == ':':
+        path = '/' + path[0].lower() + path[2:]
+    return path
+
+
+def session_cwd(manager, job):
+    """Claude desktop groups sessions in its sidebar by their exact working directory, not by parent folder.
+    So a new session starts in one of the two Agent Fleet folders, by the same rule as Codex: the workspace
+    (AgentFleet) for the main agent and every session it opened, the tasks folder (AgentFleet-Other) for
+    sessions others opened directly. The task's own folder stays its working folder (--add-dir and the
+    instructions). A resumed session keeps the directory it was created in, or --resume would not find it."""
+    if job.get('resume_task_id'):
+        previous = manager.jobs.get(job['resume_task_id']) or {}
+        return previous.get('cwd') or previous.get('workspace') or job['workspace']
+    workspace = Path(job['workspace']).resolve()
+    tasks = Path(manager.config['tasks_dir']).resolve()
+    if workspace != tasks.parent and tasks.parent not in workspace.parents:
+        return str(workspace)  # a custom folder outside the Agent Fleet workspace
+    return str(tasks.parent if manager.sidebar_side(job) == 'main' else tasks)
+
+
 def command_for(manager, job, folder):
     config = manager.config
     executable = config.get('claude_executable') or shutil.which('claude')
@@ -88,25 +112,27 @@ def command_for(manager, job, folder):
     mcp_path = folder / 'claude-mcp.json'
     mcp_path.write_text(json.dumps(mcp), encoding='utf-8')
     command += ['--mcp-config', str(mcp_path)]
-    command += ['--settings', json.dumps({'permissions': {'deny': ['Read(./.codex/**)', 'Read(./.mcp.json)']}})]
+    job['cwd'] = session_cwd(manager, job)
+    own = rule_path(job['workspace'])
+    command += ['--settings', json.dumps({'permissions': {'deny': ['Read(./.codex/**)', 'Read(./.mcp.json)',
+                                                                   f'Read(/{own}/.codex/**)', f'Read(/{own}/.mcp.json)']}})]
     if config.get('sandbox', 'workspace-write') == 'danger-full-access' and config.get('auto_approve'):
         command += ['--dangerously-skip-permissions']
     else:
         # --restricted confines built-in file tools and removes command/code execution.
         # It is a CLI permission boundary, not an OS process sandbox (Windows has no Claude sandbox).
         command += ['--restricted', '--permission-mode', 'dontAsk',
-                    '--tools', 'Read,Glob,Grep,Edit,Write', '--allowedTools', 'Edit(./**)']
+                    '--tools', 'Read,Glob,Grep,Edit,Write', '--allowedTools', f'Edit(/{own}/**)']
         if main:
             command += ['--allowedTools', 'mcp__codex_tasks__*']
+    if Path(job['cwd']).resolve() != Path(job['workspace']).resolve():
+        command += ['--add-dir', job['workspace']]
     shared = config.get('shared_dir')
     if shared:
         command += ['--add-dir', shared]
         # Explicit permission rule for the shared directory, including Windows drive normalization.
-        path = Path(shared).resolve().as_posix()
-        if len(path) > 1 and path[1] == ':':
-            path = '/' + path[0].lower() + path[2:]
         if '--restricted' in command:
-            command += ['--allowedTools', f'Edit(/{path}/**)']
+            command += ['--allowedTools', f'Edit(/{rule_path(shared)}/**)']
     if job.get('resume_task_id'):
         command += ['--resume', job['thread_id']]
         if desktop_holds(job['thread_id']):
@@ -131,10 +157,19 @@ def command_for(manager, job, folder):
                     ('full access' if '--dangerously-skip-permissions' in command else 'restricted file tools; no shell or code execution') +
                     '. Current main agent name: ' + json.dumps(manager.config.get('main_agent_name') or job.get('name'), ensure_ascii=False) +
                     '. These current settings override any older name/engine/permission description in preserved workspace instructions.')
-            command += ['--append-system-prompt', instructions.read_text(encoding='utf-8-sig') + note]
+            command += ['--append-system-prompt', instructions.read_text(encoding='utf-8-sig') + note + folder_note(job)]
+        elif folder_note(job):
+            command += ['--append-system-prompt', folder_note(job).strip()]
     else:
-        command += ['--append-system-prompt', manager.worker_rules()]
+        command += ['--append-system-prompt', manager.worker_rules() + folder_note(job)]
     return command
+
+
+def folder_note(job):
+    if Path(job['cwd']).resolve() == Path(job['workspace']).resolve():
+        return ''
+    return ('\nYour working folder is ' + json.dumps(str(job['workspace']), ensure_ascii=False) +
+            ': create and edit your files there, using absolute paths (the process starts in a parent folder).')
 
 
 async def run(manager, job):
@@ -148,7 +183,7 @@ async def run(manager, job):
     options = {'creationflags': 0x08000000} if os.name == 'nt' else {'start_new_session': True}
     with (folder / 'stderr.log').open('wb') as error_log, (folder / 'events.jsonl').open('wb') as event_log:
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(*command,
-            cwd=job['workspace'], stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            cwd=job.get('cwd') or job['workspace'], stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=error_log, env=env, limit=33_554_432, **options))
         try:
             process = await asyncio.shield(spawn)

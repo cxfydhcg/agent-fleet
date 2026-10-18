@@ -29,7 +29,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 import uvicorn
 import claude_executor
-from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state
+from tools.codex_app_folder import STATE_FILE, desktop_app_running, same_path, sort_into_folders, write_state
 
 
 def now():
@@ -347,6 +347,7 @@ class TaskManager:
         self.roots = [Path(p).resolve() for p in config['allowed_roots']]
         self.jobs = {}
         self.processes = {}
+        self.codex_projects = {}  # sidebar folder root -> Codex app-server project id
         self.queue = asyncio.Queue()
         self.worker = None
         self.closing = False
@@ -837,13 +838,41 @@ class TaskManager:
         return {'main': (names.get('main') or self.text['folder_main'], str(self.root.parent)),
                 'other': (names.get('other') or self.text['folder_other'], str(self.root))}
 
+    def sidebar_side(self, job):
+        """Which desktop sidebar folder a session belongs in, for both engines: 'main' (AgentFleet) for the main
+        agent and every session it opened, 'other' (AgentFleet-Other) for sessions others opened directly."""
+        return 'main' if not self.is_worker(self.session_root(job)) or self.session_owner(job) else 'other'
+
+    async def sidebar_project(self, connection, job):
+        """Codex app-server project id of the job's sidebar folder, found by root (created if missing), or None.
+        Assigning through app-server works while the desktop app is open, unlike editing its state file."""
+        folders = self.app_folders()
+        if not folders:
+            return self.config.get('codex_project_id')
+        name, root = folders[self.sidebar_side(job)]
+        if root not in self.codex_projects:
+            try:
+                listed = await connection.request('project/list', {'limit': 200})
+                project = next((p for p in listed.get('data') or [] if any(
+                    same_path(r.get('path') or '', root) for r in p.get('roots') or [])), None)
+                if not project:
+                    created = await connection.request('project/create', {
+                        'name': name, 'roots': [{'path': root}], 'idempotencyKey': 'agent-fleet-' + root.lower()})
+                    project = created.get('project') or created
+            except AppServerError:
+                return None  # an older Codex without the project API: the state-file filing still applies
+            if not (project or {}).get('id'):
+                return None
+            self.codex_projects[root] = project['id']
+        return self.codex_projects[root]
+
     def folder_threads(self):
         """Codex threads by folder side, forks and their originals included."""
         sides = {'main': [], 'other': []}
         for job in list(self.jobs.values()):
             if job.get('engine') == 'claude':
                 continue
-            side = 'main' if not self.is_worker(self.session_root(job)) or self.session_owner(job) else 'other'
+            side = self.sidebar_side(job)
             sides[side] += [job[k] for k in ('thread_id', 'forked_from_thread_id') if job.get(k)]
         return sides
 
@@ -1153,11 +1182,11 @@ class TaskManager:
         connection.notification_handlers.append(on_notification)
         turn, quiet = None, False
         try:
-            # Optional: file new sessions under a Codex project. projectId is part of app-server's experimental API.
-            project = self.config.get('codex_project_id')
+            # File sessions under the sidebar folders (or one configured project): app-server's experimental API.
+            experimental = bool(self.app_folders() or self.config.get('codex_project_id'))
             await connection.request('initialize', {'clientInfo': {
                 'name': 'codex_task_dispatcher', 'title': 'Codex Task Dispatcher', 'version': '2.0'},
-                **({'capabilities': {'experimentalApi': True}} if project else {})})
+                **({'capabilities': {'experimentalApi': True}} if experimental else {})})
             await connection.notify('initialized')
             try:
                 await self.check_quota(connection, job, log_line)
@@ -1166,9 +1195,15 @@ class TaskManager:
                 raise
             self.mark_running(job)
             suffix = self.title_suffix(job)
+            project = await self.sidebar_project(connection, job) if experimental else None
             if job.get('resume_task_id'):
                 forked = await self.resume_or_fork(connection, job, policy)
                 name = None if forked else self.changed_title(job)
+                if project and self.app_folders():
+                    try:  # also files sessions started before this, and forks
+                        await connection.request('thread/metadata/update', {'threadId': job['thread_id'], 'projectId': project})
+                    except AppServerError:
+                        pass
             else:
                 started = await connection.request('thread/start', {
                     'cwd': job['workspace'], **policy, **({'model': job['model']} if job.get('model') else {}),

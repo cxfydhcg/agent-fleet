@@ -124,7 +124,7 @@ AgentFleet\                    ← workspace, "AgentFleet" in the desktop app si
 └── worker-rules.md            ← rules for sub-agents: do only their task, never dispatch, never touch tokens
 ```
 
-The data directory holds `config.json` (settings), `token.txt` and `connection.json` (access token; never share), `venv` (Python) and `state` (one record per task in `state/jobs/<task id>/`). A Claude-engine worker keeps no config file in the workspace: its settings and dispatcher connection are passed to `claude` as command-line arguments on every run.
+The data directory holds `config.json` (settings), `token.txt` and `connection.json` (access token; never share), `venv` (Python) and `state` (one record per task in `state/jobs/<task id>/`). A Claude-engine worker keeps no config file in the workspace: its settings and dispatcher connection are passed to `claude` as command-line arguments on every run. Claude desktop groups sessions by the folder they start in, so Claude-engine sessions start in one of these two folders (each still working in its own folder). Both engines group the same way: the main agent and the sub-tasks it opens under "AgentFleet", sessions other computers open directly under "AgentFleet-Other".
 
 The fleet board's Files tab and `fleet.mjs files` / `fetch` reach only `shared` and `AgentFleet-Other`.
 

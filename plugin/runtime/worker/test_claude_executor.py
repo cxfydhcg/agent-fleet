@@ -15,10 +15,11 @@ from claude_executor import command_for, desktop_holds
 
 
 FAKE_CLAUDE = r'''
-import json, pathlib, sys, time
+import json, os, pathlib, sys, time
 sys.stdout.reconfigure(encoding='utf-8')
 args=sys.argv[1:]
 pathlib.Path(__file__).with_name('calls.json').write_text(json.dumps(args),encoding='utf-8')
+pathlib.Path(__file__).with_name('cwd.txt').write_text(os.getcwd(),encoding='utf-8')
 prompt=sys.stdin.buffer.read().decode('utf-8')
 session=args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
 print(json.dumps({'type':'system','subtype':'init','session_id':session}),flush=True)
@@ -155,6 +156,36 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SidebarFolderTests(ClaudeExecutorTests):
+    """Claude desktop groups by exact working directory, so sessions start in the two Agent Fleet folders."""
+
+    def cwd(self):
+        return Path((self.root / 'cwd.txt').read_text(encoding='utf-8')).resolve()
+
+    async def test_main_agent_and_its_sub_tasks_start_in_the_workspace_others_in_the_tasks_folder(self):
+        main = await self.finished(self.manager.submit('main turn', str(self.main), 10, None, name='主agent export')['task_id'])
+        self.assertEqual(main['status'], 'completed')
+        self.assertEqual(self.cwd(), self.root)
+        args = json.loads((self.root / 'calls.json').read_text(encoding='utf-8'))
+        self.assertIn(str(self.main), args[args.index('--add-dir') + 1])
+        self.assertTrue(any('Your working folder is' in a for a in args))
+        child = self.manager.submit('child task', None, 10, None, name='child', parent_task_id=main['task_id'])
+        await self.finished(child['task_id'])
+        self.assertEqual(self.cwd(), self.root, 'a session the main agent opened sits with it')
+        sub = await self.finished(self.manager.submit('sub task', None, 10, None, name='helper')['task_id'])
+        self.assertEqual(self.cwd(), Path(self.config['tasks_dir']).resolve(), 'opened directly by someone else')
+        args = json.loads((self.root / 'calls.json').read_text(encoding='utf-8'))
+        own = claude_executor.rule_path(sub['workspace'])
+        self.assertIn(f'Edit(/{own}/**)', args, 'restricted sessions may edit only their own folder')
+        self.assertNotIn('Edit(./**)', args)
+
+    async def test_resumed_sessions_keep_their_original_directory(self):
+        old = await self.finished(self.manager.submit('old', None, 10, None, name='legacy')['task_id'])
+        old.pop('cwd')  # a session created before this change ran in its own folder
+        await self.finished(self.manager.submit('again', None, 10, None, resume_task_id=old['task_id'])['task_id'])
+        self.assertEqual(self.cwd(), Path(old['workspace']).resolve())
 
 
 class ClaudeDesktopTests(ClaudeExecutorTests):
