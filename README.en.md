@@ -4,7 +4,7 @@
 
 ![agent-fleet overview](docs/overview.en.svg)
 
-One AI agent directs AI agents on many computers. It doesn't build a new agent: it adds communication, scheduling and management across computers on top of Codex or Claude Code. Each computer can use either one, and you can mix them.
+One AI agent directs AI agents on many computers. It doesn't build a new agent: it adds communication, scheduling and management across computers on top of Codex or Claude Code. Each computer can use either engine or both, and you can mix them.
 
 ```
 You (phone / computer)
@@ -21,7 +21,7 @@ You (phone / computer)
 ## Requirements
 
 - Windows 10/11 or macOS
-- Codex or Claude Code on each computer. The orchestrator can use either; which one a managed computer works with is chosen during setup, independently of the one you set it up from
+- Codex, Claude Code, or both on each computer. The orchestrator can use either; which one a managed computer works with is chosen during setup, independently of the one you set it up from
 - The computers can reach each other: on the same local network, or all on [Tailscale](https://tailscale.com)
 
 Everything else (Node.js, Python, the runtime) is handled during setup.
@@ -54,7 +54,7 @@ Claude Code: type in the chat box
 >
 > **You**: Be directed; it's for video editing
 >
-> **AI**: How should this computer be reachable: only this computer (default), trusted local network, or Tailscale encrypted connection? Should sub-tasks be able to operate the desktop and browsers (full access)? What should the main agent be called, and do you want a management name (e.g. "Manager Cris")?
+> **AI**: How should this computer be reachable: only this computer (default), trusted local network, or Tailscale encrypted connection? Should sub-tasks be able to operate the desktop and browsers (full access)? Choose Codex, Claude Code, or both. What should each main agent be called, and do you want a management name (e.g. "Manager Cris")?
 >
 > **You**: Local network, full access, management name Manager Cris
 >
@@ -141,9 +141,26 @@ The fleet board's Files tab and `fleet.mjs files` / `fetch` reach only `shared` 
 
 - **The token is control of that computer.** Keep it on your own computers; don't send it to anyone or paste it into a chat.
 - **Opening an agent's session in a desktop app**: fine in Codex and Claude. While you hold it, new tasks for that agent continue in a fork with the full history, so you are not interrupted; the Codex desktop app holds every session it opened until it fully quits (set `fork_when_busy: false` to fail instead). To just watch progress, use the read-only dashboard, which is always current.
-- **Each computer runs one task at a time**, so tasks don't fight over the mouse and keyboard.
-- **No new tasks start while the Codex quota is used up**: the queue waits in order until it resets and notifies the orchestrator.
+- **Each engine runs one task at a time**. Both engines can run concurrently; main agents should coordinate work sharing the desktop.
+- **Quota pauses affect only that engine**: its queue waits in order until reset and notifies the orchestrator; the other engine continues.
 - Sub-agents are told not to touch the dispatcher or the token, but that is only a rule: with full access they can technically read any file on the computer.
+
+
+## Two engines on one computer
+
+Choose Codex, Claude Code, or both during setup, and give each main agent a name. One worker shares a service, port and token. Each engine runs one task at a time; the two engines can work concurrently and their quota pauses are independent.
+
+```text
+node <plugin-root>/scripts/setup.mjs --role worker --engines codex,claude --main-agent-name "Main agent" --second-main-agent-name "Claude main agent" --restricted --plan
+```
+
+Remove `--plan` to install. Windows PowerShell entries accept `-Engines codex,claude`, `-MainAgentName` and `-SecondMainAgentName`; macOS entries use the same `--` options shown above. `--engine codex` / `--engine claude` still selects a single engine. The owner must sign in to both CLIs for a dual installation.
+
+Fresh dual installs create `main-codex/AGENTS.md` (with its own `.codex/config.toml`) and `main-claude/CLAUDE.md`. Single-engine installs keep `main-agent`. Reruns preserve each id, name, folder and instruction file. Defaults are “Main agent” and “Claude main agent” in English, “主agent export” and “Claude主agent” in Chinese.
+
+From the orchestrator session, use `fleet.mjs agent <computer> "Claude main agent" "Organize files"`. The name selects the engine. `export <computer>` still selects the first main; `check <computer> [name]` checks one main, or every main when omitted. `overview` lists all engines and mains. Other sessions cannot gain main-agent rights by using a main's name.
+
+Config adds `engines` and `main_agents` (each with `name`, `engine`, `id`, `workspace`). Legacy `executor`, `main_agent_name`, `main_agent_id`, `main_agent_workspaces` describe the first engine. Configs without `engines` retain single-engine behavior. Resumes keep the original session engine; children inherit their main's engine, and direct submissions can explicitly select an enabled `engine`. Sessions appear in the desktop app for the engine that actually ran them.
 
 ## Advanced settings
 

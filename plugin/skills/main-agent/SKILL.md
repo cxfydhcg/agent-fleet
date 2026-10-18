@@ -42,3 +42,7 @@ For viewing use the dashboard URL from setup (default
 `http://127.0.0.1:8765/dashboard`). It asks for the private worker token; direct
 the user to the local token file without printing its contents. Do not open live
 Codex sessions in the desktop app, which can lock them against continuation.
+
+## Two local mains / 本机两个主 Agent
+
+Read the local registry or profile's `main_agents` and address the requested name with `fleet.mjs agent <computer> "<main name>" "<goal>"`; for example “Claude主agent”. `export` continues to mean the first main. Both names require the registered orchestrator session; other sessions use their own agent. `check <computer> [name]` checks one or all. Each main has its own id, workspace, engine and queue; children and resumed sessions keep their originating engine. 两个引擎可并行，额度分别暂停；共享桌面任务须协调。

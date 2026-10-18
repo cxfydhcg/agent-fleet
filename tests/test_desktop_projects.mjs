@@ -43,6 +43,17 @@ test('localized real directories register immediately and repeat setup reuses th
   }
 });
 
+test('dual workers register Codex projects and import Claude sessions automatically regardless of default', async () => {
+  for (const engines of [['codex', 'claude'], ['claude', 'codex']]) {
+    const app = fakeApp();
+    const result = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engines, engine: engines[0] } }, app.runtime);
+    assert.equal(result.projects.codex.status, 'registered');
+    assert.equal(result.projects.claude.status, 'automatic');
+    assert.equal(result.projects.claude.projects.other.app, 'claude');
+    assert.ok(app.launches.every(url => url.startsWith('codex:')));
+  }
+});
+
 test('registration remains pending until confirmed by the app', async () => {
   const app = fakeApp({ pending: true });
   const report = await ensureDesktopProjects({ workspace, workerConfig }, app.runtime);

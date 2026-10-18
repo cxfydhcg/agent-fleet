@@ -36,7 +36,7 @@
 //   node fleet.mjs export   <电脑> <消息> [--title=任务名] [--from=会话]
 //                                                     管理端会话：发给那台电脑的主 Agent。其他会话：发给本会话自己的 Agent，
 //                                                     第一次用 --title 的名字新建（重名自动加序号），之后同一个会话一直续接它。
-//   node fleet.mjs check    <电脑>                    安装检查：让主 Agent 只回复 OK（不用工具、不派子任务）。任何会话都可以用，
+//   node fleet.mjs check    <电脑> [主Agent名字]       安装检查：一个或全部主 Agent 只回复 OK。任何会话都可以用，
 //                                                     消息固定，不能夹带别的内容。
 //   node fleet.mjs submit   <电脑> <prompt> [--name=会话名] [--wait] [--model=模型] [--effort=档位]   直接开新任务（特殊情况用）
 //   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
@@ -63,6 +63,8 @@ const fleetHome = process.env.AGENT_FLEET_HOME || join(homedir(), ".agent-fleet"
 const registryPath = join(fleetHome, "computers.json");
 const registry = existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, "utf8")) : { computers: {} };
 const mainAgentName = (pc) => pc.main_agent_name;
+const mainAgents = pc => pc.main_agents ?? [{ name: pc.main_agent_name, id: pc.main_agent_id, engine: pc.engine, workspace: pc.agents?.[pc.main_agent_name]?.workspace }];
+const isMain = (pc, name) => mainAgents(pc).some(m => m.name === name || m.id === name);
 const saveRegistry = () => {
   mkdirSync(fleetHome, { recursive: true });
   writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
@@ -81,7 +83,7 @@ function resolveComputer(key) {
   if (key == null || Object.hasOwn(registry.computers, key)) return key;
   const wanted = key.trim().toLowerCase();
   return Object.keys(registry.computers).find((n) => registry.computers[n].manager_name?.toLowerCase() === wanted ||
-                                                     registry.computers[n].main_agent_id === key.trim()) ?? key;
+                                                     mainAgents(registry.computers[n]).some(m => m.id === key.trim())) ?? key;
 }
 const computer = cmd === "add-computer" ? computerArg : resolveComputer(computerArg);
 
@@ -159,7 +161,7 @@ function summarize(name, profile, online) {
     : (m.gpus ?? []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join(", ") || T("无独立显卡", "no dedicated GPU");
   const pc = registry.computers[name] ?? {};
   return {
-    computer: name, manager_name: pc.manager_name ?? null, main_agent_id: pc.main_agent_id ?? null,
+    computer: name, engines: profile?.engines ?? pc.engines ?? [pc.engine], main_agents: profile?.main_agents ?? mainAgents(pc), manager_name: pc.manager_name ?? null, main_agent_id: pc.main_agent_id ?? null,
     online, ...(online ? {} : { last_seen: profile?._fetched_at ?? null }),
     hardware: [m.cpu, m.ram_gb && T(`${m.ram_gb}GB 内存`, `${m.ram_gb}GB RAM`), gpu, m.os].filter(Boolean).join(" · ") || null,
     network: [m.egress_country && T(`出口 ${m.egress_country}`, `egress ${m.egress_country}`),
@@ -167,6 +169,7 @@ function summarize(name, profile, online) {
     role: c.role ?? null, notes: c.notes ?? null, software: c.software ?? [], accounts: c.accounts ?? [],
     version: profile?.version ?? null, engine: profile?.engine ?? pc.engine ?? null,
     busy: profile?.busy ?? null,
+    quota_wait: profile?.quota_wait ?? null,
     permissions: profile?.permissions ? (profile.permissions.full_access ? T("完全访问（可操作桌面和应用）", "full access (can operate the desktop and apps)")
       : T(`受限（${profile.permissions.sandbox}，需要批准的操作如 Computer Use 会被拒绝）`, `restricted (${profile.permissions.sandbox}; anything needing approval, such as Computer Use, is refused)`)) : null,
     agents: (profile?.agents ?? []).map((a) => ({ name: a.name, type: a.type, role: a.role, tags: a.tags, status: a.status })),
@@ -262,6 +265,14 @@ function addComputer(info, isThisComputer, source) {
                     `The management name "${managerName}" is invalid or already used by ${managerNameConflict(managerName, renamedFrom || info.name)}.`));
     process.exit(2);
   }
+  const incomingMains = info.main_agents ?? [{ name: info.main_agent_name, id: info.main_agent_id, engine: info.engine, workspace: info.main_agent_workspace }];
+  const engines = info.engines ?? [info.engine];
+  if (!Array.isArray(incomingMains) || !incomingMains.length || !Array.isArray(engines) || !engines.length || new Set(engines).size !== engines.length || engines.some(e => !['codex', 'claude'].includes(e)) ||
+      incomingMains.some(m => !validAgentName(m.name) || typeof m.id !== 'string' || !m.id.trim() || !engines.includes(m.engine)) ||
+      incomingMains.length !== engines.length || new Set(incomingMains.map(m => m.engine)).size !== engines.length ||
+      new Set(incomingMains.map(m => m.name)).size !== incomingMains.length || new Set(incomingMains.map(m => m.id)).size !== incomingMains.length ||
+      engines[0] !== info.engine || !incomingMains.some(m => m.id === info.main_agent_id && m.name === info.main_agent_name && m.engine === info.engine))
+    throw new Error(T('接入信息的主 Agent 或引擎无效。', 'Invalid main agents or engines in connection info.'));
   const oldMain = mainAgentName(existing);
   const chosenMain = info.main_agent_name.trim();
   if (chosenMain !== oldMain && Object.hasOwn(existing.agents ?? {}, chosenMain)) {
@@ -269,8 +280,6 @@ function addComputer(info, isThisComputer, source) {
     process.exit(2);
   }
   const tokenFile = join(fleetHome, "tokens", `${info.name}.txt`);
-  mkdirSync(join(fleetHome, 'tokens'), { recursive: true });
-  writeFileSync(tokenFile, info.token.trim() + "\n");
   const engine = info.engine;
   const agents = { ...(existing.agents ?? {}) };
   if (existing.engine && engine !== existing.engine) {
@@ -280,14 +289,22 @@ function addComputer(info, isThisComputer, source) {
       agents[name] = metadata;
     }
   }
-  if (chosenMain !== oldMain && Object.hasOwn(agents, oldMain)) {
-    agents[chosenMain] = agents[oldMain];
-    delete agents[oldMain];
+  for (const main of incomingMains) {
+    const old = mainAgents(existing).find(m => m.id === main.id);
+    if (!mainAgents(existing).some(m => m.name === main.name) && Object.hasOwn(agents, main.name))
+      throw new Error(T('主 Agent 名字与现有 Agent 冲突。', 'Main agent name conflicts with an existing agent.'));
+    if (old && old.name !== main.name && agents[old.name]) {
+      if (agents[main.name]) throw new Error(T('主 Agent 名字与现有 Agent 冲突。', 'Main agent name conflicts with an existing agent.'));
+      agents[main.name] = agents[old.name]; delete agents[old.name];
+    }
+    agents[main.name] = { ...agents[main.name], ...(main.workspace ? { workspace: main.workspace } : {}), engine: main.engine, id: main.id };
   }
   agents[chosenMain] = { ...(agents[chosenMain] ?? {}), ...(info.main_agent_workspace ? { workspace: info.main_agent_workspace } : {}) };
+  mkdirSync(join(fleetHome, 'tokens'), { recursive: true });
+  writeFileSync(tokenFile, info.token.trim() + "\n");
   if (renamedFrom) delete registry.computers[renamedFrom];
   registry.computers[info.name] = {
-    ...existing, engine, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
+    ...existing, engine, engines, main_agents: incomingMains, main_agent_name: chosenMain, description: info.description ?? existing.description ?? "",
     main_agent_id: info.main_agent_id, ...(managerName ? { manager_name: managerName } : {}),
     url: isThisComputer ? info.local_url : info.tailscale_url || info.lan_url,
     local_url: info.local_url, tailscale_url: info.tailscale_url, lan_url: info.lan_url, token_file: tokenFile,
@@ -422,7 +439,7 @@ if (cmd === "pair") {
 }
 if (cmd === "computers") {
   out(Object.fromEntries(Object.entries(registry.computers).map(([n, pc]) => [n, { description: pc.description, manager_name: pc.manager_name ?? null,
-    main_agent_id: pc.main_agent_id ?? null, main_agent_name: mainAgentName(pc), agents: Object.keys(pc.agents) }])));
+    engines: pc.engines ?? [pc.engine], main_agents: mainAgents(pc), main_agent_id: pc.main_agent_id ?? null, main_agent_name: mainAgentName(pc), agents: Object.keys(pc.agents) }])));
   process.exit(0);
 }
 if (cmd === "overview") {
@@ -716,18 +733,41 @@ function syncMain(main) {
   if (!pc.manager_name && main.manager_name && !managerNameConflict(main.manager_name, computer)) pc.manager_name = main.manager_name;
 }
 
-async function talkMain(prompt) {
-  const main = (await call("get_profile", {})).main_agent;
+function syncMains(profile) {
+  const previous = mainAgents(pc);
+  const available = profile.main_agents ?? (profile.main_agent ? [profile.main_agent] : previous);
+  for (const main of available) {
+    const old = previous.find(m => m.id === main.id);
+    if (old && old.name !== main.name && Object.hasOwn(pc.agents, old.name)) {
+      pc.agents[main.name] = { ...pc.agents[old.name], ...pc.agents[main.name] };
+      delete pc.agents[old.name];
+    }
+  }
+  pc.main_agents = available;
+  pc.engines = profile.engines ?? pc.engines ?? [pc.engine];
+  if (profile.main_agent) syncMain(profile.main_agent);
+  return available;
+}
+
+async function talkMain(prompt, requested) {
+  const profile = await call("get_profile", {});
+  const known = mainAgents(pc).find(m => m.name === requested || m.id === requested);
+  const available = syncMains(profile);
+  const main = requested ? available.find(m => m.id === known?.id || m.name === requested || m.id === requested) : profile.main_agent;
+  if (!main) throw new Error(T('找不到该主 Agent。', 'Main agent was not found.'));
   if (!main?.id || !validAgentName(main.name)) throw new Error(T('工作端未提供主 Agent ID 和名称，请重新运行设置。', 'Worker did not provide a main agent ID and name; rerun setup.'));
-  syncMain(main);
   if (pc.manager_name !== (main.manager_name ?? undefined)) await call("update_computer_profile", { manager_name: pc.manager_name ?? "" });
-  const name = mainAgentName(pc);
+  const name = main.name;
   const started = main.task_id ? await continueWhenFree(main.task_id, prompt)
     : await call("submit_task", { prompt, name, ...(main.workspace ? { workspace: main.workspace } : {}) });
   return report(name, started, (pc.agents[name] ??= {}));
 }
 
-function talk(agentName, prompt) {
+async function talk(agentName, prompt) {
+  const known = mainAgents(pc).find(m => m.name === agentName || m.id === agentName);
+  const available = syncMains(await call("get_profile", {}));
+  const main = available.find(m => m.id === known?.id || m.name === agentName || m.id === agentName);
+  if (main) return isOrchestrator ? talkMain(prompt, main.id) : talkMainOrOwn(prompt);
   return agentName === mainAgentName(pc) || (pc.manager_name && agentName === pc.manager_name) ? talkMainOrOwn(prompt) : talkNamed(agentName, prompt);
 }
 
@@ -738,7 +778,7 @@ async function ownAgentName() {
   const owned = (pc.session_agents ??= {});
   if (owned[session]) return owned[session];
   const fallback = `${basename(process.cwd()) || "session"} · ${session.slice(0, 8)}`.slice(0, 100);
-  const taken = new Set([...Object.keys(pc.agents), ...(await namedSessions()).keys(), mainAgentName(pc), ...Object.values(owned)]);
+  const taken = new Set([...Object.keys(pc.agents), ...(await namedSessions()).keys(), ...mainAgents(pc).map(m => m.name), ...Object.values(owned)]);
   const title = option("title")?.trim();
   let name = fallback;
   if (title) {
@@ -876,7 +916,7 @@ switch (cmd) {
     out(await call("update_computer_profile", { role: option("role"), notes: option("notes"), software: list(option("software")) }));
     break;
   case "describe-agent":
-    out(await call("register_agent", { name: rest[0], role: option("role"), tags: list(option("tags")), agent_type: option("type") ?? (rest[0] === mainAgentName(pc) ? "main" : "resident"),
+    out(await call("register_agent", { name: rest[0], role: option("role"), tags: list(option("tags")), agent_type: option("type") ?? (isMain(pc, rest[0]) ? "main" : "resident"),
                                        can_dispatch: toggle("can-dispatch"), locked: toggle("locked") }));
     break;
   case "remove-agent":
@@ -932,11 +972,15 @@ End with one line only: version=<new version>`);
     if (done.status !== "completed" || !restarted) process.exitCode = 1;
     break;
   }
-  case "check":
+  case "check": {
     // Setup verifies the main agent from whatever session runs it, so this one fixed message is exempt from the
     // orchestrator-only rule; it cannot carry anything else.
-    await talkMain("Installation check: reply with exactly OK. Do not use tools or dispatch child tasks.");
+    syncMains(await call("get_profile", {}));
+    if (rest[0] && !isMain(pc, rest[0])) throw new Error(T('找不到该主 Agent。', 'Main agent was not found.'));
+    for (const main of (rest[0] ? mainAgents(pc).filter(m => m.name === rest[0] || m.id === rest[0]) : mainAgents(pc)))
+      await talkMain("Installation check: reply with exactly OK. Do not use tools or dispatch child tasks.", main.id);
     break;
+  }
   case "set-manager-name": {
     const name = (rest[0] ?? "").trim();
     const taken = name && managerNameConflict(name, computer);
@@ -957,7 +1001,9 @@ End with one line only: version=<new version>`);
     break;
   case "submit": {
     const name = option("name");
-    const started = await call("submit_task", { prompt: rest.join(" "), ...(name ? { name } : {}), ...modelChoice() });
+    if (name && isMain(pc, name)) requireOrchestrator();
+    const engine = option("engine");
+    const started = await call("submit_task", { prompt: rest.join(" "), ...(name ? { name } : {}), ...(engine ? { engine } : {}), ...modelChoice() });
     out(flag("--wait") ? await wait(started.task_id) : started);
     break;
   }

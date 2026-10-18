@@ -10,7 +10,7 @@ import { once } from 'node:events';
 const FLEET = resolve('plugin/skills/call-agent/fleet.mjs');
 
 // A dispatcher that finishes every task at once and records what was started.
-async function fakeDispatcher() {
+async function fakeDispatcher(mains = [{ id: 'main-1', name: '主agent export' }], trackMains = false) {
   const started = [], tasks = [], prompts = [];
   const server = createServer(async (req, res) => {
     let body = '';
@@ -20,14 +20,16 @@ async function fakeDispatcher() {
     if (method !== 'tools/call') return reply({});
     const args = params.arguments, tool = params.name;
     const result = (value) => reply({ structuredContent: { result: value } });
-    if (tool === 'get_profile') return result({ main_agent: { id: 'main-1', name: '主agent export' }, agents: [] });
+    if (tool === 'get_profile') return result({ main_agent: mains[0], main_agents: mains, engines: ['codex', 'claude'], agents: [] });
     if (tool === 'list_tasks') return result({ tasks });
     if (tool === 'submit_task' || tool === 'continue_task') {
       prompts.push(args.prompt);
-      const task = { task_id: `t${tasks.length + 1}`, name: args.name ?? tasks.find((t) => t.task_id === args.task_id)?.name,
+      const main = trackMains && mains.find(m => m.name === args.name || (args.task_id && m.task_id === args.task_id));
+      const task = { task_id: `t${tasks.length + 1}`, name: main?.name ?? args.name ?? tasks.find((t) => t.task_id === args.task_id)?.name,
                      thread_id: `th-${args.name ?? args.task_id}`, status: 'completed', result: 'ok' };
       tasks.unshift(task);
-      started.push({ tool, name: task.name, ...(args.task_id ? { continued: args.task_id } : {}) });
+      if (main) main.task_id = task.task_id;
+      started.push({ tool, name: task.name, ...(args.workspace ? { workspace: args.workspace } : {}), ...(args.task_id ? { continued: args.task_id } : {}) });
       return result({ task_id: task.task_id });
     }
     if (tool === 'get_task') return result(tasks.find((t) => t.task_id === args.task_id));
@@ -45,6 +47,58 @@ function fleet(args, { cwd, env }) {
   child.stderr.on('data', (d) => { stderr += d; });
   return once(child, 'exit').then(([code]) => ({ code, stdout, stderr }));
 }
+
+test('second main agent uses its identity and workspace, is orchestrator-only, and check covers both', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fleet-dual-'));
+  const mains = [{ id: 'main-code', name: 'Code 经理', engine: 'codex', workspace: join(root, 'main-codex') },
+                 { id: 'main-claude', name: 'Claude 经理', engine: 'claude', workspace: join(root, 'main-claude') }];
+  const worker = await fakeDispatcher(mains, true);
+  const home = join(root, 'registry'); mkdirSync(join(home, 'tokens'), { recursive: true });
+  const tokenFile = join(home, 'tokens', 'fixture.txt'); writeFileSync(tokenFile, 'fixture-only');
+  writeFileSync(join(home, 'computers.json'), JSON.stringify({ orchestrator_session: 'owner', computers: {
+    dual: { main_agent_name: mains[0].name, main_agent_id: mains[0].id, main_agents: mains,
+            engine: 'codex', engines: ['codex', 'claude'], url: worker.url, token_file: tokenFile, agents: {} } } }));
+  const env = { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en', CLAUDE_CODE_SESSION_ID: 'owner' }; delete env.CODEX_THREAD_ID;
+  t.after(() => { worker.server.close(); worker.server.closeAllConnections(); rmSync(root, { recursive: true, force: true }); });
+  const run = (...args) => fleet(args, { cwd: root, env });
+  let result = await run('agent', 'dual', mains[1].name, 'hello');
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(worker.started.at(-1), { tool: 'submit_task', name: mains[1].name, workspace: mains[1].workspace });
+  result = await run('agent', 'dual', mains[1].id, 'continue');
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(worker.started.at(-1).name, mains[1].name);
+  result = await fleet(['agent', 'dual', mains[1].name, 'from another session'], { cwd: root,
+    env: { ...env, CLAUDE_CODE_SESSION_ID: 'other' } });
+  assert.equal(result.code, 0, result.stderr);
+  assert.notEqual(worker.started.at(-1).name, mains[1].name);
+  const count = worker.started.length;
+  result = await run('check', 'dual');
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(worker.started.slice(count).map(s => s.name), mains.map(m => m.name));
+  result = await run('check', 'dual', mains[1].name);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(worker.started.at(-1).name, mains[1].name);
+  const unknown = await run('check', 'dual', 'unknown');
+  assert.notEqual(unknown.code, 0);
+  assert.match(unknown.stderr, /Main agent was not found/);
+  result = await run('export', 'dual', 'default');
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(worker.started.at(-1).name, mains[0].name);
+  const oldName = mains[1].name;
+  mains[1].name = 'Claude renamed';
+  result = await fleet(['agent', 'dual', mains[1].name, 'new name from another session'], {
+    cwd: root, env: { ...env, CLAUDE_CODE_SESSION_ID: 'other' } });
+  assert.equal(result.code, 0, result.stderr);
+  assert.notEqual(worker.started.at(-1).name, mains[1].name);
+  result = await run('agent', 'dual', mains[1].name, 'renamed main');
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(worker.started.at(-1).tool, 'continue_task');
+  assert.equal(worker.started.at(-1).name, mains[1].name);
+  const pc = JSON.parse(readFileSync(join(home, 'computers.json'), 'utf8')).computers.dual;
+  assert.equal(pc.main_agent_id, mains[0].id);
+  assert.equal(pc.main_agents[1].id, mains[1].id);
+  assert.equal(pc.agents[oldName], undefined);
+});
 
 test('only the registered orchestrator session reaches the main agent; other sessions get their own agent', async (t) => {
   const worker = await fakeDispatcher();
@@ -80,7 +134,7 @@ test('only the registered orchestrator session reaches the main agent; other ses
   assert.ok(!worker.started.slice(1).some((s) => s.name === '主agent export'), 'no other session reached the main agent');
 
   // The installation check reaches the main agent from any session, and carries only its fixed message.
-  run = await fleet(['check', 'pc-1', 'do something else'], { cwd: project, env: session });
+  run = await fleet(['check', 'pc-1'], { cwd: project, env: session });
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(worker.started.at(-1), { tool: 'submit_task', name: '主agent export' });
   assert.match(worker.prompts.at(-1), /^Installation check: reply with exactly OK/);

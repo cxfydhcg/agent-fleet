@@ -76,3 +76,7 @@ network and Tailscale and connects with the code the user gives (`discover`, the
 first and choose worker with LAN or Tailscale connectivity.
 
 Pairing transfers the worker's token; only run it with a code the user gave you. The fallback is copying the worker's `connection.json` here and running `add-computer <path>`. The registry lives in `~/.agent-fleet/computers.json`.
+
+## Multiple main agents / 多个主 Agent
+
+Use `fleet.mjs overview` to see each computer's `engines` and `main_agents`. Address a main by name: `fleet.mjs agent <computer> "Claude主agent" "<goal>"`. Its permanent identity selects the engine and existing session. Only the registered orchestrator session has these rights; other sessions receive their own agent. `export <computer>` selects the default main. `check <computer> [name]` checks one or every main using only the fixed installation prompt. Pairing stores every main automatically. 日常按名字调用，不需要另选引擎；改名仍跟随固定 ID。

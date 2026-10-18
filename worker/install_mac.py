@@ -63,7 +63,15 @@ class Setup:
     # --- settings -----------------------------------------------------------------------------------
     def resolve(self):
         a, prior = self.args, self.prior or {}
-        self.engine = a.engine or ('claude' if prior.get('executor') == 'claude' else 'codex')
+        if getattr(a, 'engines', None) and a.engine:
+            self.fail('不要同时指定 --engine 和 --engines。', 'Pass --engine or --engines, not both.')
+        self.engines = (a.engines.split(',') if getattr(a, 'engines', None) else [a.engine] if a.engine else
+                        prior.get('engines') or ['claude' if prior.get('executor') == 'claude' else 'codex'])
+        if not self.engines or len(set(self.engines)) != len(self.engines) or any(e not in ('codex', 'claude') for e in self.engines):
+            self.fail('引擎必须为 codex、claude 或两个不同引擎。', 'Engines must be codex, claude or both distinct engines.')
+        self.engine = self.engines[0]
+        if getattr(a, 'second_main_agent_name', None) and len(self.engines) < 2:
+            self.fail('第二个名字需要两个引擎。', 'A second main agent name requires two engines.')
         self.prior_connectivity = ('lan' if prior.get('lan_url') else
                                    'tailscale' if prior.get('remote_url') and not prior.get('local_only') else 'local')
         self.connectivity = a.connectivity or self.prior_connectivity
@@ -80,7 +88,7 @@ class Setup:
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.name):
             self.fail('电脑名只能用字母、数字、点、下划线和连字符，并以字母或数字开头。',
                       'The computer name must use letters, numbers, dots, underscores or hyphens, beginning with a letter or number.')
-        self.main_name = (a.main_agent_name or prior.get('main_agent_name') or self.t('主agent export', 'Main agent')).strip()
+        self.main_name = (a.main_agent_name or prior.get('main_agent_name') or (self.t('Claude主agent', 'Claude main agent') if self.engine == 'claude' else self.t('主agent export', 'Main agent'))).strip()
         if not valid_name(self.main_name):
             self.fail('主 Agent 名字要 1 到 100 个可打印字符，不能以 -- 开头。', 'Main agent name must contain 1 to 100 printable characters, without a leading --.')
         self.manager_name = (a.manager_name or '').strip()
@@ -101,10 +109,30 @@ class Setup:
                           "Could not find this Mac's local network IPv4 address; pass --lan-address.")
         elif a.lan_address:
             self.fail('--lan-address 需要 --connectivity lan。', '--lan-address requires --connectivity lan.')
-        self.main_workspace = self.workspace / 'main-agent'
+        self.mains = []
+        profile_file = self.data / 'state' / 'profile.json'
+        saved_profile = json.loads(profile_file.read_text(encoding='utf-8-sig')) if profile_file.exists() else {}
+        for index, engine in enumerate(self.engines):
+            old = next((m for m in prior.get('main_agents', []) if m['engine'] == engine), {})
+            if not old and not prior.get('main_agents') and engine == ('claude' if prior.get('executor') == 'claude' else 'codex'):
+                old = {'name': prior.get('main_agent_name'), 'id': prior.get('main_agent_id'),
+                       'workspace': next(iter(prior.get('main_agent_workspaces', [])), None)}
+            name = (a.main_agent_name if index == 0 else getattr(a, 'second_main_agent_name', None)) or old.get('name') or (
+                self.t('Claude主agent', 'Claude main agent') if engine == 'claude' else self.t('主agent export', 'Main agent'))
+            name = name.strip()
+            if not valid_name(name) or any(m['name'] == name for m in self.mains):
+                self.fail('主 Agent 名字无效或重复。', 'Invalid or duplicate main agent name.')
+            if name != old.get('name') and name in saved_profile.get('agents', {}):
+                self.fail('主 Agent 名字与现有 Agent 冲突。', 'Main agent name conflicts with an existing agent.')
+            folder = old.get('workspace') or str(self.workspace / ('main-agent' if len(self.engines) == 1 else 'main-' + engine))
+            saved = next((m for m in saved_profile.get('main_agents', []) if m['engine'] == engine), {})
+            identity = saved.get('id') or old.get('id') or (saved_profile.get('main_agent_id') if index == 0 else None) or str(uuid.uuid4())
+            self.mains.append({'name': name, 'engine': engine, 'id': identity, 'workspace': folder})
+        self.main_name = self.mains[0]['name']
+        self.main_workspace = Path(self.mains[0]['workspace'])
 
     def plan(self):
-        return {'platform': 'macos', 'engine': self.engine, 'connectivity': self.connectivity, 'lan_address': self.lan_address,
+        return {'platform': 'macos', 'engine': self.engine, 'engines': self.engines, 'main_agents': self.mains, 'connectivity': self.connectivity, 'lan_address': self.lan_address,
                 'computer': self.name, 'main_agent_name': self.main_name, 'manager_name': self.manager_name, 'language': self.language,
                 'workspace': str(self.workspace), 'tasks_dir': str(self.tasks_dir), 'data_dir': str(self.data), 'full_access': self.full_access,
                 'existing': bool(self.prior), 'autostart': not self.args.no_autostart}
@@ -128,7 +156,7 @@ class Setup:
     def agent_cli(self):
         a = self.args
         self.codex = self.claude = self.claude_version = None
-        if self.engine == 'codex':
+        if 'codex' in self.engines:
             self.step(f'准备 Codex 命令行 {a.codex_version}', f'Preparing the Codex CLI {a.codex_version}')
             self.codex = a.codex_executable or shutil.which('codex')
             installed = self.version(self.codex) if self.codex else None
@@ -142,7 +170,7 @@ class Setup:
             if self.run(self.codex, 'login', 'status', check=False, quiet=True).returncode:
                 self.warnings.append(self.t('Codex 还没有登录：运行 codex login 用你的 ChatGPT 账号登录，否则任务会失败。',
                                             'Codex is not signed in: run codex login with your ChatGPT account, or tasks will fail.'))
-        else:
+        if 'claude' in self.engines:
             self.step('准备 Claude Code 命令行', 'Preparing the Claude Code CLI')
             self.claude = a.claude_executable or shutil.which('claude')
             if not self.claude:
@@ -217,6 +245,12 @@ class Setup:
                                         'Tailscale is not signed in: sign in, then rerun this script so other computers can reach this one.'))
 
     def main_agent(self):
+        for main in self.mains:
+            self.engine, self.main_name, self.main_workspace = main['engine'], main['name'], Path(main['workspace'])
+            self.write_main_agent()
+        self.engine, self.main_name, self.main_workspace = self.engines[0], self.mains[0]['name'], Path(self.mains[0]['workspace'])
+
+    def write_main_agent(self):
         self.step(f'创建主 Agent：{self.main_name}', f'Creating the main agent: {self.main_name}')
         (self.main_workspace / '.codex').mkdir(parents=True, exist_ok=True)
         agents = self.main_workspace / 'AGENTS.md'
@@ -232,7 +266,7 @@ class Setup:
                            'Sub-tasks use the Codex workspace-write sandbox; extra permissions are not approved automatically.'))
             text = template.replace('\\', '/')  # the template's folder references use Windows separators
             for key, value in (('COMPUTER_NAME', self.name), ('WORKSPACE', str(self.workspace)), ('AGENT_ENGINE', self.engine),
-                               ('MAIN_AGENT_NAME', self.main_name), ('TASKS_DIR_NAME', self.tasks_dir.name), ('PERMISSION_NOTE', note)):
+                               ('MAIN_AGENT_NAME', self.main_name), ('MAIN_AGENT_WORKSPACE', str(self.main_workspace)), ('TASKS_DIR_NAME', self.tasks_dir.name), ('PERMISSION_NOTE', note)):
                 text = text.replace('{{' + key + '}}', value)
             agents.write_text(text, encoding='utf-8')
         if not (self.main_workspace / 'CLAUDE.md').exists():
@@ -259,9 +293,7 @@ class Setup:
 
     def write_config(self):
         self.step('写入本机配置', "Writing this computer's configuration")
-        saved_profile = self.data / 'state' / 'profile.json'
-        main_id = (json.loads(saved_profile.read_text(encoding='utf-8')).get('main_agent_id') if saved_profile.exists() else None) \
-            or (self.prior or {}).get('main_agent_id') or str(uuid.uuid4())
+        main_id = self.mains[0]['id']
         hosts = [f'127.0.0.1:{self.port}', f'localhost:{self.port}']
         if self.ts_name:
             hosts.append(f'{self.ts_name}:{self.tailscale_port}')
@@ -278,12 +310,13 @@ class Setup:
             'python_executable': str(self.python), 'codex_executable': self.codex,
             # Where node and the CLIs live: the service may later start from launchd with a minimal PATH.
             'service_path': list(dict.fromkeys(str(Path(p).parent) for p in (shutil.which('node'), shutil.which('codex'), shutil.which('claude')) if p)), 'codex_launcher_executable': self.codex,
-            'codex_launcher_args': [], 'codex_version': self.args.codex_version if self.engine == 'codex' else None,
+            'codex_launcher_args': [], 'codex_version': self.args.codex_version if 'codex' in self.engines else None,
             'tailscale_executable': self.tailscale_executable, 'state_dir': str(self.data / 'state'),
             'token_file': str(self.token_file), 'worker_rules_file': str(self.workspace / 'worker-rules.md'),
             'tasks_dir': str(self.tasks_dir), 'shared_dir': str(self.workspace / 'shared'),
             'allowed_roots': [str(self.workspace)], 'allowed_hosts': hosts, 'main_agent_workspaces': [str(self.main_workspace)],
             'executor': 'claude' if self.engine == 'claude' else 'app-server', 'engine': self.engine,
+            'engines': self.engines, 'main_agents': self.mains,
             'claude_executable': self.claude or '', 'local_only': self.connectivity != 'tailscale',
             'sandbox': 'danger-full-access' if self.full_access else 'workspace-write', 'auto_approve': self.full_access,
             'max_timeout_seconds': 7200, 'writer_wait_seconds': 10, 'fork_when_busy': True,
@@ -293,7 +326,7 @@ class Setup:
         # Keep options the user added (quota, display preferences); the codex_app_folders default is added once.
         for key, value in (self.prior or {}).items():
             config.setdefault(key, value)
-        if self.engine == 'codex':
+        if 'codex' in self.engines:
             config.setdefault('codex_app_folders', {'main': 'AgentFleet', 'other': self.t('AgentFleet-其他', 'AgentFleet-Other')})
         if self.config_path.exists():
             shutil.copyfile(self.config_path, self.config_path.with_suffix('.json.bak'))
@@ -330,7 +363,7 @@ class Setup:
                 with urllib.request.urlopen(request, timeout=5) as response:
                     busy = any(t['status'] in ('queued', 'running') for t in json.loads(response.read())['tasks'])
             except (OSError, ValueError, KeyError):
-                busy = False
+                busy = True  # Unknown activity must also wait; only a confirmed idle worker may be stopped.
             if busy:
                 # Typically this computer's own main agent runs setup, so the service is busy with that very turn.
                 # The running service relaunches itself on the new code once its queue is empty.
@@ -350,7 +383,7 @@ class Setup:
     def connection(self):
         dashboard = (f'http://{self.ts_name}:{self.tailscale_port}/dashboard' if self.ts_name else
                      f'http://{self.lan_address}:{self.port}/dashboard' if self.lan_address else f'http://127.0.0.1:{self.port}/dashboard')
-        info = {'name': self.name, 'engine': self.engine, 'description': self.args.description or '', 'local_url': f'http://127.0.0.1:{self.port}/mcp',
+        info = {'name': self.name, 'engine': self.engine, 'engines': self.engines, 'main_agents': self.mains, 'description': self.args.description or '', 'local_url': f'http://127.0.0.1:{self.port}/mcp',
                 'tailscale_url': self.remote_url, 'lan_url': self.lan_url, 'token': self.token_value,
                 'main_agent_workspace': str(self.main_workspace), 'main_agent_name': self.main_name,
                 'main_agent_id': self.config['main_agent_id'], 'manager_name': self.manager_name, 'language': self.language, 'dashboard': dashboard}
@@ -461,6 +494,8 @@ def write_private(path, text):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--engines')
+    parser.add_argument('--second-main-agent-name')
     parser.add_argument('--engine', choices=['codex', 'claude'])
     parser.add_argument('--connectivity', choices=['local', 'tailscale', 'lan'])
     parser.add_argument('--lan-address', default='')

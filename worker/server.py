@@ -339,6 +339,9 @@ class TaskManager:
         self.config = config
         if config.get('executor', 'app-server') not in ('app-server', 'claude'):
             raise ValueError('executor must be app-server or claude')
+        self.engines = config.get('engines', ['claude' if config.get('executor') == 'claude' else 'codex'])
+        if not isinstance(self.engines, list) or not self.engines or any(e not in ('codex', 'claude') for e in self.engines) or len(set(self.engines)) != len(self.engines):
+            raise ValueError('engines must be a nonempty list of distinct codex / claude engines')
         self.language = 'en' if config.get('language') == 'en' else 'zh'
         self.text = TEXT[self.language]
         self.state = Path(config['state_dir']).resolve()
@@ -352,20 +355,56 @@ class TaskManager:
         self.processes = {}
         self.codex_projects = {}  # sidebar folder root -> Codex app-server project id
         self.claude_limit = None  # the last usage-limit rejection Claude Code reported, until it resets
-        self.queue = asyncio.Queue()
+        self.queues = {engine: asyncio.Queue() for engine in self.engines}
+        self.queue = self.queues[self.engines[0]]
+        self.workers = {}
         self.worker = None
         self.closing = False
         # Quota guard: what the queue is waiting for (shown in the profile), whether the orchestrator was
         # told about this pause yet, and a nudge that ends the wait early, e.g. when the waiting job is cancelled.
         self.quota_wait, self.quota_paused, self.quota_wake = None, False, asyncio.Event()
+        self.quota_waits, self.quota_pauses = {}, set()
+        self.quota_wakes = {engine: asyncio.Event() for engine in self.engines}
+        self.quota_wake = self.quota_wakes[self.engines[0]]
         self.profile_file = self.state / 'profile.json'
         self.profile = json.loads(self.profile_file.read_text(encoding='utf-8')) if self.profile_file.exists() else {}
         self.profile.setdefault('computer', {})
         self.profile.setdefault('agents', {})
+        configured_mains = config.get('main_agents')
+        if configured_mains and (not isinstance(configured_mains, list) or
+                sorted(m.get('engine', '') for m in configured_mains) != sorted(self.engines)):
+            raise ValueError('main_agents must contain one main agent per enabled engine')
         # The main agent's permanent id, kept in the service's own record so it survives config rewrites.
         if not self.profile.get('main_agent_id'):
-            self.profile['main_agent_id'] = config.get('main_agent_id') or str(uuid.uuid4())
+            first = next((m for m in configured_mains or [] if m.get('engine') == self.engines[0]), {})
+            self.profile['main_agent_id'] = config.get('main_agent_id') or first.get('id') or str(uuid.uuid4())
             self.save_profile()
+        self._mains = sorted([dict(main) for main in configured_mains or []], key=lambda m: self.engines.index(m['engine'])) or [
+            {'id': self.profile['main_agent_id'], 'name': config.get('main_agent_name'),
+             'engine': self.engines[0], 'workspace': next(iter(config.get('main_agent_workspaces', [])), None)}]
+        for main in self._mains:
+            if main.get('engine') not in self.engines:
+                raise ValueError('main agent engine is not enabled')
+            saved = next((m for m in self.profile.get('main_agents', []) if m.get('engine') == main['engine']), {})
+            legacy_id = self.profile['main_agent_id'] if not self.profile.get('main_agents') and main is self._mains[0] else None
+            main['id'] = saved.get('id') or legacy_id or main.get('id') or str(uuid.uuid4())
+            if configured_mains:
+                old_name = saved.get('name')
+                if old_name and old_name != main['name'] and old_name in self.profile['agents']:
+                    registered = self.profile['agents'].get(main['name'], {})
+                    if registered and registered.get('type') != 'main':
+                        raise ValueError('Main agent name conflicts with an existing agent')
+                    # Setup may register the new name while the old service is still waiting to restart.
+                    self.profile['agents'][main['name']] = {**self.profile['agents'].pop(old_name), **registered}
+                self.profile['agents'].setdefault(main['name'], {}).update(type='main', engine=main['engine'])
+        if len({m['id'] for m in self._mains}) != len(self._mains) or len({m['name'] for m in self._mains}) != len(self._mains):
+            raise ValueError('main agent ids and names must be distinct')
+        self.profile.update(main_agents=self.mains, main_agent_id=self.mains[0]['id'])
+        if configured_mains:
+            config.update(main_agents=self._mains, executor='claude' if self.engines[0] == 'claude' else 'app-server',
+                          main_agent_name=self.mains[0]['name'], main_agent_id=self.mains[0]['id'],
+                          main_agent_workspaces=[self.mains[0]['workspace']])
+        self.save_profile()
         self.notices = {}  # main agent thread -> finished sub-task ids it has not been told about yet
         # Desktop-app sidebar folders (config codex_app_folders): whether sessions may need filing, and how it went.
         self.folders_pending, self.folders_status, self.folder_task = True, None, None
@@ -381,6 +420,13 @@ class TaskManager:
             if job['status'] in ('queued', 'running'):
                 job.update(status='interrupted', finished_at=now(), error='Service stopped before completion; submit a new task to retry.')
                 self.save(job)
+
+    @property
+    def mains(self):
+        if self.config.get('main_agents'):
+            return self._mains
+        return [{**self._mains[0], 'name': self.config.get('main_agent_name'),
+                 'workspace': next(iter(self.config.get('main_agent_workspaces', [])), None)}]
 
     def save(self, job):
         directory = self.jobs_dir / job['task_id']
@@ -461,6 +507,7 @@ class TaskManager:
         """Everything except a computer's main agent is a worker. Main agents are recognized by their
         workspace (config main_agent_workspaces) or by being registered with type main."""
         mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
+        mains.update(str(Path(m['workspace']).resolve()).lower() for m in self.mains if m.get('workspace'))
         if str(Path(job['workspace']).resolve()).lower() in mains:
             return False
         return (self.profile['agents'].get(job.get('name') or '') or {}).get('type') != 'main'
@@ -474,11 +521,12 @@ class TaskManager:
         wanted, root = job['name'] + self.title_suffix(job), self.session_root(job)
         return wanted if wanted != root['title_set'] else None
 
-    def main_agent_note(self):
+    def main_agent_note(self, job=None):
         """Runtime facts a main-agent turn starts with: its current names, which override older ones in its instructions."""
         parts = []
-        if self.config.get('main_agent_name'):
-            parts.append('your current main-agent name is ' + json.dumps(self.config['main_agent_name'], ensure_ascii=False) +
+        name = (self.main_for(job.get('workspace'), job.get('name')) or {}).get('name') if job else self.config.get('main_agent_name')
+        if name:
+            parts.append('your current main-agent name is ' + json.dumps(name, ensure_ascii=False) +
                          '. This replaces any older name in the conversation or workspace instructions')
         if self.profile['computer'].get('manager_name'):
             parts.append('the orchestrator and the human call you ' + json.dumps(self.profile['computer']['manager_name'],
@@ -610,16 +658,28 @@ class TaskManager:
         if self.session_owner(job) != mine:
             raise ValueError(f'You did not open this session; only the agent that opened it or the orchestrator can {action} it')
 
-    def main_agent(self):
+    def main_for(self, workspace=None, name=None):
+        found = next((m for m in self.mains if (workspace and m.get('workspace') and
+                    str(Path(workspace).resolve()).lower() == str(Path(m['workspace']).resolve()).lower()) or
+                    (name and name in (m.get('id'), m.get('name')))), None)
+        if not found and workspace and not self.config.get('main_agents') and any(
+                str(Path(workspace).resolve()).lower() == str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])):
+            return {**self.mains[0], 'workspace': workspace}
+        return found
+
+    def main_agent(self, main=None):
         """This computer's main agent by its permanent id, whatever it is called now: its current names and the
         task to continue to reach it (the newest live session in a main-agent workspace)."""
-        mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
-        jobs = [j for j in self.jobs.values() if j.get('workspace') and str(Path(j['workspace']).resolve()).lower() in mains and
+        legacy = main is None and not self.config.get('main_agents')
+        main = main or self.mains[0]
+        paths = self.config.get('main_agent_workspaces', []) if legacy else [main['workspace']] if main.get('workspace') else []
+        mains = {str(Path(p).resolve()).lower() for p in paths}
+        jobs = [j for j in self.jobs.values() if j.get('engine') == main['engine'] and j.get('workspace') and str(Path(j['workspace']).resolve()).lower() in mains and
                 (j['status'] in ('queued', 'running') or (j.get('thread_id') and not self.removed(j)))]
         latest = max(jobs, key=lambda j: j['created_at']) if jobs else None
-        return {'id': self.profile['main_agent_id'], 'name': self.config.get('main_agent_name'),
+        return {**main,
                 'manager_name': self.profile['computer'].get('manager_name'),
-                'workspace': next(iter(self.config.get('main_agent_workspaces', [])), None),
+                'workspace': main.get('workspace'),
                 'task_id': latest['task_id'] if latest else None, 'status': latest['status'] if latest else None}
 
     def start_pairing(self):
@@ -644,7 +704,8 @@ class TaskManager:
         return {'service': 'agent-fleet', 'pairing': True, 'computer_name': self.config.get('computer_name'),
                 'main_agent_name': self.config.get('main_agent_name'), 'main_agent_id': self.profile['main_agent_id'],
                 'manager_name': self.profile['computer'].get('manager_name'), 'role': self.profile['computer'].get('role'),
-                'engine': 'claude' if self.config.get('executor') == 'claude' else 'codex', 'language': self.language,
+                'engine': self.engines[0], 'engines': self.engines,
+                'main_agents': [self.main_agent(m) for m in self.mains], 'language': self.language,
                 'expires_in': max(0, round(self.pairing['expires'] - time.monotonic())), **self.addresses()}
 
     def claim_pairing(self, code):
@@ -660,7 +721,8 @@ class TaskManager:
         self.pairing = None
         saved = Path(self.config['state_dir']).parent / 'connection.json'
         info = json.loads(saved.read_text(encoding='utf-8-sig')) if saved.exists() else {}
-        info.update({'name': self.config.get('computer_name'), 'engine': 'claude' if self.config.get('executor') == 'claude' else 'codex',
+        info.update({'name': self.config.get('computer_name'), 'engine': self.engines[0], 'engines': self.engines,
+                'main_agents': [self.main_agent(m) for m in self.mains],
                      'local_url': f"http://127.0.0.1:{self.config.get('port', 8765)}/mcp", 'tailscale_url': self.config.get('remote_url') or '',
                      'lan_url': self.config.get('lan_url') or '', 'token': Path(self.config['token_file']).read_text(encoding='utf-8').strip(),
                      'main_agent_workspace': next(iter(self.config.get('main_agent_workspaces', [])), None),
@@ -690,7 +752,8 @@ class TaskManager:
                            'last_active': (latest.get('finished_at') or latest.get('started_at') or latest['created_at']) if latest else None})
         machine = await self.machine_info(refresh)
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
-                'version': self.deployed_version(), 'engine': 'claude' if self.config.get('executor') == 'claude' else 'codex',
+                'version': self.deployed_version(), 'engine': self.engines[0], 'engines': self.engines,
+                'main_agents': [self.main_agent(m) for m in self.mains],
                 'language': self.language, 'main_agent_name': self.config.get('main_agent_name'), 'main_agent': self.main_agent(),
                 'machine': machine, 'computer': self.profile['computer'], 'agents': agents, 'quota_wait': self.quota_wait,
                 # What dispatched turns may do, so the orchestrator can explain refusals (e.g. Computer Use).
@@ -855,7 +918,7 @@ class TaskManager:
         main: the main agent and everything it opened (root: the workspace); other: sessions other agents
         opened directly (root: tasks_dir). Folders are matched by root, so renaming one in the app keeps it."""
         setting = self.config.get('codex_app_folders')
-        if not setting or self.config.get('executor') == 'claude':
+        if not setting or 'codex' not in self.engines or (not self.config.get('engines') and self.config.get('executor') == 'claude'):
             return None
         names = setting if isinstance(setting, dict) else {}
         return {'main': (names.get('main') or self.text['folder_main'], str(self.root.parent)),
@@ -1003,7 +1066,7 @@ class TaskManager:
         self.save(self.jobs[woken['task_id']])
 
     def submit(self, prompt, workspace, timeout_seconds, idempotency_key, resume_task_id=None, name=None,
-               parent_task_id=None, model=None, effort=None):
+               parent_task_id=None, model=None, effort=None, engine=None):
         if self.closing:
             raise ValueError('Service is shutting down')
         if not prompt.strip() or len(prompt) > 100_000:
@@ -1022,15 +1085,24 @@ class TaskManager:
                 raise ValueError('Invalid idempotency_key')
             for job in self.jobs.values():
                 if job.get('idempotency_key') == idempotency_key:
-                    if (job['prompt'], job['requested_workspace'], job['timeout_seconds'], job.get('resume_task_id')) != (prompt, workspace, timeout_seconds, resume_task_id):
+                    if (job['prompt'], job['requested_workspace'], job['timeout_seconds'], job.get('resume_task_id'), job.get('requested_engine')) != (prompt, workspace, timeout_seconds, resume_task_id, engine):
                         raise ValueError('idempotency_key was already used for a different request')
                     return self.public(job)
         if sum(j['status'] in ('queued', 'running') for j in self.jobs.values()) >= 32:
             raise ValueError('Task queue is full; retry after a task finishes')
         parent = self.get(resume_task_id) if resume_task_id else None
-        engine = 'claude' if self.config.get('executor') == 'claude' else 'codex'
+        explicit_engine = engine
+        if engine is not None and engine not in self.engines:
+            raise ValueError('engine must be one of the configured engines')
+        main = self.main_for(workspace, name)
+        registered = self.profile['agents'].get(name or '', {})
+        if not main and registered.get('type') == 'main':
+            main = next((m for m in self.mains if m['engine'] == registered.get('engine', self.engines[0])), None)
+        engine = (parent or {}).get('engine') or (main or {}).get('engine') or (self.get(parent_task_id).get('engine') if parent_task_id else None) or engine or self.engines[0]
+        if explicit_engine and explicit_engine != engine and (parent or main or parent_task_id):
+            raise ValueError('Cannot override the engine of a session, main agent or parent task')
         if parent:
-            if parent['engine'] != engine:
+            if parent['engine'] not in self.engines:
                 raise ValueError('Cannot resume a session with a different agent engine; create a new session')
             if parent['status'] in ('queued', 'running') or not parent.get('thread_id'):
                 raise ValueError('Wait for the task to finish and receive a thread_id before continuing')
@@ -1038,16 +1110,17 @@ class TaskManager:
                 raise ValueError('This session already has pending work; wait for it to finish')
         task_id = str(uuid.uuid4())
         target = Path(parent['workspace']).resolve() if parent else (
+            Path(main['workspace']).resolve() if main and main.get('workspace') else
             Path(workspace).resolve() if workspace else self.root / task_folder_name(task_id, name))
         if not any(target.is_relative_to(root) for root in self.roots):
             raise ValueError('workspace is outside allowed_roots in the server configuration')
         # Renaming the configured main agent changes its title while preserving
         # the existing engine session and workspace on continuation.
-        mains = {str(Path(p).resolve()).lower() for p in self.config.get('main_agent_workspaces', [])}
-        final_name = self.config['main_agent_name'] if str(target).lower() in mains and self.config.get('main_agent_name') else (
+        main = self.main_for(str(target))
+        final_name = main['name'] if main and main.get('name') else (
             parent.get('name') if parent else name and name.strip())
         # A registered agent is one session: a second one with the same name would split its history.
-        if not parent and final_name in self.profile['agents']:
+        if not parent and (final_name in self.profile['agents'] or main):
             existing = self.named_session(final_name)
             if existing:
                 raise ValueError(f'「{final_name}」 already has a session (task_id={existing["task_id"]}); continue it with '
@@ -1056,7 +1129,7 @@ class TaskManager:
         if not target.is_dir():
             raise ValueError('workspace must be a directory')
         job = dict(task_id=task_id, prompt=prompt, requested_workspace=workspace,
-                   engine=engine,
+                   engine=engine, requested_engine=explicit_engine,
                    workspace=str(target), timeout_seconds=timeout_seconds,
                    idempotency_key=idempotency_key, status='queued', created_at=now())
         if parent:
@@ -1073,7 +1146,7 @@ class TaskManager:
                 job[key] = chosen
         self.jobs[task_id] = job
         self.save(job)
-        self.queue.put_nowait(task_id)
+        self.queues[engine].put_nowait(task_id)
         return self.public(job)
 
     async def kill(self, process):
@@ -1099,7 +1172,7 @@ class TaskManager:
         if job['status'] in ('queued', 'running'):
             job.update(status='cancelled', finished_at=now())
             self.save(job)
-            self.quota_wake.set()  # A job waiting for the Codex quota stops waiting at once.
+            self.quota_wakes[job['engine']].set()
             if task_id in self.processes:
                 await self.kill(self.processes[task_id])
         return self.public(job)
@@ -1186,7 +1259,7 @@ class TaskManager:
             policy['developerInstructions'] = self.worker_rules()
         else:
             policy['developerInstructions'] = ('This turn runs Codex with sandbox=' + sandbox +
-                '. Current main agent name: ' + json.dumps(self.config.get('main_agent_name') or job.get('name'), ensure_ascii=False) +
+                '. Current main agent name: ' + json.dumps(job.get('name'), ensure_ascii=False) +
                 '. These runtime settings override older name/engine/permission descriptions in preserved workspace instructions.')
         connection = AppServerConnection(process, log_line, auto_approve)
         turn_done = asyncio.get_running_loop().create_future()
@@ -1244,7 +1317,7 @@ class TaskManager:
                     pass  # The name is cosmetic; the task can still run.
             turn_input = job['prompt']
             if not self.is_worker(job) and (self.config.get('main_agent_name') or self.profile['computer'].get('manager_name')):
-                turn_input = self.main_agent_note() + '\n\n' + turn_input
+                turn_input = self.main_agent_note(job) + '\n\n' + turn_input
             turn_params = {'threadId': job['thread_id'], 'input': [{'type': 'text', 'text': turn_input}],
                            'approvalPolicy': policy['approvalPolicy']}  # turn/start takes no developerInstructions
             turn_params.update({k: job[k] for k in ('model', 'effort') if job.get(k)})
@@ -1302,8 +1375,10 @@ class TaskManager:
         if (job.get('latest_message') or '').startswith(QUOTA_NOTES):
             job.pop('latest_message')
             self.save(job)
-        if self.quota_paused:
-            self.quota_paused = False
+        key = job['engine']
+        if key in self.quota_pauses:
+            self.quota_pauses.discard(key)
+            self.quota_paused = bool(self.quota_pauses)
             self.notify(self.text['quota_back_title'].format(engine=engine),
                         self.text['quota_back'].format(name=job.get('name') or job['task_id'][:8]),
                         task_ids=[job['task_id']], sender='dispatcher')
@@ -1330,15 +1405,18 @@ class TaskManager:
         self.quota_recovered(job, 'Claude')
 
     async def wait_for_quota(self, job, paused):
-        """Hold the whole queue behind this job until the quota should be back. The orchestrator hears about
+        """Hold this engine's queue behind this job until the quota should be back. The orchestrator hears about
         the pause once, not on every re-check. Cancelling the job or stopping the service ends the wait at once."""
         if job['status'] != 'queued':
             return
         until = datetime.fromtimestamp(paused.resets_at, timezone.utc).isoformat() if paused.resets_at else None
-        self.quota_wait = {'until': until, 'message': str(paused), 'task_id': job['task_id']}
-        if not self.quota_paused:
+        engine = job['engine']
+        self.quota_waits[engine] = {'engine': engine, 'until': until, 'message': str(paused), 'task_id': job['task_id']}
+        self.quota_wait = {**next(iter(self.quota_waits.values())), 'engines': dict(self.quota_waits)}
+        if engine not in self.quota_pauses:
+            self.quota_pauses.add(engine)
             self.quota_paused = True
-            queued = sum(j['status'] == 'queued' for j in self.jobs.values())
+            queued = sum(j['status'] == 'queued' and j['engine'] == engine for j in self.jobs.values())
             self.notify(self.text['quota_paused_title'].format(engine=paused.engine) + (self.text['quota_paused_until'].format(time=local_clock(paused.resets_at))
                                                            if paused.resets_at else ''),
                         self.text['quota_paused'].format(reason=paused, queued=queued),
@@ -1346,9 +1424,10 @@ class TaskManager:
         delay = QUOTA_RECHECK_SECONDS if paused.resets_at is None else max(paused.resets_at - time.time(), 0) + QUOTA_SLACK_SECONDS
         deadline = time.monotonic() + min(delay, QUOTA_MAX_WAIT_SECONDS)
         while job['status'] == 'queued' and not self.closing and deadline > time.monotonic():
-            self.quota_wake.clear()
+            self.quota_wakes[engine].clear()
             try:
-                await asyncio.wait_for(self.quota_wake.wait(), deadline - time.monotonic())
+                await asyncio.wait_for(self.quota_wakes[engine].wait(), deadline - time.monotonic())
+                break
             except asyncio.TimeoutError:
                 break
 
@@ -1388,9 +1467,11 @@ class TaskManager:
             pass
         return True
 
-    async def work(self):
+    async def work(self, engine=None):
+        engine = engine or self.engines[0]
+        queue = self.queues[engine]
         while True:
-            task_id = await self.queue.get()
+            task_id = await queue.get()
             job = self.get(task_id)
             try:
                 while not self.closing:
@@ -1410,8 +1491,9 @@ class TaskManager:
                     job.update(status='failed', finished_at=now(), error=str(error)[-2000:])
                     self.save(job)
             finally:
-                self.quota_wait = None
-                self.queue.task_done()
+                self.quota_waits.pop(engine, None)
+                self.quota_wait = {**next(iter(self.quota_waits.values())), 'engines': dict(self.quota_waits)} if self.quota_waits else None
+                queue.task_done()
             try:
                 self.after_job(job)
             except Exception:
@@ -1419,7 +1501,7 @@ class TaskManager:
 
     async def shutdown(self):
         self.closing = True
-        for task in (self.worker, self.folder_task):
+        for task in set([self.worker, self.folder_task, *self.workers.values()]):
             if task:
                 task.cancel()
                 try:
@@ -1564,7 +1646,7 @@ def build_app(config):
                  if config.get('fork_when_busy', True) else
                  'continuing such a session fails with an explanation; tell the human, or start a new task instead.')
     mcp = FastMCP('Codex Task Dispatcher',
-        instructions='Submit tasks to Codex running on the server computer. submit_task creates a new session; continue_task(task_id, prompt) reuses an existing dispatched session with its conversation history and workspace. Wait for prior work in the session to finish before continuing. Paths refer to the server computer. Use idempotency_key when retrying submission. Poll get_task every 5–15 seconds. Completed means a final result was produced; inspect failed/timed_out/interrupted errors. Tasks run one at a time. Always include the returned desktop_link as a clickable Markdown link when reporting a task to the human, so they can open it without contacting another agent. desktop_url opens the local Codex app on the computer where clicked. If the human wants the chat shown on the server desktop, call open_task after the task finishes; it opens that chat directly without restarting the app. The user does not need to ask this dispatcher implementation chat to open it. Sessions appear in the Codex desktop app sidebar under their name. The desktop app keeps chats it has opened locked until it fully exits; ' + busy_note + ' A read-only live view of all sessions, which never locks them, is at /dashboard on this server. get_profile describes this computer (hardware, role, software, accounts) and its long-lived agents; keep it current with update_computer_profile and register_agent. A main agent can continue, cancel or open only the sessions it opened; the orchestrator controls every session and is the only one that sets an agent\'s can_dispatch / locked with register_agent.',
+        instructions='Submit tasks to the configured Codex or Claude Code engines on the server computer. Main-agent names select their engine; children inherit their parent engine and resumed sessions keep their original engine. Direct submissions may specify an enabled engine. submit_task creates a new session; continue_task(task_id, prompt) reuses an existing dispatched session with its conversation history and workspace. Wait for prior work in the session to finish before continuing. Paths refer to the server computer. Use idempotency_key when retrying submission. Poll get_task every 5–15 seconds. Completed means a final result was produced; inspect failed/timed_out/interrupted errors. Tasks run one at a time per engine; different engines may run concurrently. Always include the returned desktop_link as a clickable Markdown link when reporting a task to the human, so they can open it without contacting another agent. desktop_url opens the local Codex app on the computer where clicked. If the human wants the chat shown on the server desktop, call open_task after the task finishes; it opens that chat directly without restarting the app. The user does not need to ask this dispatcher implementation chat to open it. Sessions appear in the Codex desktop app sidebar under their name. The desktop app keeps chats it has opened locked until it fully exits; ' + busy_note + ' A read-only live view of all sessions, which never locks them, is at /dashboard on this server. get_profile describes this computer (hardware, role, software, accounts) and its long-lived agents; keep it current with update_computer_profile and register_agent. A main agent can continue, cancel or open only the sessions it opened; the orchestrator controls every session and is the only one that sets an agent\'s can_dispatch / locked with register_agent.',
         stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(
             allowed_hosts=config['allowed_hosts'], allowed_origins=config.get('allowed_origins', [])))
@@ -1572,13 +1654,13 @@ def build_app(config):
     @mcp.tool()
     async def submit_task(prompt: str, workspace: str | None = None,
                           timeout_seconds: int = 1800, idempotency_key: str | None = None,
-                          name: str | None = None, model: str | None = None, effort: str | None = None,
+                          name: str | None = None, model: str | None = None, effort: str | None = None, engine: str | None = None,
                           ctx: Context = None) -> dict:
-        """Dispatch work to Codex; return task_id immediately. Omit workspace for a new isolated folder. An explicit workspace must be an absolute path on the server within allowed_roots. Use a stable unique idempotency_key to avoid duplicate tasks after network retries. name is the session title shown in the Codex desktop app (defaults to the start of the prompt). When a main agent dispatches, it is woken automatically with the result once the task finishes. model / effort: normally OMIT both, so the task uses Codex's default (the latest model at high effort, same as opening a new window); set them only under specific conditions the human asked for."""
+        """Dispatch work to an enabled engine; return task_id immediately. Normally omit engine: a main agent selects its own engine, children inherit their parent, and other tasks use the default. An explicit engine is for direct tasks only. Omit workspace for a new isolated folder. An explicit workspace must be an absolute path on the server within allowed_roots. Use a stable unique idempotency_key to avoid duplicate tasks after network retries. name is the session title shown in the Codex desktop app (defaults to the start of the prompt). When a main agent dispatches, it is woken automatically with the result once the task finishes. model / effort: normally OMIT both, so the task uses Codex's default (the latest model at high effort, same as opening a new window); set them only under specific conditions the human asked for."""
         if workspace is not None and not Path(workspace).is_absolute():
             raise ValueError('workspace must be an absolute path on the server')
         return manager.submit(prompt, workspace, timeout_seconds, idempotency_key, name=name,
-                              parent_task_id=manager.caller(ctx), model=model, effort=effort)
+                              parent_task_id=manager.caller(ctx), model=model, effort=effort, engine=engine)
 
     @mcp.tool()
     async def continue_task(task_id: str, prompt: str, timeout_seconds: int = 1800,
@@ -1731,7 +1813,8 @@ def build_app(config):
     async def lifespan(app):
         # Job workers live for the service lifetime, not one MCP request/session.
         async with mcp.session_manager.run():
-            manager.worker = asyncio.create_task(manager.work())
+            manager.workers = {engine: asyncio.create_task(manager.work(engine)) for engine in manager.engines}
+            manager.worker = manager.workers[manager.engines[0]]
             manager.folder_task = asyncio.create_task(manager.folder_loop())
             manager.restart_task = asyncio.create_task(manager.restart_loop())
             try:

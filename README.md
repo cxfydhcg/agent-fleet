@@ -21,7 +21,7 @@
 ## 要求
 
 - Windows 10/11 或 macOS
-- 每台电脑装好 Codex 或 Claude Code 其中一个。管理端用哪个都行；被管理的电脑用哪个干活，在设置时选，和你用哪个来设置无关
+- 每台电脑装好 Codex、Claude Code，或两者。管理端用哪个都行；被管理的电脑用哪个干活，在设置时选，和你用哪个来设置无关
 - 电脑之间能互相连上：在同一个局域网里，或者都装了 [Tailscale](https://tailscale.com)
 
 其余的（Node.js、Python、运行环境）安装时会自动处理。
@@ -54,7 +54,7 @@ Claude Code：在对话框里输入
 >
 > **你**：被指挥，用来剪视频
 >
-> **AI**：这台电脑的连接方式选哪种：仅本机（默认）、可信局域网、Tailscale 加密连接？子任务要不要能操作桌面和浏览器（完整权限）？主 Agent 叫什么，要不要起个管理名（比如"经理cris"）？
+> **AI**：这台电脑的连接方式选哪种：仅本机（默认）、可信局域网、Tailscale 加密连接？子任务要不要能操作桌面和浏览器（完整权限）？引擎选 Codex、Claude Code 还是两者？每个主 Agent 分别叫什么，要不要起个管理名（比如"经理cris"）？
 >
 > **你**：局域网，要完整权限，管理名叫经理cris
 >
@@ -140,9 +140,26 @@ AgentFleet\                    ← 工作区，桌面版侧边栏里的 “Agent
 
 - **令牌就是这台电脑的控制权**。只放在自己的电脑上，不要发给别人，也不要贴进聊天。
 - **在桌面 App 里打开 Agent 的会话**：Codex 和 Claude 都可以。你占着它的时候，Agent 再收到任务会自动另开一个分叉（带完整历史）接着做，不会打断你；Codex 桌面版会一直占着它打开过的会话，直到完全退出（设置 `fork_when_busy: false` 则改为报错）。只看进度用只读看板，看板上的内容永远是最新的。
-- **每台电脑一次只跑一个任务**，避免多个任务抢鼠标键盘。
-- **Codex 额度用完时不开始新任务**：队列按原顺序等到额度恢复，并通知管理端。
+- **每个引擎一次只跑一个任务**；双引擎可以并行，涉及同一桌面时由主 Agent 协调。
+- **某引擎额度用完时仅暂停该引擎**：它的队列按原顺序等待恢复，另一个引擎继续运行，并通知管理端。
 - 子 Agent 被要求不碰派任务服务和令牌，但这只是写给它们的规则：开了完整权限后，它们技术上能读到电脑上的任何文件。
+
+
+## 同一台电脑运行两个引擎
+
+设置时可选 Codex、Claude Code 或两者，并分别为每个主 Agent 起名字。一个 worker 共用服务、端口和令牌；每个引擎一次执行一个任务，两个引擎可以同时工作，额度暂停也互不影响。
+
+```text
+node <插件目录>/scripts/setup.mjs --role worker --engines codex,claude --main-agent-name "主agent export" --second-main-agent-name "Claude主agent" --restricted --plan
+```
+
+去掉 `--plan` 才执行安装。Windows PowerShell 安装入口使用 `-Engines codex,claude`、`-MainAgentName`、`-SecondMainAgentName`；macOS 安装入口使用上述 `--` 参数。`--engine codex` / `--engine claude` 仍表示只选一个引擎。两个 CLI 都需要本人先登录。
+
+首次双引擎安装分别创建 `main-codex/AGENTS.md`（含专用 `.codex/config.toml`）和 `main-claude/CLAUDE.md`。单引擎安装继续使用 `main-agent`；已有安装重跑保留各自的 ID、名字、目录和说明。默认中文名字是“主agent export”和“Claude主agent”，英文为“Main agent”和“Claude main agent”。
+
+管理会话按名字调用，例如 `fleet.mjs agent <电脑名> "Claude主agent" "整理文件"`；名字决定引擎，无需再选引擎。`export <电脑名>` 仍找第一个主 Agent；`check <电脑名> [名字]` 检查指定主 Agent，省略名字则逐个检查。`overview` 显示全部引擎和主 Agent。其他会话不能借主 Agent 名字取得管理权限。
+
+配置增加 `engines` 与 `main_agents`（每项包含 `name`、`engine`、`id`、`workspace`）。原有 `executor`、`main_agent_name`、`main_agent_id`、`main_agent_workspaces` 对应第一个引擎；没有 `engines` 的旧配置按原来的单引擎运行。续接始终使用原会话引擎；主 Agent 的子任务继承它的引擎，直接提交的任务可显式指定已启用的 `engine`。桌面会话进入实际执行它的 App。
 
 ## 高级设置
 

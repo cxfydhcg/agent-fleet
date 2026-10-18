@@ -12,7 +12,7 @@ start a worker. Resolve its root from this skill's directory (`../..`), or use
 
 ## How to ask
 
-Every setup choice (language, role, permission mode, connectivity) is a multiple-choice question. When
+Every setup choice (language, role, engines, permission mode, connectivity) is a multiple-choice question. When
 the app offers a choice tool, ask through it so the user clicks an option instead of typing: in Claude
 Code that is `AskUserQuestion`; in Codex, its question tool (such as `request_user_input`) when available. One question per
 decision, each option a short label with a one-line description, the recommended option first and
@@ -106,10 +106,8 @@ missing Node.js/Tailscale come from Homebrew, data lives in `~/Library/Applicati
 autostart is a LaunchAgent. With `--full-access` the owner must grant Accessibility and Screen Recording to
 Codex/Terminal in System Settings → Privacy & Security; you cannot do that for them):
 - Respect an existing installation's engine, workspace, data directory and
-  network choices. A fresh worker defaults to Codex, local-only connectivity and
-  restricted permissions unless the user asks otherwise. `--engine codex|claude`
-  picks the worker's engine; the current app can manage either one.
-- Offer a main-agent name during fresh setup unless the user gave one, e.g.
+  network choices. For a fresh worker, ask which engines: **Codex / Claude Code / both**（请选择 Codex、Claude Code 或两者）. Keep local-only connectivity and restricted permissions unless requested otherwise. Use `--engines codex,claude` for both, or `--engine codex|claude` for one; the current app can manage either.
+- Ask for the name of **each** selected main agent（请分别给每个主 Agent 起名）. `--main-agent-name` names the first engine; `--second-main-agent-name` names the second. Defaults: Codex “主agent export” / “Main agent”, Claude “Claude主agent” / “Claude main agent”. Fresh dual installs use `main-codex` and `main-claude`; a single install uses `main-agent`. Keep all ids, names, workspaces and custom instructions on reruns. Offer names during fresh setup unless the user gave them, e.g.
   `--main-agent-name "Main Agent Work"` (1-100 printable characters; spaces and
   Unicode are fine). `--name` identifies the computer, not the agent. Preserve the
   name on reruns. This is the session title the user sees in the app; the user may also rename the session
@@ -247,7 +245,7 @@ and instructions. The worker's permanent runtime lives under its workspace,
 outside the plugin cache; private service config, logs, registry and connection
 file live under the reported data directory. Switching to orchestrator-only does
 not uninstall or stop an existing worker; remove one only if the user asks. The
-service queues one task at a time. No token, connection contents or login
+service queues one task at a time per engine; the two engines can work concurrently. No token, connection contents or login
 credentials belong in chat, source control, exports or the plugin package. Do
 not log in, change accounts, publish, or delete connection files for the user.
 

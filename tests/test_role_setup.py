@@ -10,6 +10,10 @@ import threading
 import socket
 import time
 import urllib.request
+import importlib.util
+import io
+from types import SimpleNamespace
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +33,7 @@ $client=Join-Path $DataDir 'local-client'; New-Item -ItemType Directory -Force -
 
 class RoleSetupTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT.parent)
+        self.temp = tempfile.TemporaryDirectory(dir=ROOT)
         self.root = Path(self.temp.name)
         self.home = self.root / 'orchestrator registry'
         self.data = self.root / 'worker private data'
@@ -111,6 +115,124 @@ class RoleSetupTests(unittest.TestCase):
         self.assertTrue(value['plan'])
         self.assertTrue(value['orchestrator']['local_worker_registration'])
         self.assertEqual(value['worker']['engine'], 'claude')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
+    def test_dual_engine_plan_preserves_names_ids_and_workspaces(self):
+        workspace = self.root / 'dual workspace'
+        run = lambda *extra: self.run_setup('--role', 'worker', '--data-dir', str(self.data),
+            '--workspace', str(workspace), '--plan', *extra, actual=True)
+        result = run('--engines', 'codex,claude', '--main-agent-name', 'Code 经理',
+                     '--second-main-agent-name', 'Claude 经理')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = self.result(result.stdout)['worker']
+        self.assertEqual(plan['engines'], ['codex', 'claude'])
+        self.assertEqual([m['name'] for m in plan['main_agents']], ['Code 经理', 'Claude 经理'])
+        self.assertEqual([Path(m['workspace']).name for m in plan['main_agents']], ['main-codex', 'main-claude'])
+        self.assertFalse(self.data.exists())
+        self.assertFalse(workspace.exists())
+        self.data.mkdir()
+        config = dict(engines=plan['engines'], main_agents=plan['main_agents'], executor='app-server',
+                      main_agent_name='Code 经理', main_agent_id=plan['main_agents'][0]['id'], language='zh',
+                      computer_name='fixture-pc', sandbox='workspace-write', port=18765, tailscale_port=18766,
+                      tasks_dir=str(workspace/'AgentFleet-其他'))
+        path = self.data/'config.json'
+        path.write_text(json.dumps(config), encoding='utf-8')
+        before = path.read_bytes()
+        repeated = run()
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(self.result(repeated.stdout)['worker']['main_agents'], plan['main_agents'])
+        self.assertEqual(path.read_bytes(), before)
+        for engines in ('codex,codex', 'unknown', 'claude,codex,claude', ''):
+            self.assertNotEqual(run('--engines', engines).returncode, 0)
+        self.assertNotEqual(run('--engines', 'codex,claude', '--second-main-agent-name', 'Code 经理').returncode, 0)
+        self.assertNotEqual(run('--engines', 'codex,claude', '--engine', 'codex').returncode, 0)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
+    def test_direct_windows_dual_plan_is_read_only(self):
+        result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            str(ROOT/'install-worker.ps1'), '-Engines', 'claude,codex', '-Language', 'en',
+            '-DataDir', str(self.data), '-Workspace', str(self.root/'workspace'), '-Plan'],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = self.result(result.stdout)
+        self.assertEqual(plan['engines'], ['claude', 'codex'])
+        self.assertEqual([m['name'] for m in plan['main_agents']], ['Claude main agent', 'Main agent'])
+        self.assertFalse(self.data.exists())
+
+    def mac_setup(self, **overrides):
+        spec = importlib.util.spec_from_file_location('fixture_mac_setup', ROOT/'worker/install_mac.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = dict(data_dir=str(self.data), language='en', engine=None, engines='codex,claude',
+                    workspace=str(self.root/'mac workspace'), name='fixture-mac', main_agent_name=None,
+                    second_main_agent_name=None, manager_name='', full_access=False, restricted=False,
+                    port=None, tailscale_port=None, connectivity='local', lan_address='', json=True,
+                    codex_home=str(self.root/'fixture-codex-home'), codex_version='0.162.1',
+                    codex_executable=None, claude_executable=None, description='', no_start=False)
+        setup = module.Setup(SimpleNamespace(**{**args, **overrides}))
+        setup.resolve()
+        return setup
+
+    def test_mac_dual_config_connection_instructions_and_rerun_without_services(self):
+        setup = self.mac_setup(main_agent_name='Code owner', second_main_agent_name='Claude owner')
+        self.data.mkdir()
+        setup.python, setup.codex, setup.claude = sys.executable, 'fixture-codex', 'fixture-claude'
+        setup.claude_version = '2.1.248'
+        setup.token_file, setup.token_value = self.data/'fixture-token.txt', 'fixture-only-secret'
+        setup.ts_name = setup.ts_ip = None
+        setup.tailscale_executable = ''
+        setup.main_agent()
+        setup.write_config()
+        setup.connection()
+        config = json.loads(setup.config_path.read_text(encoding='utf-8'))
+        info = json.loads(setup.connection_file.read_text(encoding='utf-8'))
+        self.assertEqual(config['main_agents'], info['main_agents'])
+        self.assertEqual(config['engines'], ['codex', 'claude'])
+        self.assertEqual(config['main_agent_id'], config['main_agents'][0]['id'])
+        self.assertEqual(config['main_agent_workspaces'], [config['main_agents'][0]['workspace']])
+        code, claude = (Path(m['workspace']) for m in config['main_agents'])
+        self.assertIn('Code owner', (code/'AGENTS.md').read_text(encoding='utf-8'))
+        self.assertIn('Claude owner', (claude/'CLAUDE.md').read_text(encoding='utf-8'))
+        for folder, filename in ((code, 'AGENTS.md'), (claude, 'CLAUDE.md')):
+            instructions = (folder/filename).read_text(encoding='utf-8')
+            self.assertIn(str(folder), instructions)
+            self.assertNotIn('{{', instructions)
+        self.assertTrue((code/'.codex/config.toml').is_file())
+        self.assertFalse((claude/'.codex/config.toml').exists())
+        custom = claude/'CLAUDE.md'
+        custom.write_text('owner instructions', encoding='utf-8')
+        repeated = self.mac_setup(engines=None)
+        self.assertEqual(repeated.mains, config['main_agents'])
+        repeated.token_value = 'fixture-only-secret'
+        repeated.main_agent()
+        self.assertEqual(custom.read_text(encoding='utf-8'), 'owner instructions')
+        for engines in ('codex,codex', 'invalid'):
+            with self.assertRaises(SystemExit):
+                self.mac_setup(engines=engines)
+
+    def test_mac_checks_both_clis_and_defers_busy_restart(self):
+        setup = self.mac_setup()
+        fake_code, fake_claude = self.root/'codex', self.root/'claude'
+        fake_code.touch(); fake_claude.touch()
+        setup.args.codex_executable, setup.args.claude_executable = str(fake_code), str(fake_claude)
+        calls = []
+        def run(*command, **kwargs):
+            calls.append(command)
+            version = '0.162.1' if command[0] == str(fake_code) else '2.1.248'
+            return SimpleNamespace(returncode=1 if command[-1] == 'status' else 0, stdout=version, stderr='')
+        setup.run = run
+        setup.agent_cli()
+        self.assertIn((str(fake_code), 'login', 'status'), calls)
+        self.assertIn((str(fake_claude), 'auth', 'status'), calls)
+        self.assertEqual(len(setup.warnings), 2)
+        setup.python, setup.token_value = Path(sys.executable), 'fixture-only-secret'
+        (self.data/'state').mkdir(parents=True)
+        setup.run = lambda *cmd, **kw: (calls.append(cmd) or SimpleNamespace(returncode=0))
+        setup.config_path.write_text('{}', encoding='utf-8')
+        with patch('urllib.request.urlopen', return_value=io.BytesIO(b'{"tasks":[{"status":"running","engine":"claude"}]}')):
+            self.assertTrue(setup.restart())
+        self.assertTrue((self.data/'state/restart-when-idle').is_file())
+        self.assertFalse(any('stop' in call for call in calls))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_both_reuses_existing_worker_without_changing_configuration(self):
