@@ -57,6 +57,12 @@ class DualEngineTests(unittest.IsolatedAsyncioTestCase):
         # A main registration carries its engine even if it has another management name.
         self.assertEqual(self.submit(name='alias')['engine'], 'claude')
 
+    async def test_idempotency_key_cannot_alias_requests_for_different_mains(self):
+        first = self.manager.submit('fixture', None, 10, 'shared-key', name=self.mains[0]['name'])
+        self.assertEqual(self.manager.submit('fixture', None, 10, 'shared-key', name=self.mains[0]['name']), first)
+        with self.assertRaisesRegex(ValueError, 'different request'):
+            self.manager.submit('fixture', None, 10, 'shared-key', name=self.mains[1]['name'])
+
     async def test_explicit_parent_and_resume_engine(self):
         self.assertEqual(self.submit()['engine'], 'codex')
         self.assertEqual(self.submit(engine='claude')['engine'], 'claude')
@@ -67,11 +73,92 @@ class DualEngineTests(unittest.IsolatedAsyncioTestCase):
         child = self.submit(parent_task_id=main['task_id'])
         self.assertEqual(child['engine'], 'claude')
         self.assertEqual(self.manager.sidebar_side(child), 'main')
+        for kwargs in ({'name': self.mains[1]['name']}, {'parent_task_id': main['task_id']}):
+            with self.assertRaisesRegex(ValueError, 'Cannot override'):
+                self.submit(engine='codex', **kwargs)
+        single = TaskManager({**self.config, 'state_dir': str(self.root / 'single-state'),
+                              'engines': ['codex'], 'main_agents': self.mains[:1]})
+        with self.assertRaisesRegex(ValueError, 'configured engines'):
+            single.submit('fixture', None, 10, None, engine='claude')
+        self.assertFalse(single.jobs)
         child.update(status='completed', thread_id='child-thread')
         resumed = self.submit(resume_task_id=child['task_id'])
         self.assertEqual(resumed['engine'], 'claude')
         with self.assertRaises(ValueError):
             self.submit(resume_task_id=child['task_id'], engine='codex')
+
+    async def test_main_permissions_use_resolved_identity_and_keep_registered_main_workspace(self):
+        caller = self.submit(name=self.mains[0]['name'])
+        caller.update(status='running', thread_id='caller')
+        self.manager.register_agent(self.mains[1]['name'], 'fixture', agent_type='main', locked=True)
+        for kwargs in ({'name': self.mains[1]['id']}, {'workspace': self.mains[1]['workspace']},
+                       {'name': '  ' + self.mains[1]['name'] + '  '}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, 'locked'):
+                self.manager.submit('fixture', kwargs.get('workspace'), 10, None,
+                                    name=kwargs.get('name'), parent_task_id=caller['task_id'])
+        self.manager.register_agent('custom main', 'fixture', agent_type='main', can_dispatch=False)
+        self.manager.profile['agents']['custom main']['engine'] = 'claude'
+        custom_workspace = str(self.root / 'custom-main')
+        custom = self.manager.get(self.manager.submit('fixture', custom_workspace, 10, None,
+                                                     name='custom main')['task_id'])
+        self.assertEqual((custom['name'], custom['workspace'], custom['engine']),
+                         ('custom main', custom_workspace, 'claude'))
+        self.assertFalse(self.manager.is_worker(custom))
+        custom.update(status='running', thread_id='custom')
+        with self.assertRaisesRegex(ValueError, 'can_dispatch is off'):
+            self.submit(parent_task_id=custom['task_id'])
+        self.assertEqual(self.submit(parent_task_id=caller['task_id'])['engine'], 'codex')
+
+    async def test_legacy_profile_id_follows_existing_engine_when_default_changes(self):
+        self.manager.profile_file.write_text(json.dumps({'main_agent_id': 'claude-identity'}), encoding='utf-8')
+        restarted = TaskManager(self.config.copy())
+        self.assertEqual([m['id'] for m in restarted.mains], ['codex-identity', 'claude-identity'])
+
+    async def test_quota_recovery_clears_only_recovered_engine_before_turn_finishes(self):
+        from server import QuotaExhausted
+        jobs = {e: self.submit(engine=e) for e in self.manager.engines}
+        waits = [asyncio.create_task(self.manager.wait_for_quota(jobs[e],
+                 QuotaExhausted(['fixture'], time.time() + 60, engine=e))) for e in jobs]
+        await self.until(lambda: len(self.manager.quota_waits) == 2)
+        self.manager.quota_recovered(jobs['codex'], 'Codex')
+        self.assertEqual(set(self.manager.quota_wait['engines']), {'claude'})
+        self.assertEqual(self.manager.quota_wait['engine'], 'claude')
+        for wait in waits:
+            wait.cancel()
+        await asyncio.gather(*waits, return_exceptions=True)
+
+    async def test_cancel_and_restart_preserve_engine_for_continuation(self):
+        job = self.submit(engine='claude')
+        await self.manager.cancel(job['task_id'])
+        self.assertTrue(self.manager.quota_wakes['claude'].is_set())
+        self.assertFalse(self.manager.quota_wakes['codex'].is_set())
+        pending = self.submit(engine='claude')
+        pending.update(thread_id='fixture-resume', status='running')
+        self.manager.save(pending)
+        restarted = TaskManager(self.config.copy())
+        self.assertEqual(restarted.get(pending['task_id'])['status'], 'interrupted')
+        resumed = restarted.submit('fixture', None, 10, None, resume_task_id=pending['task_id'])
+        self.assertEqual(resumed['engine'], 'claude')
+        self.assertEqual(restarted.queues['claude'].qsize(), 1)
+        self.assertEqual(restarted.queues['codex'].qsize(), 0)
+
+    async def test_each_main_has_its_own_dispatch_policy_and_child_ownership(self):
+        mains = [self.submit(name=m['name']) for m in self.mains]
+        for main in mains:
+            main.update(status='running', thread_id=main['engine'] + '-thread')
+        self.manager.register_agent(mains[0]['name'], 'fixture', agent_type='main', can_dispatch=False)
+        with self.assertRaisesRegex(ValueError, 'can_dispatch is off'):
+            self.submit(parent_task_id=mains[0]['task_id'])
+        child = self.submit(parent_task_id=mains[1]['task_id'])
+        self.assertEqual(child['engine'], 'claude')
+        with self.assertRaisesRegex(ValueError, 'did not open'):
+            await self.manager.cancel(child['task_id'], mains[0]['task_id'])
+        self.assertEqual((await self.manager.cancel(child['task_id'], mains[1]['task_id']))['status'], 'cancelled')
+        from types import SimpleNamespace
+        for main in mains:
+            ctx = SimpleNamespace(request_context=SimpleNamespace(
+                request=SimpleNamespace(headers={'x-agent-fleet-task': main['task_id']})))
+            self.assertEqual(self.manager.caller(ctx), main['task_id'])
 
     async def test_parallel_engines_serialize_their_own_queue(self):
         active, maximum, started = {}, {}, []

@@ -382,11 +382,12 @@ class TaskManager:
         self._mains = sorted([dict(main) for main in configured_mains or []], key=lambda m: self.engines.index(m['engine'])) or [
             {'id': self.profile['main_agent_id'], 'name': config.get('main_agent_name'),
              'engine': self.engines[0], 'workspace': next(iter(config.get('main_agent_workspaces', [])), None)}]
+        legacy_main = next((m for m in self._mains if m.get('id') == self.profile['main_agent_id']), self._mains[0])
         for main in self._mains:
             if main.get('engine') not in self.engines:
                 raise ValueError('main agent engine is not enabled')
             saved = next((m for m in self.profile.get('main_agents', []) if m.get('engine') == main['engine']), {})
-            legacy_id = self.profile['main_agent_id'] if not self.profile.get('main_agents') and main is self._mains[0] else None
+            legacy_id = self.profile['main_agent_id'] if not self.profile.get('main_agents') and main is legacy_main else None
             main['id'] = saved.get('id') or legacy_id or main.get('id') or str(uuid.uuid4())
             if configured_mains:
                 old_name = saved.get('name')
@@ -1073,6 +1074,7 @@ class TaskManager:
             raise ValueError('prompt must contain 1 to 100,000 characters')
         if name is not None and not 1 <= len(name.strip()) <= 100:
             raise ValueError('name must contain 1 to 100 characters')
+        name = name.strip() if name is not None else None
         if not 10 <= timeout_seconds <= self.config.get('max_timeout_seconds', 7200):
             raise ValueError('timeout_seconds is outside the configured range')
         # parent_task_id is the calling main-agent turn; internal wake-ups and the orchestrator have none.
@@ -1085,7 +1087,8 @@ class TaskManager:
                 raise ValueError('Invalid idempotency_key')
             for job in self.jobs.values():
                 if job.get('idempotency_key') == idempotency_key:
-                    if (job['prompt'], job['requested_workspace'], job['timeout_seconds'], job.get('resume_task_id'), job.get('requested_engine')) != (prompt, workspace, timeout_seconds, resume_task_id, engine):
+                    if (job['prompt'], job['requested_workspace'], job['timeout_seconds'], job.get('resume_task_id'), job.get('requested_engine')) != (prompt, workspace, timeout_seconds, resume_task_id, engine) or (
+                            'requested_name' in job and job['requested_name'] != name):
                         raise ValueError('idempotency_key was already used for a different request')
                     return self.public(job)
         if sum(j['status'] in ('queued', 'running') for j in self.jobs.values()) >= 32:
@@ -1096,10 +1099,11 @@ class TaskManager:
             raise ValueError('engine must be one of the configured engines')
         main = self.main_for(workspace, name)
         registered = self.profile['agents'].get(name or '', {})
-        if not main and registered.get('type') == 'main':
-            main = next((m for m in self.mains if m['engine'] == registered.get('engine', self.engines[0])), None)
-        engine = (parent or {}).get('engine') or (main or {}).get('engine') or (self.get(parent_task_id).get('engine') if parent_task_id else None) or engine or self.engines[0]
-        if explicit_engine and explicit_engine != engine and (parent or main or parent_task_id):
+        registered_engine = registered.get('engine', self.engines[0]) if registered.get('type') == 'main' else None
+        engine = (parent or {}).get('engine') or (main or {}).get('engine') or registered_engine or (self.get(parent_task_id).get('engine') if parent_task_id else None) or engine or self.engines[0]
+        if engine not in self.engines:
+            raise ValueError('engine must be one of the configured engines')
+        if explicit_engine and explicit_engine != engine and (parent or main or registered_engine or parent_task_id):
             raise ValueError('Cannot override the engine of a session, main agent or parent task')
         if parent:
             if parent['engine'] not in self.engines:
@@ -1119,6 +1123,8 @@ class TaskManager:
         main = self.main_for(str(target))
         final_name = main['name'] if main and main.get('name') else (
             parent.get('name') if parent else name and name.strip())
+        if parent_task_id and not parent:
+            self.check_dispatch(parent_task_id, final_name)
         # A registered agent is one session: a second one with the same name would split its history.
         if not parent and (final_name in self.profile['agents'] or main):
             existing = self.named_session(final_name)
@@ -1129,7 +1135,7 @@ class TaskManager:
         if not target.is_dir():
             raise ValueError('workspace must be a directory')
         job = dict(task_id=task_id, prompt=prompt, requested_workspace=workspace,
-                   engine=engine, requested_engine=explicit_engine,
+                   engine=engine, requested_engine=explicit_engine, requested_name=name,
                    workspace=str(target), timeout_seconds=timeout_seconds,
                    idempotency_key=idempotency_key, status='queued', created_at=now())
         if parent:
@@ -1376,6 +1382,8 @@ class TaskManager:
             job.pop('latest_message')
             self.save(job)
         key = job['engine']
+        self.quota_waits.pop(key, None)
+        self.quota_wait = {**next(iter(self.quota_waits.values())), 'engines': dict(self.quota_waits)} if self.quota_waits else None
         if key in self.quota_pauses:
             self.quota_pauses.discard(key)
             self.quota_paused = bool(self.quota_pauses)

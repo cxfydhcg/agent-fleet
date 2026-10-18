@@ -159,6 +159,26 @@ class RoleSetupTests(unittest.TestCase):
         self.assertEqual([m['name'] for m in plan['main_agents']], ['Claude main agent', 'Main agent'])
         self.assertFalse(self.data.exists())
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
+    def test_windows_upgrade_keeps_legacy_claude_identity_when_codex_is_first(self):
+        self.data.mkdir()
+        workspace = self.root / 'workspace'
+        legacy_workspace = str(workspace / 'kept-main')
+        prior = dict(executor='claude', language='en', main_agent_name='Existing Claude',
+                     main_agent_workspaces=[legacy_workspace], tasks_dir=str(workspace/'AgentFleet-Other'),
+                     computer_name='fixture-pc', sandbox='workspace-write', port=18765, tailscale_port=18766)
+        (self.data/'config.json').write_text(json.dumps(prior), encoding='utf-8')
+        (self.data/'state').mkdir()
+        (self.data/'state/profile.json').write_text(json.dumps({'main_agent_id': 'legacy-claude-id'}), encoding='utf-8')
+        result = self.run_setup('--role', 'worker', '--data-dir', str(self.data),
+                                '--engines', 'codex,claude', '--plan', actual=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mains = self.result(result.stdout)['worker']['main_agents']
+        self.assertEqual((mains[1]['id'], mains[1]['name'], mains[1]['workspace']),
+                         ('legacy-claude-id', 'Existing Claude', legacy_workspace))
+        self.assertNotEqual(mains[0]['id'], 'legacy-claude-id')
+        self.assertFalse(workspace.exists())
+
     def mac_setup(self, **overrides):
         spec = importlib.util.spec_from_file_location('fixture_mac_setup', ROOT/'worker/install_mac.py')
         module = importlib.util.module_from_spec(spec)
@@ -233,6 +253,20 @@ class RoleSetupTests(unittest.TestCase):
             self.assertTrue(setup.restart())
         self.assertTrue((self.data/'state/restart-when-idle').is_file())
         self.assertFalse(any('stop' in call for call in calls))
+
+    def test_mac_upgrade_legacy_claude_keeps_id_when_codex_becomes_default(self):
+        self.data.mkdir()
+        old_workspace = str(self.root / 'legacy-main')
+        prior = dict(executor='claude', language='en', main_agent_name='Existing Claude',
+                     main_agent_id='stale-config-id', main_agent_workspaces=[old_workspace],
+                     tasks_dir=str(self.root/'mac workspace'/'AgentFleet-Other'))
+        (self.data/'config.json').write_text(json.dumps(prior), encoding='utf-8')
+        (self.data/'state').mkdir()
+        (self.data/'state/profile.json').write_text(json.dumps({'main_agent_id': 'legacy-claude-id'}), encoding='utf-8')
+        setup = self.mac_setup()
+        self.assertEqual((setup.mains[1]['id'], setup.mains[1]['name'], setup.mains[1]['workspace']),
+                         ('legacy-claude-id', 'Existing Claude', old_workspace))
+        self.assertNotEqual(setup.mains[0]['id'], 'legacy-claude-id')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_both_reuses_existing_worker_without_changing_configuration(self):

@@ -98,6 +98,13 @@ test('second main agent uses its identity and workspace, is orchestrator-only, a
   assert.equal(pc.main_agent_id, mains[0].id);
   assert.equal(pc.main_agents[1].id, mains[1].id);
   assert.equal(pc.agents[oldName], undefined);
+  // A renamed main keeps its permanent identity even if the other main takes its old name.
+  const followedName = mains[1].name;
+  mains[0].name = followedName;
+  mains[1].name = 'Claude moved again';
+  result = await run('agent', 'dual', followedName, 'follow the saved identity');
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(worker.started.at(-1).name, mains[1].name);
 });
 
 test('only the registered orchestrator session reaches the main agent; other sessions get their own agent', async (t) => {

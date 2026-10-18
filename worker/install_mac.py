@@ -126,7 +126,9 @@ class Setup:
                 self.fail('主 Agent 名字与现有 Agent 冲突。', 'Main agent name conflicts with an existing agent.')
             folder = old.get('workspace') or str(self.workspace / ('main-agent' if len(self.engines) == 1 else 'main-' + engine))
             saved = next((m for m in saved_profile.get('main_agents', []) if m['engine'] == engine), {})
-            identity = saved.get('id') or old.get('id') or (saved_profile.get('main_agent_id') if index == 0 else None) or str(uuid.uuid4())
+            legacy_engine = 'claude' if prior.get('executor') == 'claude' else 'codex'
+            legacy_id = saved_profile.get('main_agent_id') if not prior.get('main_agents') and engine == legacy_engine else None
+            identity = saved.get('id') or legacy_id or old.get('id') or str(uuid.uuid4())
             self.mains.append({'name': name, 'engine': engine, 'id': identity, 'workspace': folder})
         self.main_name = self.mains[0]['name']
         self.main_workspace = Path(self.mains[0]['workspace'])
