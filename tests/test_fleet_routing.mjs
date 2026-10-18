@@ -109,3 +109,22 @@ test('only the registered orchestrator session reaches the main agent; other ses
   assert.equal(worker.started.at(-1).tool, 'continue_task');
   assert.equal(worker.started.at(-1).name, '系统设置截图');
 });
+
+test('an unreachable computer gets a clear message, not a stack trace', async (t) => {
+  const closed = createServer();
+  closed.listen(0, '127.0.0.1');
+  await once(closed, 'listening');
+  const port = closed.address().port;
+  closed.close();
+  const root = mkdtempSync(join(tmpdir(), 'fleet-down-'));
+  const home = join(root, 'registry');
+  mkdirSync(join(home, 'tokens'), { recursive: true });
+  writeFileSync(join(home, 'tokens', 'pc-1.txt'), 'token\n');
+  writeFileSync(join(home, 'computers.json'), JSON.stringify({ computers: { 'pc-1': { main_agent_name: 'main', engine: 'codex',
+    url: `http://127.0.0.1:${port}/mcp`, token_file: join(home, 'tokens', 'pc-1.txt'), agents: {} } } }));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const result = await fleet(['get', 'pc-1', 'some-task'], { cwd: root, env: { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en' } });
+  assert.equal(result.code, 4);
+  assert.match(result.stderr, /Cannot reach pc-1/);
+  assert.doesNotMatch(result.stderr, /at |undici/);
+});

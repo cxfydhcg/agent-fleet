@@ -613,6 +613,13 @@ if (!pc) {
   process.exit(2);
 }
 
+// A computer that is off, asleep or restarting its service: a clear message instead of a stack trace.
+process.on("uncaughtException", (error) => {
+  if (error?.unreachable) console.error(error.message);
+  else console.error(error?.stack ?? error);
+  process.exit(error?.unreachable ? 4 : 1);
+});
+
 async function rpc(method, params) {
   const body = { jsonrpc: "2.0", id: nextId++, method, params };
   const res = await fetch(url, {
@@ -623,6 +630,11 @@ async function rpc(method, params) {
       Accept: "application/json, text/event-stream",
     },
     body: JSON.stringify(body),
+  }).catch((error) => {
+    const reason = error.cause?.code ?? error.message;
+    throw Object.assign(new Error(T(`连不上 ${computer}（${url}，${reason}）：那台电脑可能关机、睡眠，或 worker 服务没在运行。`,
+                                    `Cannot reach ${computer} (${url}, ${reason}): it may be off or asleep, or its worker service is not running.`)),
+                        { unreachable: true });
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`${method} HTTP ${res.status}: ${text.slice(0, 500)}`);
@@ -640,8 +652,18 @@ async function call(tool, args) {
 }
 
 async function wait(taskId) {
-  for (let i = 0; ; i++) {
-    const t = await call("get_task", { task_id: taskId });
+  for (let i = 0, down = 0; ; i++) {
+    let t;
+    try {
+      t = await call("get_task", { task_id: taskId });
+      down = 0;
+    } catch (error) {
+      // The service restarts itself after an update once idle; tasks are saved, so keep waiting a while.
+      if (!error.unreachable || ++down > 36) throw error;
+      if (down === 1) console.error(T("  ...暂时连不上（服务可能在重启），继续等待", "  ...temporarily unreachable (the service may be restarting); still waiting"));
+      await sleep(5000);
+      continue;
+    }
     if (TERMINAL.has(t.status)) return t;
     if (i % 6 === 0) console.error(`  ...${t.status} (${i * 5}s)`);
     await sleep(5000);
