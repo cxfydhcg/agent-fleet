@@ -208,11 +208,17 @@ To register another worker later, rerun with `--role orchestrator --connection`
   This does not restart the service or change permissions, identity or pairing.
   Verify both project registrations before claiming completion.
 - A Claude worker (`--engine claude`) gets its folder in the Claude desktop app instead of Codex:
-  setup opens `claude://code/new?folder=<workspace>`, which starts a Code session there after the
+  setup opens `claude://code/new?folder=<workspace>`, which opens a Code draft there after the
   owner confirms the folder prompt; the other-agents folder (`tasks_dir`) is opened the same way, so
-  expect two prompts. Claude desktop has no project list to read back, so
+  expect two prompts. The Code sidebar lists sessions, not folders, so a draft appears there only
+  after a message is sent in it. Claude desktop has no project list to read back, so
   `desktop.status` is `opened` (or `not-installed`), never `registered`; tell the owner to confirm
-  the prompt, and don't claim more than that. Nothing is registered in Codex.
+  the prompts and send a message in each draft, and don't claim more than that. Nothing is
+  registered in Codex.
+  When setup itself runs in the Claude desktop app and a session-starting tool is available (in
+  Claude Code: `start_session` with `cwd`), offer to start one short session in each folder instead,
+  so both appear in the sidebar without the owner typing. Each such session must only reply briefly
+  and never change files there: the worker service uses them.
 - A Codex worker's setup registers the workspace under Projects in Codex desktop on Windows and macOS (the
   orchestrator registers none) and
   reports `desktop.status`, including when it reuses an existing worker. Verify

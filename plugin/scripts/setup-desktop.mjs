@@ -102,7 +102,7 @@ export async function ensureDesktopProject({ workspace, disabled = false, engine
 
 // A Claude worker's folder belongs in the Claude desktop Code tab, not in Codex. Claude desktop has
 // no public project list to read back, so the result is 'opened', never 'registered': the app asks
-// the owner to confirm the folder and then starts a Code session there.
+// the owner to confirm the folder and opens a draft there, which reaches the sidebar only once sent.
 async function openClaudeFolder(workspace, platform, runtime) {
   const installed = runtime.installed || appInstalled(platform, 'claude', 'claude://code/new');
   if (!installed()) return { status: 'not-installed', app: 'claude', workspace };
@@ -111,7 +111,7 @@ async function openClaudeFolder(workspace, platform, runtime) {
   const launch = runtime.launch || appLauncher(platform, 'Claude');
   launch(claudeWorkspaceUrl(workspace));
   return { status: 'opened', app: 'claude', workspace,
-    message: 'Claude desktop opened a Code session in this folder. Confirm the folder prompt in the app.' };
+    message: 'Claude desktop opened a new Code draft in this folder. Confirm the folder prompt, then send a message in the draft; the folder appears in the sidebar only after that.' };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

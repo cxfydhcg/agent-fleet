@@ -78,11 +78,13 @@ the worker dashboard. A sidebar project and a visible main-agent chat are checke
 separately.
 
 A Claude worker (`--engine claude`) puts its folder in the Claude desktop app, not
-Codex: setup opens `claude://code/new?folder=<workspace>`, and the app starts a
-Code session in that folder after the owner confirms its folder prompt; the
+Codex: setup opens `claude://code/new?folder=<workspace>`, and the app opens a
+Code draft in that folder after the owner confirms its folder prompt; the
 other-agents folder (`tasks_dir`, e.g. `AgentFleet-其他`) is opened the same way. Claude
 desktop exposes no project list to verify, so `desktop.status` is `opened` (or
-`not-installed`), never `registered`. No Codex project is created.
+`not-installed`), never `registered`. The Code sidebar lists sessions, not
+folders, so each folder shows up there only after a message is sent in its draft.
+No Codex project is created.
 
 Repair only these project registrations for an installed worker, without
 redeploying or restarting the service, changing permissions, or reopening pairing:
