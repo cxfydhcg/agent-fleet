@@ -95,7 +95,37 @@ Claude Code：在对话框里输入
 
 > 不让【经理cris】再开新任务
 
-子 Agent 的成果放在那台电脑工作区的 `shared/` 文件夹里（工作区默认是"文稿"（Documents）里的 `AgentFleet` 文件夹）。要看别的电脑做出来的图片、视频，打开机群看板的「文件」页直接预览，或者让 AI 用 `fleet.mjs fetch` 取回来。看进度用机群看板：在 orchestrator 上让 AI 打开它（`fleet.mjs dashboard`），一页看到所有电脑的任务和会话，不用粘贴令牌。单独看某一台也可以打开它自己的只读看板 `http://<那台电脑的地址>:8765/dashboard`（Tailscale 是 8766 端口），第一次要粘贴那台电脑的令牌。
+子 Agent 的成果放在那台电脑工作区的 `AgentFleet-其他/<任务>/` 或 `shared/` 文件夹里（见下面“文件放在哪里”）。要看别的电脑做出来的图片、视频，打开机群看板的「文件」页直接预览，或者让 AI 用 `fleet.mjs fetch` 取回来。看进度用机群看板：在 orchestrator 上让 AI 打开它（`fleet.mjs dashboard`），一页看到所有电脑的任务和会话，不用粘贴令牌。单独看某一台也可以打开它自己的只读看板 `http://<那台电脑的地址>:8765/dashboard`（Tailscale 是 8766 端口），第一次要粘贴那台电脑的令牌。
+
+## 文件放在哪里
+
+每台 worker 有两个文件夹：工作区（agent 干活的地方）和数据目录（设置、令牌、任务记录）。
+
+| | Windows | Mac |
+|---|---|---|
+| 工作区 | `C:\Users\<用户名>\Documents\AgentFleet\` | `~/AgentFleet/` |
+| 数据目录 | `C:\Users\<用户名>\AppData\Local\agent-fleet\` | `~/Library/Application Support/agent-fleet/` |
+
+工作区可以在第一次安装时用 `--workspace` 改，之后重跑安装沿用原来的位置。
+
+```
+AgentFleet\                    ← 工作区，桌面版侧边栏里的 “AgentFleet”
+├── main-agent\                ← 主 agent 工作的地方
+│   ├── AGENTS.md / CLAUDE.md  ← 主 agent 的工作说明（同一份内容）
+│   └── .codex\config.toml     ← Codex 主 agent 连接派任务服务的配置（含令牌，只有主 agent 加载）
+├── AgentFleet-其他\            ← 子任务的工作目录，桌面版侧边栏里的 “AgentFleet-其他”
+│   └── <任务名-任务id>\        ← 每个子任务一个文件夹，产出在这里
+├── shared\                    ← 共享文件夹：各 agent 交换文件用
+├── service\                   ← worker 服务的程序
+│   ├── worker\                ← server.py、启动/停止脚本、看板页面等
+│   ├── install-worker.ps1
+│   └── plugin-version.txt     ← 当前部署的插件版本
+└── worker-rules.md            ← 给子 agent 的规矩：只做交给它的事，不能再派任务，不碰令牌
+```
+
+数据目录里是 `config.json`（设置）、`token.txt` 和 `connection.json`（访问令牌，不要分享）、`venv`（Python 环境）和 `state`（每个任务的记录，在 `state/jobs/<任务id>/`）。Claude 引擎的 worker 不在工作区留配置文件：设置和派任务服务的连接在每次运行时用命令行参数传给 `claude`。
+
+机群看板的「文件」页和 `fleet.mjs files` / `fetch` 只能访问 `shared` 和 `AgentFleet-其他`。
 
 ## 名字、语言和权限管理
 
@@ -114,7 +144,7 @@ Claude Code：在对话框里输入
 
 ## 高级设置
 
-改 worker 的 `config.json`（Windows：`%LOCALAPPDATA%\agent-fleet\`，Mac：`~/Library/Application Support/agent-fleet/`），重启服务后生效。
+改 worker 的 `config.json`（Windows：`%USERPROFILE%\AppData\Local\agent-fleet\`，Mac：`~/Library/Application Support/agent-fleet/`），重启服务后生效。
 
 | 配置项 | 默认 | 作用 |
 |---|---|---|

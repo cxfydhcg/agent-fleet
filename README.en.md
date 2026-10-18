@@ -96,7 +96,37 @@ On the orchestrator, just say things like:
 
 > Stop 【Manager Cris】 from starting new tasks
 
-Sub-agents' results go into the `shared/` folder of that computer's workspace (by default the `AgentFleet` folder in Documents). To see images or videos another computer produced, use the fleet board's Files tab, or ask the AI to bring them over with `fleet.mjs fetch`. To watch progress, ask the AI on the orchestrator to open the fleet board (`fleet.mjs dashboard`): one page with every computer's tasks and sessions, no token to paste. Each computer also has its own read-only dashboard at `http://<that computer's address>:8765/dashboard` (port 8766 over Tailscale); the first time, paste that computer's token.
+Sub-agents' results go into `AgentFleet-Other/<task>/` or `shared/` in that computer's workspace (see "Where files live" below). To see images or videos another computer produced, use the fleet board's Files tab, or ask the AI to bring them over with `fleet.mjs fetch`. To watch progress, ask the AI on the orchestrator to open the fleet board (`fleet.mjs dashboard`): one page with every computer's tasks and sessions, no token to paste. Each computer also has its own read-only dashboard at `http://<that computer's address>:8765/dashboard` (port 8766 over Tailscale); the first time, paste that computer's token.
+
+## Where files live
+
+Each worker has two folders: the workspace (where agents work) and the data directory (settings, token, task records).
+
+| | Windows | Mac |
+|---|---|---|
+| Workspace | `C:\Users\<user>\Documents\AgentFleet\` | `~/AgentFleet/` |
+| Data directory | `C:\Users\<user>\AppData\Local\agent-fleet\` | `~/Library/Application Support/agent-fleet/` |
+
+The workspace can be chosen with `--workspace` at first setup; reruns keep it.
+
+```
+AgentFleet\                    ← workspace, "AgentFleet" in the desktop app sidebar
+├── main-agent\                ← where the main agent works
+│   ├── AGENTS.md / CLAUDE.md  ← the main agent's instructions (same content)
+│   └── .codex\config.toml     ← a Codex main agent's connection to the dispatcher (holds the token; only the main agent loads it)
+├── AgentFleet-Other\          ← sub-task folders, "AgentFleet-Other" in the sidebar
+│   └── <task name-task id>\   ← one folder per sub-task, with its output
+├── shared\                    ← shared folder for exchanging files between agents
+├── service\                   ← the worker service
+│   ├── worker\                ← server.py, start/stop scripts, dashboard page
+│   ├── install-worker.ps1
+│   └── plugin-version.txt     ← plugin version currently deployed
+└── worker-rules.md            ← rules for sub-agents: do only their task, never dispatch, never touch tokens
+```
+
+The data directory holds `config.json` (settings), `token.txt` and `connection.json` (access token; never share), `venv` (Python) and `state` (one record per task in `state/jobs/<task id>/`). A Claude-engine worker keeps no config file in the workspace: its settings and dispatcher connection are passed to `claude` as command-line arguments on every run.
+
+The fleet board's Files tab and `fleet.mjs files` / `fetch` reach only `shared` and `AgentFleet-Other`.
 
 ## Names, language and control
 
@@ -115,7 +145,7 @@ Sub-agents' results go into the `shared/` folder of that computer's workspace (b
 
 ## Advanced settings
 
-Edit the worker's `config.json` (Windows: `%LOCALAPPDATA%\agent-fleet\`, Mac: `~/Library/Application Support/agent-fleet/`) and restart the service.
+Edit the worker's `config.json` (Windows: `%USERPROFILE%\AppData\Local\agent-fleet\`, Mac: `~/Library/Application Support/agent-fleet/`) and restart the service.
 
 | Key | Default | What it does |
 |---|---|---|
