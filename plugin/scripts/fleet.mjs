@@ -736,12 +736,16 @@ function syncMain(main) {
 function syncMains(profile) {
   const previous = mainAgents(pc);
   const available = profile.main_agents ?? (profile.main_agent ? [profile.main_agent] : previous);
+  const agentsBefore = { ...pc.agents };
   for (const main of available) {
     const old = previous.find(m => m.id === main.id);
-    if (old && old.name !== main.name && Object.hasOwn(pc.agents, old.name)) {
-      pc.agents[main.name] = { ...pc.agents[old.name], ...pc.agents[main.name] };
+    if (old && old.name !== main.name && Object.hasOwn(agentsBefore, old.name))
       delete pc.agents[old.name];
-    }
+  }
+  for (const main of available) {
+    const old = previous.find(m => m.id === main.id);
+    if (old && old.name !== main.name && Object.hasOwn(agentsBefore, old.name))
+      pc.agents[main.name] = agentsBefore[old.name];
   }
   pc.main_agents = available;
   pc.engines = profile.engines ?? pc.engines ?? [pc.engine];
@@ -753,7 +757,8 @@ async function talkMain(prompt, requested) {
   const profile = await call("get_profile", {});
   const known = mainAgents(pc).find(m => m.name === requested || m.id === requested);
   const available = syncMains(profile);
-  const main = requested ? available.find(m => m.id === known?.id || m.name === requested || m.id === requested) : profile.main_agent;
+  const main = requested ? (known ? available.find(m => m.id === known.id)
+    : available.find(m => m.name === requested || m.id === requested)) : profile.main_agent;
   if (!main) throw new Error(T('找不到该主 Agent。', 'Main agent was not found.'));
   if (!main?.id || !validAgentName(main.name)) throw new Error(T('工作端未提供主 Agent ID 和名称，请重新运行设置。', 'Worker did not provide a main agent ID and name; rerun setup.'));
   if (pc.manager_name !== (main.manager_name ?? undefined)) await call("update_computer_profile", { manager_name: pc.manager_name ?? "" });
@@ -766,7 +771,9 @@ async function talkMain(prompt, requested) {
 async function talk(agentName, prompt) {
   const known = mainAgents(pc).find(m => m.name === agentName || m.id === agentName);
   const available = syncMains(await call("get_profile", {}));
-  const main = available.find(m => m.id === known?.id || m.name === agentName || m.id === agentName);
+  const main = known ? available.find(m => m.id === known.id)
+    : available.find(m => m.name === agentName || m.id === agentName);
+  if (known && !main) throw new Error(T('找不到该主 Agent。', 'Main agent was not found.'));
   if (main) return isOrchestrator ? talkMain(prompt, main.id) : talkMainOrOwn(prompt);
   return agentName === mainAgentName(pc) || (pc.manager_name && agentName === pc.manager_name) ? talkMainOrOwn(prompt) : talkNamed(agentName, prompt);
 }
