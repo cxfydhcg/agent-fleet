@@ -6,14 +6,15 @@
 <title data-i18n="title"></title>
 <style>
   :root {
-    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e4e3df;
-    --accent: #2f6fed; --user: #eef3fe; --agent: #ffffff; --tool: #f3f2ef;
+    --bg: #faf9f5; --panel: #ffffff; --text: #1f1e1d; --muted: #73726c; --line: #e8e6dc;
+    --accent: #2f6fed; --user: #f0eee6; --tool: #f5f4ed; --code: #f5f4ed;
     --ok: #1f8a4c; --run: #c77700; --bad: #c43d3d; --idle: #8a8a85;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #161615; --panel: #1f1f1d; --text: #ecebe7; --muted: #9a9993; --line: #33332f;
-      --accent: #7aa2ff; --user: #1f2a44; --agent: #232321; --tool: #2a2a27;
+      --bg: #262624; --panel: #1f1e1d; --text: #f5f4ee; --muted: #a6a39b; --line: #3d3d3a;
+      --accent: #7aa2ff; --user: #141413; --tool: #30302e; --code: #30302e;
       --ok: #4cc27f; --run: #f0a33a; --bad: #ef6b6b; --idle: #8a8a85;
     }
   }
@@ -33,19 +34,62 @@
   .badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
   .s-completed { color: var(--ok); } .s-running, .s-queued { color: var(--run); }
   .s-failed, .s-timed_out, .s-interrupted { color: var(--bad); } .s-cancelled { color: var(--idle); }
-  #detail { overflow-y: auto; padding: 16px 20px 40px; }
+  #detail { overflow-y: auto; padding: 16px 20px 48px; }
+  .thread { max-width: 780px; margin: 0 auto; }
   #detail .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 4px; }
   #detail .head h2 { font-size: 18px; margin: 0; }
-  #detail .info { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  #detail .info { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
   #detail .info code { font-size: 11px; }
-  .note { font-size: 12px; color: var(--muted); background: var(--tool); border-radius: 8px; padding: 8px 10px; margin-bottom: 16px; }
-  .msg { max-width: 860px; margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
-  .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-  .msg.user { background: var(--user); }
-  .msg.agent { background: var(--agent); }
-  .msg.fork { background: none; border-style: dashed; color: var(--muted); font-size: 12px; }
-  details.tool { max-width: 860px; margin: 0 0 12px; background: var(--tool); border-radius: 8px; padding: 6px 10px; font-size: 12px; color: var(--muted); }
-  details.tool pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
+  .note { font-size: 12px; color: var(--muted); background: var(--tool); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  /* A conversation reads like Claude: the request in a bubble on the right, the reply as plain text,
+     the tools used for it folded into one line under the reply. */
+  .u-row { display: flex; flex-direction: column; align-items: flex-end; margin: 28px 0 12px; }
+  .u-time { font-size: 11px; color: var(--muted); margin: 0 4px 4px; }
+  .bubble { background: var(--user); border-radius: 18px; padding: 10px 16px; max-width: 85%; }
+  .runtime { font-size: 11px; color: var(--muted); max-width: 85%; margin-bottom: 4px; }
+  .runtime > summary { cursor: pointer; list-style: none; text-align: right; }
+  .runtime > div { white-space: pre-wrap; margin-top: 4px; }
+  .turn > .md { margin: 10px 0; }
+  .md { font-size: 15px; line-height: 1.7; word-break: break-word; }
+  .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+  .md p { margin: .6em 0; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { line-height: 1.35; margin: 1.1em 0 .45em; font-weight: 600; }
+  .md h1 { font-size: 1.45em; } .md h2 { font-size: 1.25em; } .md h3 { font-size: 1.1em; } .md h4, .md h5, .md h6 { font-size: 1em; }
+  .md ul, .md ol { margin: .5em 0; padding-left: 1.6em; } .md li { margin: .25em 0; } .md li > ul, .md li > ol { margin: .2em 0; }
+  .md code { font: 13px/1.5 var(--mono); background: var(--code); border-radius: 4px; padding: .1em .35em; }
+  .md .code { margin: .8em 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+  .md .code-head { display: flex; justify-content: space-between; align-items: center; font: 11px var(--mono); color: var(--muted); padding: 5px 12px; background: var(--code); }
+  .md .code-head button { font-size: 11px; color: var(--muted); }
+  .md .code-head button:hover { color: var(--text); }
+  .md pre { margin: 0; padding: 10px 14px; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; white-space: pre; }
+  .md .table { overflow-x: auto; margin: .8em 0; }
+  .md table { border-collapse: collapse; font-size: 13.5px; line-height: 1.5; }
+  .md th, .md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+  .md th { background: var(--code); font-weight: 600; }
+  .md blockquote { margin: .7em 0; padding: 0 0 0 14px; border-left: 3px solid var(--line); color: var(--muted); }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
+  .md a { color: var(--accent); }
+  details > summary { list-style: none; } details > summary::-webkit-details-marker { display: none; }
+  .tools { margin: 8px 0; font-size: 13px; }
+  .tools > summary, .tool > summary { cursor: pointer; color: var(--muted); display: flex; gap: 8px; align-items: baseline; }
+  .tools > summary { display: inline-flex; padding: 3px 8px; margin-left: -8px; border-radius: 6px; }
+  .tools > summary:hover { background: var(--code); color: var(--text); }
+  .tools > summary::before, .tool > summary::before { content: '›'; display: inline-block; width: 8px; transition: transform .15s; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  .tool-list { border-left: 2px solid var(--line); margin: 4px 0 4px 3px; padding-left: 12px; }
+  .tool > summary { padding: 3px 0; min-width: 0; }
+  .tool .tname { font-weight: 600; color: var(--text); white-space: nowrap; }
+  .tool .targ { font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .tool .terr { color: var(--bad); font-size: 11px; white-space: nowrap; }
+  .tool .tlabel { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .tool pre { white-space: pre-wrap; word-break: break-word; font: 12px/1.5 var(--mono); background: var(--code); border-radius: 6px;
+              padding: 8px 10px; margin: 4px 0 8px; max-height: 360px; overflow: auto; }
+  .tool pre.err { color: var(--bad); }
+  .working { color: var(--muted); font-size: 13px; margin: 12px 0; }
+  .working::after { content: '…'; display: inline-block; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .sep { text-align: center; color: var(--muted); font-size: 12px; margin: 20px 0; }
   .empty { color: var(--muted); padding: 40px 20px; text-align: center; }
   #profile { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; }
   #profile .title { font-weight: 600; font-size: 14px; display: flex; gap: 8px; align-items: center; }
@@ -56,6 +100,8 @@
   #profile .fold { margin-top: 10px; cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
   #profile .fold:hover { color: inherit; }
   .section { padding: 8px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+  .section.folder { font-size: 12px; font-weight: 600; text-transform: none; letter-spacing: 0; cursor: pointer; user-select: none; background: var(--bg); }
+  .section.folder:hover { color: var(--text); }
   #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 5; }
   #login form { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; width: 100%; max-width: 420px; }
   #login h2 { margin: 0 0 8px; font-size: 16px; }
@@ -103,7 +149,8 @@
       tokenPlaceholder: '粘贴令牌', view: '查看',
       status: { completed: '完成', running: '运行中', queued: '排队', failed: '失败', timed_out: '超时', interrupted: '中断', cancelled: '已取消' },
       accountStatus: { logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' },
-      who: { user: '收到的指令', agent: 'Agent 回复', fork: '分叉' },
+      toolsUsed: '使用了 {0} 个工具', input: '输入', output: '输出', noOutput: '（没有输出）', toolFailed: '失败',
+      runtime: 'Agent Fleet 运行时说明', working: '正在工作', copy: '复制', copied: '已复制',
       listSep: '、', untitled: '未命名任务', thisComputer: '本机', busy: '忙：{0}', idle: '空闲', quotaWait: '等待额度',
       noGpu: '无独立显卡', ramGb: '{0}GB 内存', egress: '出口 {0}', computerFold: '电脑档案', hwChecked: '硬件信息检测于 {0}',
       role: '用途：{0}', roleMissing: '用途：未填写', software: '软件：{0}', account: '账号：{0}', accountName: '（{0}）', unknown: '未知',
@@ -113,7 +160,7 @@
       readOnlyNote: '这里只读查看，不会占用会话。', openPrefix: ' 想亲自接着聊时可以 ', openInApp: '在 {0} App 中打开',
       openSuffix: '。注意：打开后这个会话就归你了，在 Codex 完全退出之前，Agent 不能再往里面派任务。只想看进度的话，留在这个页面就好。',
       openSuffixClaude: '。你在 Claude 桌面版里接着聊时，Agent 再派来的任务会另开一个分叉，不会打断你。只想看进度的话，留在这个页面就好。',
-      noConversation: '还没有对话内容', toolCall: '工具调用 · {0} · {1}', transcriptFailed: '读取对话失败：{0}',
+      noConversation: '还没有对话内容', transcriptFailed: '读取对话失败：{0}',
       taskFailed: '任务 {0} {1}：{2}', updated: '更新于 {0}', connFailed: '连接失败，稍后重试',
     },
     en: {
@@ -122,7 +169,9 @@
       tokenPlaceholder: 'Paste the token', view: 'View',
       status: { completed: 'Completed', running: 'Running', queued: 'Queued', failed: 'Failed', timed_out: 'Timed out', interrupted: 'Interrupted', cancelled: 'Cancelled' },
       accountStatus: { logged_in: 'signed in', logged_out: 'signed out', needs_verification: 'needs verification' },
-      who: { user: 'Instruction received', agent: 'Agent reply', fork: 'Fork' },
+      toolsUsed: (n) => (n === 1 ? 'Used 1 tool' : 'Used ' + n + ' tools'), input: 'Input', output: 'Output',
+      noOutput: '(no output)', toolFailed: 'failed', runtime: 'Agent Fleet runtime note', working: 'Working',
+      copy: 'Copy', copied: 'Copied',
       listSep: ', ', untitled: 'Untitled task', thisComputer: 'This computer', busy: 'Busy: {0}', idle: 'Idle', quotaWait: 'Waiting for quota',
       noGpu: 'No dedicated GPU', ramGb: '{0} GB RAM', egress: 'Egress {0}', computerFold: 'Computer profile', hwChecked: 'Hardware checked at {0}',
       role: 'Purpose: {0}', roleMissing: 'Purpose: not set', software: 'Software: {0}', account: 'Account: {0}', accountName: ' ({0})', unknown: 'unknown',
@@ -134,7 +183,7 @@
       openInApp: 'open it in the {0} app',
       openSuffix: '. Note: once you open it, the session is yours, and agents cannot dispatch tasks to it until Codex fully exits. If you only want to follow progress, stay on this page.',
       openSuffixClaude: '. While you continue it in Claude desktop, tasks agents send continue in a fork, so you are not interrupted. If you only want to follow progress, stay on this page.',
-      noConversation: 'No conversation yet', toolCall: 'Tool call · {0} · {1}', transcriptFailed: 'Could not load the conversation: {0}',
+      noConversation: 'No conversation yet', transcriptFailed: 'Could not load the conversation: {0}',
       taskFailed: 'Task {0} {1}: {2}', updated: 'Updated {0}', connFailed: 'Connection failed, retrying shortly',
     },
   };
@@ -172,6 +221,90 @@
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const time = (iso) => iso ? new Date(iso).toLocaleString(locale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 
+  // Markdown for agent text. Everything is HTML-escaped first; only the tags built here are produced, and links
+  // keep web and app schemes only, so a transcript cannot inject markup or script.
+  const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const SAFE_URL = /^(https?:|mailto:|codex:|claude:)/i;
+  function inline(src) {
+    const codes = [];
+    let s = src.replace(/(`+)([\s\S]+?)\1(?!`)/g, (_, f, c) => '\u0000' + (codes.push(c) - 1) + '\u0000');
+    s = esc(s)
+      .replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (m, text, url) => SAFE_URL.test(url) ? '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + '</a>' : m)
+      .replace(/(^|[\s(（])(https?:\/\/[^\s<]+[^\s<.,;:!?)）。，、])/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
+      .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, '$1<em>$2</em>')
+      .replace(/~~(?=\S)([\s\S]*?\S)~~/g, '<del>$1</del>');
+    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => '<code>' + esc(codes[i]) + '</code>');
+  }
+  const FENCE = /^\s*(`{3,}|~{3,})\s*([^\s`]*)/;
+  const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+  const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+  const indentOf = (line) => line.match(/^\s*/)[0].replace(/\t/g, '    ').length;
+  const isTable = (line, next) => line.includes('|') && next !== undefined && TABLE_SEP.test(next);
+  const startsBlock = (line, next) => FENCE.test(line) || /^#{1,6}\s/.test(line) || /^\s*>/.test(line)
+    || /^\s*([-*_])(\s*\1){2,}\s*$/.test(line) || ITEM.test(line) || isTable(line, next);
+  const cells = (row) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+  function markdown(src, depth = 0) {
+    const lines = src.replace(/\r\n?/g, '\n').split('\n');
+    let html = '', i = 0, m;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+      if ((m = line.match(FENCE))) {
+        const body = []; i++;
+        while (i < lines.length && !lines[i].trim().startsWith(m[1])) body.push(lines[i++]);
+        i++;
+        html += '<div class="code"><div class="code-head"><span>' + esc(m[2] || '') + '</span><button type="button" class="copy">'
+          + esc(t('copy')) + '</button></div><pre><code>' + esc(body.join('\n')) + '</code></pre></div>';
+      } else if ((m = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/))) {
+        html += '<h' + m[1].length + '>' + inline(m[2]) + '</h' + m[1].length + '>'; i++;
+      } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+        html += '<hr>'; i++;
+      } else if (/^\s*>/.test(line)) {
+        const quote = [];
+        while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*> ?/, ''));
+        html += '<blockquote>' + (depth < 8 ? markdown(quote.join('\n'), depth + 1) : esc(quote.join('\n'))) + '</blockquote>';
+      } else if (isTable(line, lines[i + 1])) {
+        const head = cells(line), align = cells(lines[i + 1]).map((c) => (/^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : ''));
+        const cell = (tag, text, k) => '<' + tag + (align[k] ? ' style="text-align:' + align[k] + '"' : '') + '>' + inline(text) + '</' + tag + '>';
+        html += '<div class="table"><table><thead><tr>' + head.map((c, k) => cell('th', c, k)).join('') + '</tr></thead><tbody>';
+        i += 2;
+        while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+          const row = cells(lines[i++]);
+          html += '<tr>' + head.map((_, k) => cell('td', row[k] || '', k)).join('') + '</tr>';
+        }
+        html += '</tbody></table></div>';
+      } else if (ITEM.test(line) && depth < 8) {
+        const base = indentOf(line), ordered = /\d/.test(line.match(ITEM)[2]);
+        const start = ordered ? parseInt(line.match(ITEM)[2], 10) : 1;
+        html += ordered ? '<ol' + (start !== 1 ? ' start="' + start + '"' : '') + '>' : '<ul>';
+        while (i < lines.length && (m = lines[i].match(ITEM)) && indentOf(lines[i]) <= base + 1 && /\d/.test(m[2]) === ordered) {
+          const contentAt = lines[i].length - m[3].length, body = [m[3].replace(/^\[ \]\s/, '☐ ').replace(/^\[[xX]\]\s/, '☑ ')];
+          let loose = false; i++;
+          while (i < lines.length) {
+            if (!lines[i].trim()) {
+              let j = i + 1; while (j < lines.length && !lines[j].trim()) j++;
+              if (j < lines.length && indentOf(lines[j]) > base + 1) { loose = true; while (i < j) { body.push(''); i++; } continue; }
+              break;
+            }
+            if (indentOf(lines[i]) <= base + 1 && (ITEM.test(lines[i]) || startsBlock(lines[i], lines[i + 1]))) break;
+            body.push(lines[i].slice(Math.min(indentOf(lines[i]), contentAt))); i++;
+          }
+          let item = markdown(body.join('\n'), depth + 1);
+          if (!loose) item = item.replace(/^<p>([\s\S]*?)<\/p>/, '$1');
+          html += '<li>' + item + '</li>';
+        }
+        html += ordered ? '</ol>' : '</ul>';
+      } else {
+        const para = [];
+        while (i < lines.length && lines[i].trim() && (!para.length || !startsBlock(lines[i], lines[i + 1]))) para.push(lines[i++].trim());
+        html += '<p>' + para.map(inline).join('<br>') + '</p>';
+      }
+    }
+    return html;
+  }
+  const mdNode = (text) => { const n = el('div', 'md'); n.innerHTML = markdown(text || ''); return n; };
+
   async function api(path) {
     const res = await fetch(path, { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
     if (res.status === 401) { showLogin(); throw new Error('unauthorized'); }
@@ -198,7 +331,7 @@
     return [...byRoot.values()].map((g) => {
       const latest = g.tasks[g.tasks.length - 1];
       const busy = g.tasks.find((t) => t.status === 'running' || t.status === 'queued');
-      return { ...g, latest, name: g.tasks[0].name || t('untitled'), status: busy ? busy.status : latest.status,
+      return { ...g, latest, name: g.tasks[0].name || t('untitled'), status: busy ? busy.status : latest.status, folder: g.tasks[0].folder,
                thread: [...g.tasks].reverse().find((t) => t.thread_id)?.thread_id,
                forks: new Set(g.tasks.map((t) => t.thread_id).filter(Boolean)).size - 1,
                updated: latest.finished_at || latest.started_at || latest.created_at };
@@ -254,23 +387,45 @@
       if (a.tags && a.tags.length) card.append(el('div', 'tags', a.tags.map((t) => '#' + t).join(' ')));
       card.addEventListener('click', () => {
         const g = groups.find((x) => x.name === a.name);
-        if (g) { selected = g.key; transcriptKey = ''; document.body.classList.add('viewing'); renderList(); renderDetail(true); }
+        if (g) select(g.key);
       });
       part.append(card);
     } }));
     return box;
   }
 
+  function select(key) {
+    selected = key; transcriptKey = ''; openKeys.clear();
+    document.body.classList.toggle('viewing', !!key);
+    renderList();
+    if (key) renderDetail(true);
+  }
+  // Sessions in the same two folders as the desktop sidebars: AgentFleet (the main agent and what it opened)
+  // and AgentFleet-Other (sessions others opened directly).
+  let folderNames = {};
   function renderList() {
-    const list = $('list'); list.replaceChildren(renderProfile(), el('div', 'section', t('sessions')));
-    if (!groups.length) { list.append(el('div', 'empty', t('noTasks'))); return; }
-    for (const g of groups) {
-      const row = el('div', 'session' + (selected === g.key ? ' active' : ''));
-      const name = el('div', 'name'); name.append(el('span', null, g.name), el('span', 'badge s-' + g.status, statusName(g.status)));
-      const last = g.latest.latest_message || g.latest.error || g.latest.result || '';
-      row.append(name, el('div', 'sub', time(g.updated) + ' · ' + t('turns', g.tasks.length) + (g.forks ? ' · ' + t('forks', g.forks) : '')), el('div', 'sub', last.replace(/\s+/g, ' ')));
-      row.addEventListener('click', () => { selected = g.key; transcriptKey = ''; document.body.classList.add('viewing'); renderList(); renderDetail(true); });
-      list.append(row);
+    const list = $('list'); list.replaceChildren(renderProfile());
+    if (!groups.length) { list.append(el('div', 'section', t('sessions')), el('div', 'empty', t('noTasks'))); return; }
+    for (const side of ['main', 'other']) {
+      const members = groups.filter((g) => (g.folder || 'main') === side);
+      if (!members.length) continue;
+      const key = 'folder-' + side, open = isOpen(key, true);
+      const head = el('div', 'section folder', (open ? '▾ ' : '▸ ') + (folderNames[side] || side) + ' · ' + members.length);
+      head.addEventListener('click', () => {
+        folds[key] = !open;
+        try { localStorage.setItem('dashboardFolds', JSON.stringify(folds)); } catch {}
+        renderList();
+      });
+      list.append(head);
+      if (!open) continue;
+      for (const g of members) {
+        const row = el('div', 'session' + (selected === g.key ? ' active' : ''));
+        const name = el('div', 'name'); name.append(el('span', null, g.name), el('span', 'badge s-' + g.status, statusName(g.status)));
+        const last = g.latest.latest_message || g.latest.error || g.latest.result || '';
+        row.append(name, el('div', 'sub', time(g.updated) + ' · ' + t('turns', g.tasks.length) + (g.forks ? ' · ' + t('forks', g.forks) : '')), el('div', 'sub', last.replace(/\s+/g, ' ')));
+        row.addEventListener('click', () => select(g.key));
+        list.append(row);
+      }
     }
   }
 
@@ -283,7 +438,7 @@
     const detail = $('detail');
     const head = el('div', 'head');
     const back = el('button', 'back', t('back')); back.type = 'button';
-    back.addEventListener('click', () => { document.body.classList.remove('viewing'); selected = null; renderList(); });
+    back.addEventListener('click', () => select(null));
     head.append(back, el('h2', null, g.name), el('span', 'badge s-' + g.status, statusName(g.status)));
     const info = el('div', 'info');
     info.append(document.createTextNode(t('turns', g.tasks.length) + ' · ' + t('workdir', g.latest.workspace || '') + ' · ' + t('sessionLabel')), el('code', null, g.thread || t('notCreated')));
@@ -295,30 +450,98 @@
       open.href = (claude ? 'claude://resume?session=' : 'codex://threads/') + encodeURIComponent(g.thread);
       note.append(document.createTextNode(t('openPrefix')), open, document.createTextNode(t(claude ? 'openSuffixClaude' : 'openSuffix')));
     }
-    const body = el('div');
+    let body = el('div');
     if (g.thread) {
       try {
         const { entries } = await api('/api/transcript?thread_id=' + encodeURIComponent(g.thread));
-        if (!entries.length) body.append(el('div', 'empty', t('noConversation')));
-        for (const e of entries) {
-          if (e.kind === 'tool') {
-            const d = el('details', 'tool'); d.append(el('summary', null, t('toolCall', e.type, time(e.time))), el('pre', null, e.text)); body.append(d);
-          } else {
-            const m = el('div', 'msg ' + e.kind);
-            const who = word('who', e.kind, e.kind);
-            m.append(el('div', 'who', who + ' · ' + time(e.time)), document.createTextNode(e.text));
-            body.append(m);
-          }
-        }
+        body = entries.length ? renderThread(entries, g.status === 'running') : el('div', 'empty', t('noConversation'));
       } catch (err) { if (err.message !== 'unauthorized') body.append(el('div', 'empty', t('transcriptFailed', err.message))); }
     }
     for (const task of g.tasks.filter((x) => x.status === 'failed' || x.status === 'timed_out')) {
-      const m = el('div', 'msg fork'); m.textContent = t('taskFailed', task.task_id.slice(0, 8), statusName(task.status), task.error || ''); body.append(m);
+      body.append(el('div', 'sep', t('taskFailed', task.task_id.slice(0, 8), statusName(task.status), task.error || '')));
     }
-    const stick = detail.scrollTop + detail.clientHeight >= detail.scrollHeight - 40;
-    detail.replaceChildren(head, info, note, body);
-    if (stick || force) detail.scrollTop = detail.scrollHeight;
+    const stick = detail.scrollTop + detail.clientHeight >= detail.scrollHeight - 40, at = detail.scrollTop;
+    const thread = el('div', 'thread'); thread.append(head, info, note, body);
+    detail.replaceChildren(thread);
+    detail.scrollTop = stick || force ? detail.scrollHeight : at;  // a refresh keeps the reader where they were
   }
+
+  // Which folds the reader opened, kept across the 4-second refreshes while a session runs.
+  const openKeys = new Set();
+  function foldable(cls, key, summary, fill) {
+    const d = el('details', cls);
+    if (openKeys.has(key)) d.open = true;
+    d.addEventListener('toggle', () => { if (d.open) openKeys.add(key); else openKeys.delete(key); });
+    d.append(summary); fill(d);
+    return d;
+  }
+  // Codex names its tool items by kind; show them the way Claude names its tools.
+  const TOOL_NAMES = { CommandExecution: 'Shell', FileChange: 'Edit', McpToolCall: 'MCP', WebSearch: 'Search' };
+  // The one-line gist of a tool call: its command, file or query, else its input's first line.
+  function toolArg(e) {
+    let value;
+    try { value = JSON.parse(e.input); } catch { return (e.input || '').split('\n')[0]; }
+    if (value && typeof value === 'object') {
+      for (const k of ['command', 'cmd', 'file_path', 'pattern', 'query', 'path', 'url', 'description', 'prompt', 'tool']) {
+        if (typeof value[k] === 'string') return value[k].split('\n')[0];
+      }
+      return JSON.stringify(value).slice(0, 200);
+    }
+    return String(value).split('\n')[0];
+  }
+  // A turn is one request and everything the agent did for it: replies as text, consecutive tool calls folded together.
+  function renderThread(entries, running) {
+    const box = el('div');
+    let turn = null, tools = null;
+    const newTurn = () => { turn = el('div', 'turn'); box.append(turn); tools = null; };
+    entries.forEach((e, i) => {
+      if (e.kind === 'user') {
+        const row = el('div', 'u-row');
+        row.append(el('div', 'u-time', time(e.time)));
+        let text = e.text || '';
+        const runtime = text.match(/^\[Agent Fleet runtime:[\s\S]*?\]\n\n/);
+        if (runtime) {
+          text = text.slice(runtime[0].length);
+          row.append(foldable('runtime', 'r' + i, el('summary', null, t('runtime')), (d) => d.append(el('div', null, runtime[0].trim()))));
+        }
+        const bubble = mdNode(text); bubble.classList.add('bubble'); row.append(bubble);
+        box.append(row); newTurn();
+      } else if (e.kind === 'fork') {
+        box.append(el('div', 'sep', e.text)); newTurn();
+      } else if (e.kind === 'tool') {
+        if (!turn) newTurn();
+        if (!tools) {
+          const list = el('div', 'tool-list'), summary = el('summary');
+          turn.append(foldable('tools', 'g' + i, summary, (d) => d.append(list)));
+          tools = { list, summary, count: 0 };
+        }
+        tools.summary.textContent = t('toolsUsed', ++tools.count);
+        const head = el('summary');
+        head.append(el('span', 'tname', TOOL_NAMES[e.type] || e.type || '?'), el('span', 'targ', toolArg(e)));
+        if (e.error) head.append(el('span', 'terr', t('toolFailed')));
+        tools.list.append(foldable('tool', 't' + i, head, (d) => d.append(
+          el('div', 'tlabel', t('input')), el('pre', null, e.input || ''),
+          el('div', 'tlabel', t('output')), el('pre', e.error ? 'err' : null, e.output || t('noOutput')))));
+      } else {
+        if (!turn) newTurn();
+        tools = null; turn.append(mdNode(e.text));
+      }
+    });
+    if (running) (turn || box).append(el('div', 'working', t('working')));
+    return box;
+  }
+  $('detail').addEventListener('click', (e) => {
+    const button = e.target.closest('button.copy');
+    if (!button) return;
+    const text = button.closest('.code').querySelector('code').textContent;
+    const done = () => { button.textContent = t('copied'); setTimeout(() => { button.textContent = t('copy'); }, 1500); };
+    const fallback = () => {
+      const area = el('textarea'); area.value = text; document.body.append(area); area.select();
+      try { document.execCommand('copy'); done(); } catch {}
+      area.remove();
+    };
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  });
 
   async function refresh() {
     if (!token) { showLogin(); return; }
@@ -328,6 +551,7 @@
       }
       const data = await api('/api/tasks');
       $('computer').textContent = data.computer || '';
+      folderNames = data.folders || {};
       groups = buildGroups(data.tasks.filter((t) => !t.archived)); // archived in the Codex app = removed by the user
       renderList();
       if (selected) await renderDetail(false);

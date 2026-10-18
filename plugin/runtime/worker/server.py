@@ -324,6 +324,43 @@ def collect_machine_info(config):
     return info
 
 
+def clip(text, limit):
+    return text if len(text) <= limit else text[:limit] + '\n…'
+
+
+def tool_result_text(content):
+    """A Claude tool result as text: a string, or a list of text parts (images become a marker)."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for part in content or []:
+        if isinstance(part, dict):
+            parts.append(part.get('text', '') if part.get('type') == 'text' else f"[{part.get('type', '?')}]")
+    return '\n'.join(parts)
+
+
+def tool_entry(time, name, value, output='', error=False):
+    """One tool call in a transcript: its input as text (JSON for structured input) and its output."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=1)
+    return {'kind': 'tool', 'time': time, 'type': name, 'input': clip(text or '', 4000),
+            'output': clip(output or '', 6000), 'error': error}
+
+
+def codex_tool_entry(time, item):
+    """A Codex rollout item that is not a message: shell commands show the command line, others their fields."""
+    get = lambda *keys: next((item[k] for k in keys if item.get(k) is not None), None)
+    command = item.get('command')
+    if isinstance(command, list):  # ['/bin/zsh', '-lc', 'pwd'] -> 'pwd'
+        command = command[2] if len(command) == 3 and command[1] in ('-lc', '-c') else ' '.join(map(str, command))
+    output = get('aggregated_output', 'aggregatedOutput', 'result', 'output', 'error')
+    if output is not None and not isinstance(output, str):
+        output = json.dumps(output, ensure_ascii=False, indent=1)
+    exit_code = get('exit_code', 'exitCode')
+    value = command or {k: v for k, v in item.items() if k not in (
+        'id', 'type', 'status', 'aggregated_output', 'aggregatedOutput', 'result', 'output', 'error', 'duration')}
+    return tool_entry(time, item['type'], value, output, error=item.get('status') == 'failed' or exit_code not in (None, 0))
+
+
 def default_data_dir():
     """Where setup keeps config, token and state: %LOCALAPPDATA%\\agent-fleet on Windows,
     ~/Library/Application Support/agent-fleet on macOS."""
@@ -825,20 +862,27 @@ class TaskManager:
             for job in jobs:
                 entries.append({'kind': 'user', 'time': job['created_at'], 'text': job['prompt']})
                 events = self.jobs_dir / job['task_id'] / 'events.jsonl'
-                last_text = None
+                last_text, tools = None, {}
                 for line in events.read_text(encoding='utf-8', errors='replace').splitlines() if events.exists() else []:
                     try:
                         event = json.loads(line)
                     except ValueError:
                         continue
+                    content = (event.get('message') or {}).get('content')
                     if event.get('type') == 'assistant':
-                        for item in event.get('message', {}).get('content', []):
+                        for item in content or []:
                             if item.get('type') == 'text':
                                 last_text = item.get('text', '')
                                 entries.append({'kind': 'agent', 'time': job.get('started_at'), 'text': last_text})
                             elif item.get('type') == 'tool_use':
-                                entries.append({'kind': 'tool', 'time': job.get('started_at'), 'type': item.get('name'),
-                                                'text': json.dumps(item.get('input'), ensure_ascii=False)})
+                                tools[item.get('id')] = tool_entry(job.get('started_at'), item.get('name'), item.get('input'))
+                                entries.append(tools[item.get('id')])
+                    elif event.get('type') == 'user' and isinstance(content, list):
+                        # Tool results come back as the next user message, matched to the call by id.
+                        for item in content:
+                            if isinstance(item, dict) and item.get('type') == 'tool_result' and item.get('tool_use_id') in tools:
+                                tools[item['tool_use_id']].update(output=clip(tool_result_text(item.get('content')), 6000),
+                                                                  error=bool(item.get('is_error')))
                     elif event.get('type') == 'result' and event.get('result') and event['result'] != last_text:
                         entries.append({'kind': 'agent', 'time': job.get('finished_at'), 'text': event['result']})
             return entries
@@ -869,9 +913,7 @@ class TaskManager:
             elif item.get('type') == 'AgentMessage':
                 entries.append({'kind': 'agent', 'time': record.get('timestamp'), 'text': '\n'.join(texts), 'phase': item.get('phase')})
             elif item.get('type') not in ('Reasoning', None):
-                detail = {k: item[k] for k in ('server', 'tool', 'command', 'arguments', 'status', 'exitCode') if k in item}
-                entries.append({'kind': 'tool', 'time': record.get('timestamp'), 'type': item['type'],
-                                'text': json.dumps(detail, ensure_ascii=False)[:2000]})
+                entries.append(codex_tool_entry(record.get('timestamp'), item))
         return entries
 
     def notify(self, title, summary, needs_human=False, task_ids=None, sender=None):
@@ -1769,8 +1811,10 @@ def build_app(config):
     @mcp.custom_route('/api/tasks', methods=['GET'])
     async def api_tasks(request):
         jobs = sorted(manager.jobs.values(), key=lambda j: j['created_at'], reverse=True)[:300]
+        # The board groups sessions into the same two folders as the desktop sidebars (sidebar_side).
         return JSONResponse({'computer': config.get('computer_name') or os.environ.get('COMPUTERNAME') or platform.node(),
-                             'tasks': [manager.public(j, include_result=True) for j in jobs]},
+                             'folders': {'main': manager.root.parent.name, 'other': manager.root.name},
+                             'tasks': [dict(manager.public(j, include_result=True), folder=manager.sidebar_side(j)) for j in jobs]},
                             headers={'Cache-Control': 'no-store'})
 
     @mcp.custom_route('/api/profile', methods=['GET'])
