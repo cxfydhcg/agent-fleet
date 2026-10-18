@@ -144,6 +144,8 @@ class RoleSetupTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
         for engines in ('codex,codex', 'unknown', 'claude,codex,claude', ''):
             self.assertNotEqual(run('--engines', engines).returncode, 0)
+        self.assertNotEqual(run('--engines', 'codex,claude', '--second-main-agent-name', 'Code 经理').returncode, 0)
+        self.assertNotEqual(run('--engines', 'codex,claude', '--engine', 'codex').returncode, 0)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_fresh_single_engine_install_names_the_folder_after_its_engine(self):
@@ -152,8 +154,6 @@ class RoleSetupTests(unittest.TestCase):
                                     '--engine', engine, '--plan', actual=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual([Path(m['workspace']).name for m in self.result(result.stdout)['worker']['main_agents']], ['main-' + engine])
-        self.assertNotEqual(run('--engines', 'codex,claude', '--second-main-agent-name', 'Code 经理').returncode, 0)
-        self.assertNotEqual(run('--engines', 'codex,claude', '--engine', 'codex').returncode, 0)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_direct_windows_dual_plan_is_read_only(self):
