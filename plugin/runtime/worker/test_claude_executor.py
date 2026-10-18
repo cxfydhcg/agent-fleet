@@ -6,9 +6,12 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
+import os
 
 from server import TaskManager
-from claude_executor import command_for
+import claude_executor
+from claude_executor import command_for, desktop_holds
 
 
 FAKE_CLAUDE = r'''
@@ -46,11 +49,19 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
                            tasks_dir=str(self.root / 'tasks'), shared_dir=str(self.shared),
                            allowed_roots=[str(self.root)], token_file=str(self.token),
                            main_agent_workspaces=[str(self.main)], sandbox='workspace-write')
+        # Never open the real Claude desktop app from tests; record what would have been shown.
+        self.shown, self.held = [], set()
+        self.patches = [patch.object(claude_executor, 'show_in_desktop', self.shown.append),
+                        patch.object(claude_executor, 'desktop_holds', lambda session, home=None: session in self.held)]
+        for p in self.patches:
+            p.start()
         self.manager = TaskManager(self.config)
         self.manager.worker = asyncio.create_task(self.manager.work())
 
     async def asyncTearDown(self):
         await self.manager.shutdown()
+        for p in self.patches:
+            p.stop()
         self.temp.cleanup()
 
     async def finished(self, task_id):
@@ -144,3 +155,47 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ClaudeDesktopTests(ClaudeExecutorTests):
+    async def test_new_sessions_show_in_desktop_and_held_ones_fork(self):
+        first = await self.finished(self.manager.submit('hello', None, 10, None, name='fixture')['task_id'])
+        self.assertEqual(self.shown, [first['thread_id']], 'a new session is imported into the sidebar once')
+        self.held.add(first['thread_id'])  # the owner is working in it in Claude desktop
+        second = await self.finished(self.manager.submit('more', None, 10, None, resume_task_id=first['task_id'])['task_id'])
+        args = json.loads((self.root / 'calls.json').read_text(encoding='utf-8'))
+        self.assertIn('--fork-session', args)
+        self.assertEqual(second['forked_from_thread_id'], first['thread_id'])
+        self.assertEqual(self.shown, [first['thread_id']], 'continuing never re-imports')
+        self.held.clear()
+        third = await self.finished(self.manager.submit('again', None, 10, None, resume_task_id=first['task_id'])['task_id'])
+        self.assertNotIn('--fork-session', json.loads((self.root / 'calls.json').read_text(encoding='utf-8')))
+        self.assertEqual(third['status'], 'completed')
+
+    async def test_import_can_be_turned_off(self):
+        self.config['claude_desktop_import'] = 'off'
+        await self.finished(self.manager.submit('quiet', None, 10, None, name='fixture')['task_id'])
+        self.assertEqual(self.shown, [])
+
+    def test_desktop_holds_reads_live_desktop_sessions(self):
+        for p in self.patches:
+            p.stop()
+        try:
+            home = self.root / 'home'
+            sessions = home / '.claude' / 'sessions'
+            sessions.mkdir(parents=True)
+            (sessions / '1.json').write_text(json.dumps({'pid': os.getpid(), 'sessionId': 'open', 'entrypoint': 'claude-desktop', 'status': 'busy'}))
+            (sessions / '4.json').write_text(json.dumps({'pid': os.getpid(), 'sessionId': 'idle', 'entrypoint': 'claude-desktop', 'status': 'idle'}))
+            (sessions / '2.json').write_text(json.dumps({'pid': os.getpid(), 'sessionId': 'cli', 'entrypoint': 'sdk-cli'}))
+            (sessions / '3.json').write_text(json.dumps({'pid': 2 ** 22 + 7, 'sessionId': 'gone', 'entrypoint': 'claude-desktop'}))
+            (sessions / 'bad.json').write_text('{')
+            self.assertTrue(claude_executor.desktop_holds('open', home))
+            self.assertFalse(claude_executor.desktop_holds('cli', home))
+            self.assertFalse(claude_executor.desktop_holds('idle', home), 'open but idle keeps the same session')
+            self.assertFalse(claude_executor.desktop_holds('gone', home))
+            self.assertFalse(claude_executor.desktop_holds('missing', home))
+            self.assertFalse(claude_executor.desktop_holds('open', self.root / 'no-home'))
+        finally:
+            for p in self.patches:
+                p.start()
+

@@ -4,8 +4,68 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
+
+
+# Claude desktop lists only sessions in its own index, never print-mode (claude -p) sessions. Its
+# claude://resume deep link imports one, with its history, into the sidebar. Once the owner opens it there,
+# the app keeps its own interactive claude process on that session (importing opens it, so this is usual).
+# A background --resume still appends to the same conversation, which the app shows after a restart; only
+# while the app is running a turn there (the owner took over) would both write at once, so then we fork.
+def pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def desktop_holds(session_id, home=None):
+    """True while Claude desktop is running a turn in this session (its live process, registered in
+    ~/.claude/sessions, reports busy). Merely open and idle does not count."""
+    folder = Path(home or Path.home()) / '.claude' / 'sessions'
+    try:
+        files = list(folder.glob('*.json'))
+    except OSError:
+        return False
+    for path in files:
+        try:
+            info = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if (info.get('sessionId') == session_id and str(info.get('entrypoint', '')).startswith('claude-desktop')
+                and info.get('status') == 'busy' and pid_alive(info.get('pid'))):
+            return True
+    return False
+
+
+def show_in_desktop(session_id):
+    """Import the session into Claude desktop's sidebar; harmless when the app is not installed."""
+    url = 'claude://resume?session=' + session_id
+    try:
+        if os.name == 'nt':
+            os.startfile(url)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
 
 
 def command_for(manager, job, folder):
@@ -49,6 +109,10 @@ def command_for(manager, job, folder):
             command += ['--allowedTools', f'Edit(/{path}/**)']
     if job.get('resume_task_id'):
         command += ['--resume', job['thread_id']]
+        if desktop_holds(job['thread_id']):
+            # The owner is working in it in Claude desktop right now: continue in a fork, leave theirs untouched.
+            job['forked_from_thread_id'] = job['thread_id']
+            command += ['--fork-session']
     else:
         job['thread_id'] = str(uuid.uuid4())
         command += ['--session-id', job['thread_id']]
@@ -134,6 +198,10 @@ async def run(manager, job):
                     text = result.get('result', '')
                     (folder / 'result.txt').write_text(text, encoding='utf-8')
                     job.update(status='completed', latest_message=text[-4000:])
+                    # A new task's session shows up in Claude desktop's sidebar (config claude_desktop_import: off).
+                    if (not job.get('resume_task_id') and job.get('thread_id')
+                            and manager.config.get('claude_desktop_import', 'new') == 'new'):
+                        show_in_desktop(job['thread_id'])
                 else:
                     errors = (result or {}).get('errors') or []
                     error_log.flush()
