@@ -8,7 +8,7 @@ param(
     [ValidateSet('', 'zh', 'en')][string]$Language = '',  # 用户能看到的文字用哪种语言；默认沿用上次的设置，第一次按系统语言
     [string]$ManagerName = '',    # 可选：管理端调用这台电脑主 Agent 时用的名字（比如 经理cris），写进 connection.json
     [string]$Description = '',
-    [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),      # 内部数据：配置、令牌、任务记录
+    [string]$DataDir = (Join-Path $env:USERPROFILE 'AppData\Local\agent-fleet'),      # 内部数据：配置、令牌、任务记录
     [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-agent\、AgentFleet-其他\（英文 AgentFleet-Other\）、shared\
     [int]$Port = 8765,
     [int]$TailscalePort = 8766,

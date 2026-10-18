@@ -324,7 +324,7 @@ def default_data_dir():
     """Where setup keeps config, token and state: %LOCALAPPDATA%\\agent-fleet on Windows,
     ~/Library/Application Support/agent-fleet on macOS."""
     if os.name == 'nt':
-        return Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'agent-fleet'
+        return Path.home() / 'AppData' / 'Local' / 'agent-fleet'  # not LOCALAPPDATA: app sandboxes redirect it
     if sys.platform == 'darwin':
         return Path.home() / 'Library' / 'Application Support' / 'agent-fleet'
     return Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local' / 'share') / 'agent-fleet'

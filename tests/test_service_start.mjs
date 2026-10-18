@@ -48,7 +48,7 @@ test('launches the installed runtime and checks authenticated health', { skip: p
 test('Windows uses argument arrays and the configured runtime', async t => {
   const f = fixture(t);
   let launch;
-  const answer = await startWorker({ platform: 'win32', env: { AGENT_FLEET_CONFIG: f.configPath },
+  const answer = await startWorker({ platform: 'win32', env: { AGENT_FLEET_CONFIG: f.configPath }, redirected: false,
     run(executable, args, options) { launch = { executable, args, options }; return { status: 0 }; },
     request: async () => ({ ok: true, json: async () => ({ service: 'codex-task-mcp' }) }) });
   assert.equal(answer.status, 'ready');
@@ -95,4 +95,24 @@ test('empty credential fails before launch', async t => {
   await assert.rejects(startWorker({ platform: 'darwin', configPath: f.configPath,
     run() { called = true; } }), /credential is empty/);
   assert.equal(called, false);
+});
+
+test('inside an app sandbox Windows starts the service from outside it', async t => {
+  const f = fixture(t);
+  let inside = false, outside;
+  const answer = await startWorker({ platform: 'win32', env: { AGENT_FLEET_CONFIG: f.configPath }, redirected: true,
+    run() { inside = true; return { status: 0 }; },
+    runOutside(executable, args) { outside = { executable, args }; return { status: 0, stdout: '' }; },
+    request: async () => ({ ok: true, json: async () => ({ service: 'codex-task-mcp' }) }) });
+  assert.equal(answer.status, 'ready');
+  assert.equal(inside, false, 'the service is not started inside the sandbox');
+  assert.deepEqual(outside.args, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(f.runtime, 'start.ps1'), '-ConfigPath', f.configPath]);
+});
+
+test('sandbox detection reads the redirected LOCALAPPDATA Codex sets', async () => {
+  const { appDataRedirected } = await import('../plugin/scripts/windows-outside.mjs');
+  assert.equal(appDataRedirected({ platform: 'darwin' }), false);
+  assert.equal(appDataRedirected({ platform: 'win32', home: join(tmpdir(), 'no-such-home'),
+    env: { LOCALAPPDATA: String.raw`C:\Users\me\AppData\Local\Packages\OpenAI.Codex_x\LocalCache\Local` } }), true);
+  assert.equal(appDataRedirected({ platform: 'win32', home: join(tmpdir(), 'no-such-home'), env: {} }), false);
 });

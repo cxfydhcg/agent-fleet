@@ -6,7 +6,7 @@ description: Send a goal to this computer's Agent Fleet main agent, continue its
 # Work with this computer's main agent
 
 Locate the private `local-client` registry under the worker's installed data
-directory (default `%LOCALAPPDATA%\agent-fleet` on Windows, `~/Library/Application Support/agent-fleet`
+directory (default `%USERPROFILE%\AppData\Local\agent-fleet` on Windows, `~/Library/Application Support/agent-fleet`
 on macOS), or use the directory reported by
 setup. Set `AGENT_FLEET_HOME` for just the command process to that local-client
 directory. Do not replace an unrelated orchestrator registry or reveal tokens.

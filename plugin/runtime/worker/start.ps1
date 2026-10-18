@@ -1,7 +1,7 @@
 ﻿# Starts this computer's worker service. The per-computer config lives outside the project folder.
 # (PowerShell names are case-insensitive, so the path parameter must not be called $Config: that is $config below.)
 param([switch]$LocalOnly,
-      [string]$ConfigPath = $(if ($env:AGENT_FLEET_CONFIG) { $env:AGENT_FLEET_CONFIG } else { Join-Path $env:LOCALAPPDATA 'agent-fleet\config.json' }))
+      [string]$ConfigPath = $(if ($env:AGENT_FLEET_CONFIG) { $env:AGENT_FLEET_CONFIG } else { Join-Path $env:USERPROFILE 'AppData\Local\agent-fleet\config.json' }))
 $ErrorActionPreference = 'Stop'
 $configPath = $ConfigPath
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json

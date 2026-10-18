@@ -1,4 +1,4 @@
-﻿param([string]$ConfigPath = $(if ($env:AGENT_FLEET_CONFIG) { $env:AGENT_FLEET_CONFIG } else { Join-Path $env:LOCALAPPDATA 'agent-fleet\config.json' }))
+﻿param([string]$ConfigPath = $(if ($env:AGENT_FLEET_CONFIG) { $env:AGENT_FLEET_CONFIG } else { Join-Path $env:USERPROFILE 'AppData\Local\agent-fleet\config.json' }))
 $ErrorActionPreference = 'Stop'
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 $token = (Get-Content -LiteralPath $config.token_file -Raw).Trim()

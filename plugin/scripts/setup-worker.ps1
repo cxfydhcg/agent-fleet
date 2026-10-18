@@ -3,7 +3,7 @@
     [ValidateSet('Local','Tailscale','Lan')][string]$Connectivity = 'Local',
     [string]$LanAddress = '',
     [string]$Workspace = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'AgentFleet'),
-    [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'agent-fleet'),
+    [string]$DataDir = (Join-Path $env:USERPROFILE 'AppData\Local\agent-fleet'),
     [string]$Name = $env:COMPUTERNAME.ToLower(),
     [string]$MainAgentName = '',
     [ValidateSet('', 'zh', 'en')][string]$Language = '',

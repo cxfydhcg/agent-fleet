@@ -10,7 +10,7 @@ Talk to the user in the language they write in. Resolve the plugin root from thi
 
 ## 1. Which side is this computer on?
 
-- **Worker capability** exists when a worker config exists: `%LOCALAPPDATA%\agent-fleet\config.json` on
+- **Worker capability** exists when a worker config exists: `%USERPROFILE%\AppData\Local\agent-fleet\config.json` on
   Windows, `~/Library/Application Support/agent-fleet/config.json` on macOS (or the user's custom data directory).
 - **Orchestrator capability** requires completed orchestrator/both setup: the selected registry's
   `computers.json` must have the `orchestrator_session` field set by setup. The registry is

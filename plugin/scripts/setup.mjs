@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureDesktopProjects } from './setup-desktop.mjs';
+import { appDataRedirected, runOutsideApp, windowsDataDir } from './windows-outside.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const values = new Map();
@@ -32,7 +33,7 @@ if (flags.has('desktop-only')) {
     fail('--desktop-only accepts only --role, --data-dir, --language, --plan and --no-desktop. / 此模式不能修改工作端设置。');
   if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en. / 语言必须为 zh 或 en。');
   const defaultData = process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support', 'agent-fleet')
-    : process.platform === 'win32' && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agent-fleet') : null;
+    : process.platform === 'win32' ? windowsDataDir() : null;
   if (!values.has('data-dir') && !defaultData) fail('Pass --data-dir for this platform. / 此平台需要指定 --data-dir。');
   const configPath = join(resolve(values.get('data-dir') || defaultData), 'config.json');
   if (!existsSync(configPath)) fail('No installed worker configuration was found. / 找不到已安装的工作端配置。');
@@ -83,6 +84,13 @@ function run(executable, args, env = process.env) {
   if (child.status !== 0) process.exit(child.status || 1);
   return child.stdout || '';
 }
+// Same as run, for a command that has to execute outside the app sandbox (see windows-outside.mjs).
+function runOutside(executable, args) {
+  const child = runOutsideApp(executable, args);
+  if (child.stdout) process.stdout.write(child.stdout);
+  if (child.status !== 0) process.exit(child.status || 1);
+  return child.stdout;
+}
 function lastObject(output) {
   for (let offset = output.lastIndexOf('{'); offset >= 0; offset = output.lastIndexOf('{', offset - 1)) {
     try { return JSON.parse(output.slice(offset).trim()); } catch { /* earlier command output */ }
@@ -123,13 +131,16 @@ let worker;
 if (role !== 'orchestrator' && process.platform === 'darwin') {
   worker = setupMacWorker();
 } else if (role !== 'orchestrator') {
-  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/setup-worker.ps1'), '-NoDesktop'];
+  // The worker's data always goes to the real AppData\Local, never to an app's private storage.
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/setup-worker.ps1'), '-NoDesktop',
+    ...(values.has('data-dir') ? [] : ['-DataDir', windowsDataDir()])];
   const mappings = { engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
     name: 'Name', 'main-agent-name': 'MainAgentName', 'manager-name': 'ManagerName', language: 'Language', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };
   for (const [key, parameter] of Object.entries(mappings)) if (values.has(key)) args.push('-' + parameter, values.get(key));
   const switches = { plan: 'Plan', 'full-access': 'FullAccess', restricted: 'Restricted', 'skip-prerequisites': 'SkipPrerequisites', 'no-autostart': 'NoAutostart', reconfigure: 'Reconfigure' };
   for (const [key, parameter] of Object.entries(switches)) if (flags.has(key)) args.push('-' + parameter);
-  worker = lastObject(run('powershell', args));
+  // Inside the Codex or Claude desktop app's sandbox, install from outside it so files and the service are real.
+  worker = lastObject(appDataRedirected() ? runOutside('powershell', args) : run('powershell', args));
 }
 // The orchestrator is the session running setup (by id), not a folder; claim-orchestrator moves it later.
 const session = (values.get('session') || process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || '').trim();

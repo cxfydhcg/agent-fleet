@@ -3,16 +3,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { appDataRedirected, runOutsideApp, windowsDataDir } from './windows-outside.mjs';
 
 // Use the installed runtime: a plugin cache can be replaced independently of the worker.
 export async function startWorker({ configPath, platform = process.platform, env = process.env,
-  home = homedir(), run = spawnSync, request = fetch } = {}) {
+  home = homedir(), run = spawnSync, request = fetch, redirected, runOutside = runOutsideApp } = {}) {
   if (!['darwin', 'win32'].includes(platform)) {
     throw new Error('Worker startup supports macOS and Windows. / 工作端启动支持 macOS 和 Windows。');
   }
   configPath = resolve(configPath || env.AGENT_FLEET_CONFIG || (platform === 'darwin'
     ? join(home, 'Library', 'Application Support', 'agent-fleet', 'config.json')
-    : join(env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'agent-fleet', 'config.json')));
+    : join(windowsDataDir(home), 'config.json')));
   let config;
   try { config = JSON.parse(readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '')); }
   catch { throw new Error('Worker config missing or invalid; use Agent Fleet setup. / 配置缺失或无效，请先运行 Agent Fleet setup。'); }
@@ -36,7 +37,10 @@ export async function startWorker({ configPath, platform = process.platform, env
   const executable = platform === 'darwin' ? '/bin/bash' : 'powershell.exe';
   const args = platform === 'darwin' ? [script, '--config', configPath]
     : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-ConfigPath', configPath];
-  const result = run(executable, args, { env, cwd: runtime, encoding: 'utf8', timeout: 90000, windowsHide: true });
+  // Started from inside the Codex or Claude desktop app, the service would live in its sandbox and stop with it.
+  const outside = platform === 'win32' && (redirected ?? appDataRedirected({ home, platform, env }));
+  const result = outside ? runOutside(executable, args, { home, timeoutMs: 120000 })
+    : run(executable, args, { env, cwd: runtime, encoding: 'utf8', timeout: 90000, windowsHide: true });
   // Do not echo captured output: a local configuration or launcher error can contain credentials.
   if (result.error || result.status !== 0) {
     throw new Error(t('启动失败；请检查数据目录 state 内的服务日志。', 'Startup failed; check service logs under the data directory’s state folder.'));

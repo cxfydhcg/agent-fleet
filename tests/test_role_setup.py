@@ -36,7 +36,7 @@ class RoleSetupTests(unittest.TestCase):
         self.fixture = self.root / 'plugin'
         (self.fixture / 'scripts').mkdir(parents=True)
         (self.fixture / 'skills/call-agent').mkdir(parents=True)
-        for name in ('setup.mjs', 'setup-orchestrator.mjs', 'setup-desktop.mjs'):
+        for name in ('setup.mjs', 'setup-orchestrator.mjs', 'setup-desktop.mjs', 'windows-outside.mjs'):
             shutil.copyfile(ROOT / 'plugin/scripts' / name, self.fixture / 'scripts' / name)
         shutil.copyfile(ROOT / 'plugin/skills/call-agent/fleet.mjs', self.fixture / 'skills/call-agent/fleet.mjs')
         (self.fixture / 'scripts/setup-worker.ps1').write_text(FAKE_WORKER, encoding='utf-8-sig')
@@ -48,7 +48,7 @@ class RoleSetupTests(unittest.TestCase):
         script = ROOT / 'plugin/scripts/setup.mjs' if actual else self.fixture / 'scripts/setup.mjs'
         env = {k: v for k, v in os.environ.items() if k not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
         return subprocess.run(['node', str(script), *args, '--no-desktop'],
-                              env={**env, 'AGENT_FLEET_HOME': str(self.home), 'CLAUDE_CODE_SESSION_ID': 'fixture-session'},
+                              env={**env, 'AGENT_FLEET_HOME': str(self.home), 'CLAUDE_CODE_SESSION_ID': 'fixture-session', 'AGENT_FLEET_OUTSIDE': '0'},
                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
 
     def result(self, output):

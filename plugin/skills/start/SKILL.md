@@ -20,7 +20,7 @@ an already-running service is reused. It does not rerun setup, stop tasks, open 
 open a live agent conversation. The app does not need to be open for the background service to run.
 
 The config defaults to `~/Library/Application Support/agent-fleet/config.json` on macOS or
-`%LOCALAPPDATA%\agent-fleet\config.json` on Windows. `AGENT_FLEET_CONFIG` overrides it; if the user
+`%USERPROFILE%\AppData\Local\agent-fleet\config.json` on Windows. `AGENT_FLEET_CONFIG` overrides it; if the user
 installed elsewhere, pass `--config "<actual config.json path>"`.
 
 Report `status: ready` and the returned dashboard URL after success. This proves the service is
