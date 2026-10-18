@@ -192,7 +192,7 @@ if (-not $NoAutostart) {
 }
 # A pairing code lets a remote orchestrator connect without copying connection.json.
 $pairing = $null
-if ($Connectivity -ne 'Local') {
+if ($Connectivity -ne 'Local' -and (-not $previous -or $Connectivity -ne $oldConnectivity)) {
     $pairingOutput = & $config.python_executable (Join-Path $deployment 'worker\tools\pairing.py') --config $configPath --json
     if ($LASTEXITCODE -eq 0) { $pairing = $pairingOutput | Out-String | ConvertFrom-Json }
 }

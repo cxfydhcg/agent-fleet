@@ -669,6 +669,15 @@ class TaskManager:
                      'language': self.language})
         return info
 
+    @staticmethod
+    def deployed_version():
+        """The plugin version setup stamped on this deployment (service/plugin-version.txt), or None."""
+        stamp = Path(__file__).resolve().parent.parent / 'plugin-version.txt'
+        try:
+            return stamp.read_text(encoding='utf-8').strip() or None
+        except OSError:
+            return None
+
     async def full_profile(self, refresh=False):
         agents = []
         for name, agent in self.profile['agents'].items():
@@ -681,6 +690,7 @@ class TaskManager:
                            'last_active': (latest.get('finished_at') or latest.get('started_at') or latest['created_at']) if latest else None})
         machine = await self.machine_info(refresh)
         return {'computer_name': self.config.get('computer_name') or machine.get('hostname'),
+                'version': self.deployed_version(), 'engine': 'claude' if self.config.get('executor') == 'claude' else 'codex',
                 'language': self.language, 'main_agent_name': self.config.get('main_agent_name'), 'main_agent': self.main_agent(),
                 'machine': machine, 'computer': self.profile['computer'], 'agents': agents, 'quota_wait': self.quota_wait,
                 # What dispatched turns may do, so the orchestrator can explain refusals (e.g. Computer Use).
@@ -1634,7 +1644,7 @@ def build_app(config):
 
     @mcp.custom_route('/health', methods=['GET'])
     async def health(request):
-        return JSONResponse({'service': 'codex-task-mcp', 'status': 'ok', 'pid': os.getpid(),
+        return JSONResponse({'service': 'codex-task-mcp', 'status': 'ok', 'pid': os.getpid(), 'version': manager.deployed_version(),
                              'quota_wait_until': (manager.quota_wait or {}).get('until')})
 
     @mcp.custom_route('/pair/start', methods=['POST'])

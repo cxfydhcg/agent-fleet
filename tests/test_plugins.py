@@ -299,7 +299,7 @@ class PluginSetupTests(unittest.TestCase):
             self.assertTrue((plugin / 'runtime/install-worker.ps1').is_file())
             self.assertTrue((plugin / 'runtime/install-worker.sh').is_file())
             self.assertTrue((plugin / 'runtime/worker/install_mac.py').is_file())
-            for skill in ('setup', 'start', 'pair', 'call-agent', 'main-agent'):
+            for skill in ('setup', 'start', 'pair', 'update', 'call-agent', 'main-agent'):
                 self.assertTrue((plugin / f'skills/{skill}/SKILL.md').is_file(), skill)
             self.assertTrue((plugin / 'runtime/worker/tools/pairing.py').is_file())  # what the pair skill runs on a worker
             self.assertTrue((plugin / 'scripts/setup.mjs').is_file())

@@ -84,6 +84,8 @@ To start this computer's installed worker, use `$agent-fleet:start` in Codex or
 `/agent-fleet:start` in Claude Code, or ask to start the Agent Fleet service. It keeps the existing
 configuration, checks service readiness, and reuses a running service without rerunning setup.
 
+To update to the latest release, use `/agent-fleet:update` on the orchestrator (`$agent-fleet:update` in Codex), or say "update the plugin". It updates this computer's plugin and worker, then every other computer (one short task each; it waits for the service to restart and reports the old and new version). Computers in restricted mode cannot be updated remotely; run it on that computer.
+
 On the orchestrator, just say things like:
 
 > Have 【Manager Cris】 edit today's video and put it in the shared folder

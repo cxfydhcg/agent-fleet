@@ -42,6 +42,8 @@
 //   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
 //                                                     --model/--effort 平时不加；只在会话一直报 "Selected model is at capacity"
 //                                                     或用户要求时用。本轮生效，之后的续接沿用。
+//   node fleet.mjs update   <电脑>                    把那台电脑的插件和 worker 更新到最新版：开一个一次性任务更新插件、重跑安装，
+//                                                     服务空闲后自己重启；等重启完成后报告新旧版本。需要那台电脑是完全访问。
 //   node fleet.mjs get      <电脑> <task_id>
 //   node fleet.mjs wait     <电脑> <task_id>
 //   node fleet.mjs list     <电脑> [数量]
@@ -163,6 +165,7 @@ function summarize(name, profile, online) {
     network: [m.egress_country && T(`出口 ${m.egress_country}`, `egress ${m.egress_country}`),
               m.tailscale?.offers_exit_node && T("提供出口节点", "offers an exit node")].filter(Boolean).join(" · ") || null,
     role: c.role ?? null, notes: c.notes ?? null, software: c.software ?? [], accounts: c.accounts ?? [],
+    version: profile?.version ?? null, engine: profile?.engine ?? pc.engine ?? null,
     busy: profile?.busy ?? null,
     permissions: profile?.permissions ? (profile.permissions.full_access ? T("完全访问（可操作桌面和应用）", "full access (can operate the desktop and apps)")
       : T(`受限（${profile.permissions.sandbox}，需要批准的操作如 Computer Use 会被拒绝）`, `restricted (${profile.permissions.sandbox}; anything needing approval, such as Computer Use, is refused)`)) : null,
@@ -885,6 +888,50 @@ switch (cmd) {
   case "export":
     await talkMainOrOwn(rest.join(" "));
     break;
+  case "update": {
+    // A one-off task (not the main agent, which the owner may have open) updates the plugin and reruns worker
+    // setup there; the service restarts itself once that task ends. Restricted workers cannot run installers.
+    const before = await call("get_profile", {});
+    if (!before.permissions?.full_access) {
+      console.error(T(`${computer} 不是完全访问，没法远程更新。请在那台电脑上运行 /agent-fleet:update（或 setup 技能）。`,
+                      `${computer} is not in full access, so it cannot be updated remotely. Run /agent-fleet:update (or the setup skill) on that computer.`));
+      process.exit(5);
+    }
+    const base = url.replace(/\/mcp\/?$/, "");
+    const health = async () => {
+      try {
+        const r = await fetch(base + "/health", { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
+        return r.ok ? await r.json() : null;
+      } catch { return null; }
+    };
+    const pid = (await health())?.pid;
+    const prompt = T(`更新本机的 agent-fleet 插件并重新部署 worker：
+1. 本机装了哪个 App 就更新哪个（都装了就都更新）：Codex 运行 \`codex plugin marketplace upgrade agent-fleet\`，再 \`codex plugin add agent-fleet@agent-fleet\`；Claude Code 运行 \`claude plugin marketplace update agent-fleet\`，再 \`claude plugin update agent-fleet@agent-fleet\`。
+2. 用刚装好的最新版本插件目录（插件缓存里版本号最大的 agent-fleet 文件夹）里的 scripts/setup.mjs 重跑 worker 安装：\`node "<插件目录>/scripts/setup.mjs" --role worker --full-access\`。其它设置保持不变，不要加 --reconfigure。
+3. 服务这时正忙（就是这个任务），安装会部署新代码，这一轮结束后服务自己重启。不要手动停服务，也不要用延时的后台任务。
+最后一行只写：版本=<新版本号>`,
+`Update this computer's agent-fleet plugin and redeploy the worker:
+1. Update it in each app installed here (both if both are): Codex: \`codex plugin marketplace upgrade agent-fleet\` then \`codex plugin add agent-fleet@agent-fleet\`; Claude Code: \`claude plugin marketplace update agent-fleet\` then \`claude plugin update agent-fleet@agent-fleet\`.
+2. Rerun worker setup with scripts/setup.mjs from the newly installed plugin folder (the highest agent-fleet version in the plugin cache): \`node "<plugin folder>/scripts/setup.mjs" --role worker --full-access\`. Keep every other setting; do not add --reconfigure.
+3. The service is busy right now (with this task), so setup deploys the new code and the service restarts by itself after this turn. Do not stop the service or start a delayed background job.
+End with one line only: version=<new version>`);
+    const started = await call("submit_task", { prompt, name: T("插件更新", "Plugin update") });
+    console.error(T(`已在 ${computer} 开始更新（任务 ${started.task_id}）…`, `Updating ${computer} (task ${started.task_id})...`));
+    const done = await wait(started.task_id);
+    let after = null, restarted = false;
+    if (done.status === "completed") {
+      for (let i = 0; i < 60 && !restarted; i++) {  // the service restarts within seconds of going idle
+        await sleep(3000);
+        after = await health();
+        restarted = Boolean(after && after.pid !== pid);
+      }
+    }
+    out({ computer, ...(pc.manager_name ? { manager_name: pc.manager_name } : {}), task_id: done.task_id, status: done.status,
+          version_before: before.version ?? null, version_after: after?.version ?? null, restarted,
+          reply: done.result, error: done.error });
+    if (done.status !== "completed" || !restarted) process.exitCode = 1;
+    break;
+  }
   case "check":
     // Setup verifies the main agent from whatever session runs it, so this one fixed message is exempt from the
     // orchestrator-only rule; it cannot carry anything else.

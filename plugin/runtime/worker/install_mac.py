@@ -64,8 +64,9 @@ class Setup:
     def resolve(self):
         a, prior = self.args, self.prior or {}
         self.engine = a.engine or ('claude' if prior.get('executor') == 'claude' else 'codex')
-        self.connectivity = a.connectivity or ('lan' if prior.get('lan_url') else
-                                               'tailscale' if prior.get('remote_url') and not prior.get('local_only') else 'local')
+        self.prior_connectivity = ('lan' if prior.get('lan_url') else
+                                   'tailscale' if prior.get('remote_url') and not prior.get('local_only') else 'local')
+        self.connectivity = a.connectivity or self.prior_connectivity
         self.workspace = Path(a.workspace or (Path(prior['tasks_dir']).parent if prior.get('tasks_dir') else Path.home() / 'AgentFleet')).expanduser().resolve()
         folders = prior.get('codex_app_folders')
         task_name = (folders.get('other') if isinstance(folders, dict) else None) or self.t('AgentFleet-其他', 'AgentFleet-Other')
@@ -359,6 +360,9 @@ class Setup:
 
     def pairing(self, started):
         if not started or self.args.no_start or not (self.lan_url or self.remote_url):
+            return None
+        # A rerun (e.g. an update) keeps its orchestrators; only a fresh install or new connectivity opens a window.
+        if self.prior and self.connectivity == self.prior_connectivity:
             return None
         done = self.run(str(self.python), str(WORKER / 'tools' / 'pairing.py'), '--config', str(self.config_path), '--json', check=False, quiet=True)
         if done.returncode:
