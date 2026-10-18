@@ -13,14 +13,15 @@ Talk to the user in the language they write in. Resolve the plugin root from thi
 - **Worker capability** exists when a worker config exists: `%LOCALAPPDATA%\agent-fleet\config.json` on
   Windows, `~/Library/Application Support/agent-fleet/config.json` on macOS (or the user's custom data directory).
 - **Orchestrator capability** requires completed orchestrator/both setup: the selected registry's
-  `computers.json` must have an absolute `orchestrator_workspace` set by setup. The registry is
+  `computers.json` must have the `orchestrator_session` field set by setup. The registry is
   `AGENT_FLEET_HOME`, or `~/.agent-fleet` by default. Never print its token files.
 - A pure worker may only generate its own pairing code. If asked to search for or connect another
   computer, explain that orchestrator or both setup is required. A supplied code does not establish
   the role and is not permission to change it. With neither capability, use setup first.
 - If both capabilities exist and the request doesn't specify the direction, ask whether to show a
   code for this computer or connect another computer. Outgoing discovery/pairing must run from the
-  configured orchestrator session; do not change directory to bypass a rejected session check.
+  orchestrator session. If it is rejected, tell the user; run `claim-orchestrator` only if they ask to make
+  this session the orchestrator.
 
 ## 2. Worker: show a pairing code
 

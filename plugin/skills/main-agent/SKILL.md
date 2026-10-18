@@ -18,8 +18,8 @@ than one is registered. If no worker is installed, use the setup skill first.
 Send the user's goal with:
 `node "<plugin-root>/scripts/fleet.mjs" export "<computer>" "<goal>"`.
 `export` resolves the configured main-agent name, including custom names; do
-not hardcode a default name. Only a session in the orchestrator folder (default
-`~/Documents/AgentFleet`) reaches the main agent; from any other folder `export`
+not hardcode a default name. Only the orchestrator session (registered by id at setup, or moved with
+`claim-orchestrator`) reaches the main agent; from any other session `export`
 goes to that session's own agent, filed under "other" (see call-agent). To rename it, use the setup skill with
 `--main-agent-name "<requested name>" --reconfigure`, preserving existing settings.
 Use shell argument quoting appropriate to the host; never interpolate a prompt

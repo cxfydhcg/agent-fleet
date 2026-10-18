@@ -34,8 +34,13 @@ class PluginSetupTests(unittest.TestCase):
                 time.sleep(0.1)
 
     def orchestrator(self, *args):
-        return subprocess.run(['node', str(ORCH), '--home', str(self.home), '--no-desktop', *args],
+        return subprocess.run(['node', str(ORCH), '--home', str(self.home), *args], env=self.session_env(),
                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+
+    def session_env(self, **extra):
+        # The orchestrator is the setup session, identified by its id; it has no folder.
+        env = {k: v for k, v in os.environ.items() if k not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
+        return {**env, 'CLAUDE_CODE_SESSION_ID': 'fixture-session', **extra}
 
     def connection(self, **overrides):
         path = self.root / 'connection.json'
@@ -53,8 +58,8 @@ class PluginSetupTests(unittest.TestCase):
         token = self.home / 'tokens/existing-pc.txt'
         token.write_text('fixture-old-token', encoding='utf-8')
         self.assertEqual(self.orchestrator().returncode, 0)
-        # Setup also records the orchestrator's folder; everything else is kept as it was.
-        self.assertEqual(json.loads(registry.read_text(encoding='utf-8')), {**contents, 'orchestrator_workspace': str(Path.home() / 'Documents' / 'AgentFleet')})
+        # Setup also records the orchestrator session; everything else is kept as it was.
+        self.assertEqual(json.loads(registry.read_text(encoding='utf-8')), {**contents, 'orchestrator_session': 'fixture-session'})
         self.assertEqual(token.read_text(), 'fixture-old-token')
 
     def test_local_registration_uses_local_url_and_redacts_token(self):
@@ -177,10 +182,10 @@ class PluginSetupTests(unittest.TestCase):
                 registry = self.home / 'computers.json'
                 value = json.loads(registry.read_text(encoding='utf-8'))
                 value['computers']['fixture-pc']['agents'][chosen]['last_task_id'] = 'existing-task'
-                value['orchestrator_workspace'] = str(self.root)  # export runs as the orchestrator session
+                self.assertEqual(value['orchestrator_session'], 'fixture-session')  # export runs as the orchestrator session
                 registry.write_text(json.dumps(value))
                 result = subprocess.run(['node',str(ROOT/'plugin/scripts/fleet.mjs'),'export','fixture-pc','Reply OK'],
-                    env={**os.environ,'AGENT_FLEET_HOME':str(self.home)},cwd=self.root,capture_output=True,text=True,encoding='utf-8',timeout=20)
+                    env=self.session_env(AGENT_FLEET_HOME=str(self.home)),cwd=self.root,capture_output=True,text=True,encoding='utf-8',timeout=20)
                 self.assertEqual(result.returncode,0,result.stderr)
                 answer = json.loads(result.stdout)
                 self.assertEqual(answer['agent'], chosen)

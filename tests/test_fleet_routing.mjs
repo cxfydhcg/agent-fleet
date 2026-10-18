@@ -46,19 +46,20 @@ function fleet(args, { cwd, env }) {
   return once(child, 'exit').then(([code]) => ({ code, stdout, stderr }));
 }
 
-test('only the orchestrator folder reaches the main agent; other sessions get their own agent', async (t) => {
+test('only the registered orchestrator session reaches the main agent; other sessions get their own agent', async (t) => {
   const worker = await fakeDispatcher();
   const root = mkdtempSync(join(tmpdir(), 'fleet-routing-'));
-  const home = join(root, 'registry'), orchestrator = join(root, 'AgentFleet'), project = join(root, 'my-project');
-  for (const dir of [join(home, 'tokens'), orchestrator, project]) mkdirSync(dir, { recursive: true });
+  const home = join(root, 'registry'), project = join(root, 'my-project');
+  for (const dir of [join(home, 'tokens'), project]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(home, 'tokens', 'pc-1.txt'), 'token\n');
-  writeFileSync(join(home, 'computers.json'), JSON.stringify({ orchestrator_workspace: orchestrator,
+  writeFileSync(join(home, 'computers.json'), JSON.stringify({ orchestrator_session: 'orch-session-1',
     computers: { 'pc-1': { main_agent_name: '主agent export', main_agent_id: 'main-1', engine: 'codex', url: worker.url, token_file: join(home, 'tokens', 'pc-1.txt'), agents: {} } } }));
   t.after(() => { worker.server.close(); rmSync(root, { recursive: true, force: true }); });
   const base = { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en' };
   delete base.CLAUDE_CODE_SESSION_ID; delete base.CODEX_THREAD_ID;
 
-  let run = await fleet(['export', 'pc-1', 'hello'], { cwd: orchestrator, env: base });
+  // The orchestrator is a session, not a folder: it reaches the main agent from any directory.
+  let run = await fleet(['export', 'pc-1', 'hello'], { cwd: project, env: { ...base, CLAUDE_CODE_SESSION_ID: 'orch-session-1' } });
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(worker.started.at(-1), { tool: 'submit_task', name: '主agent export' });
 

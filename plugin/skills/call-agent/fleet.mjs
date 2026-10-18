@@ -24,6 +24,8 @@
 //                                                     管理名在整个机群里不能重复；写 "" 清除
 //   node fleet.mjs dashboard [--port=8790] [--no-open] 在这台电脑上打开机群看板：一页看所有电脑的任务和会话（只读）；
 //                                                     令牌由这里代为带上，不用在网页里粘贴；--no-open 只输出链接
+//   node fleet.mjs claim-orchestrator [--session=ID]  让当前会话（Claude Code 或 Codex）当管理端会话：只有它能直接找主 Agent、
+//                                                     搜索和配对电脑。不需要任何文件夹；换了新会话时运行一次
 //   node fleet.mjs language <zh|en>                   输出的语言（默认跟系统；也可用环境变量 AGENT_FLEET_LANG）
 // <电脑> 可以写电脑名、主 Agent 的管理名，或主 Agent 的 ID。主 Agent 按安装时生成的 ID 认，
 // 改主 Agent 的名字或管理名都不会找错。
@@ -32,7 +34,7 @@
 //                                                     和指定 Agent 对话：续接它的会话，等待并输出回复。
 //                                                     --new：找不到这个名字时，新建一个这样命名的 Agent。
 //   node fleet.mjs export   <电脑> <消息> [--title=任务名] [--from=会话]
-//                                                     orchestrator 会话：发给那台电脑的主 Agent。其他会话：发给本会话自己的 Agent，
+//                                                     管理端会话：发给那台电脑的主 Agent。其他会话：发给本会话自己的 Agent，
 //                                                     第一次用 --title 的名字新建（重名自动加序号），之后同一个会话一直续接它。
 //   node fleet.mjs check    <电脑>                    安装检查：让主 Agent 只回复 OK（不用工具、不派子任务）。任何会话都可以用，
 //                                                     消息固定，不能夹带别的内容。
@@ -47,10 +49,10 @@
 //   node fleet.mjs tools    <电脑>
 // 每台电脑用登记表里的 url；加 --remote 强制走 Tailscale（或局域网）地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
-import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { execFileSync } from "node:child_process";
-import { basename, join, relative, resolve, isAbsolute } from "node:path";
+import { basename, join } from "node:path";
 
 const validAgentName = (name) => typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 100 && !/[\u0000-\u001f\u007f]/.test(name) && !name.trim().startsWith('--') && !['__proto__', 'constructor', 'prototype'].includes(name.trim());
 const fleetHome = process.env.AGENT_FLEET_HOME || join(homedir(), ".agent-fleet");
@@ -79,37 +81,47 @@ function resolveComputer(key) {
 }
 const computer = cmd === "add-computer" ? computerArg : resolveComputer(computerArg);
 
-// Only the orchestrator session, the one working in the orchestrator's project folder, talks to main agents.
-// Any other session gets its own agent on the worker, created on first use and reused afterwards; the worker
-// files it under its "other" folder.
-const orchestratorWorkspace = resolve(registry.orchestrator_workspace || join(homedir(), "Documents", "AgentFleet"));
-const within = (dir, root) => {
-  const path = relative(process.platform === "linux" ? root : root.toLowerCase(), process.platform === "linux" ? dir : dir.toLowerCase());
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
-};
-const canonicalPath = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-const isOrchestrator = within(canonicalPath(process.cwd()), canonicalPath(orchestratorWorkspace));
-// Only setup-orchestrator writes this field. A worker's local-client registry and the
-// fallback workspace used for task routing do not authorize connecting other computers.
+// Only the orchestrator session talks to main agents: the Claude Code or Codex session that setup (or
+// claim-orchestrator) registered by its id. It needs no folder. Any other session gets its own agent on the
+// worker, created on first use and reused afterwards; the worker files it under its "other" folder.
+const currentSession = process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || "";
+const isOrchestrator = Boolean(registry.orchestrator_session) && currentSession === registry.orchestrator_session;
+// Only orchestrator setup creates this field. A worker's local-client registry gets one too (its setup session),
+// so it can reach its own main agent, but connecting other computers needs a real orchestrator registry.
 function requireOrchestrator(checkSession = true) {
-  if (typeof registry.orchestrator_workspace !== 'string' || !isAbsolute(registry.orchestrator_workspace)) {
+  if (typeof registry.orchestrator_session !== 'string' || !registry.orchestrator_session) {
     console.error(T('主动接入电脑前，请先运行 Agent Fleet setup，选择管理端或两者都要。纯 worker 只能生成本机配对码。',
                     'Run Agent Fleet setup as orchestrator or both before connecting computers. A worker can only generate its own pairing code.'));
     process.exit(2);
   }
   if (checkSession && !isOrchestrator) {
-    console.error(T(`请在已配置的管理端会话中搜索和配对电脑，工作目录：${orchestratorWorkspace}。`,
-                    `Search and pair from the configured orchestrator session, in ${orchestratorWorkspace}.`));
+    console.error(T('请在管理端会话里搜索和配对电脑。要让当前会话当管理端，先运行 claim-orchestrator。',
+                    'Search and pair from the orchestrator session. To make this session the orchestrator, run claim-orchestrator first.'));
     process.exit(2);
   }
 }
 if (cmd === 'discover' || cmd === 'pair') requireOrchestrator();
+// The orchestrator moves to the session that runs this, e.g. after the user starts a new conversation.
+if (cmd === 'claim-orchestrator') {
+  if (typeof registry.orchestrator_session !== 'string') requireOrchestrator(false);
+  const id = option('session')?.trim() || currentSession;
+  if (!id) {
+    console.error(T('读不到当前会话的 ID（CLAUDE_CODE_SESSION_ID 或 CODEX_THREAD_ID）。请在 Claude Code 或 Codex 会话里运行，或加 --session=<ID>。',
+                    "Could not read this session's id (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID). Run it from a Claude Code or Codex session, or add --session=<id>."));
+    process.exit(2);
+  }
+  registry.orchestrator_session = id;
+  saveRegistry();
+  console.error(T(`管理端会话已设为 ${id}。之后只有这个会话能直接找主 Agent 和配对电脑。`,
+                  `The orchestrator session is now ${id}. Only this session can reach main agents and pair computers.`));
+  process.exit(0);
+}
 // The calling session: --from, or the id Claude Code / Codex give their shell commands.
 function callerSession() {
-  const id = option("from")?.trim() || process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID;
+  const id = option("from")?.trim() || currentSession;
   if (!id) {
-    console.error(T(`这个会话不在 orchestrator 文件夹（${orchestratorWorkspace}）里，不能直接找主 Agent。加 --from=<本会话的名字或 ID>，任务会交给这个会话自己的 Agent。`,
-                    `This session is outside the orchestrator folder (${orchestratorWorkspace}), so it cannot reach main agents. Add --from=<this session's name or id> to use this session's own agent.`));
+    console.error(T('这个会话不是管理端会话，不能直接找主 Agent。加 --from=<本会话的名字或 ID>，任务会交给这个会话自己的 Agent。',
+                    "This is not the orchestrator session, so it cannot reach main agents. Add --from=<this session's name or id> to use this session's own agent."));
     process.exit(2);
   }
   return id;

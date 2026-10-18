@@ -23,12 +23,14 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'fleet-pair-role-'));
   const home = join(root, 'registry'), workspace = join(root, 'management workspace');
   mkdirSync(workspace);
-  const env = { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en' };
+  // The orchestrator is identified by its session id, not by the folder it runs in.
+  const env = { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en', CLAUDE_CODE_SESSION_ID: 'orchestrator-session' };
+  delete env.CODEX_THREAD_ID;
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const options = { cwd: workspace, env };
   return { root, home, workspace, options,
     client: (args, extra = {}, client = CLIENTS[0]) => execute(process.execPath, [client, ...args], { ...options, ...extra }),
-    setup: () => execute(process.execPath, [SETUP, '--workspace', workspace, '--no-desktop'], options) };
+    setup: () => execute(process.execPath, [SETUP], options) };
 }
 
 async function waitingWorker(t) {
@@ -102,12 +104,12 @@ test('completed orchestrator setup allows discovery and pairing without printing
 test('other sessions cannot use a configured management registry to pair', async t => {
   const f = fixture(t), worker = await waitingWorker(t);
   assert.equal((await f.setup()).code, 0);
-  const other = f.workspace + '-other'; mkdirSync(other);
+  const other = { env: { ...f.options.env, CLAUDE_CODE_SESSION_ID: 'another-session' } };
   const before = readFileSync(join(f.home, 'computers.json'), 'utf8');
   for (const args of [['discover', `--hosts=${worker.address}`], ['pair', worker.address, '1234-5678']]) {
-    const result = await f.client(args, { cwd: other });
+    const result = await f.client(args, other);
     assert.equal(result.code, 2);
-    assert.match(result.stderr, /configured orchestrator session/);
+    assert.match(result.stderr, /from the orchestrator session/);
   }
   assert.deepEqual(worker.requests, []);
   assert.equal(readFileSync(join(f.home, 'computers.json'), 'utf8'), before);
@@ -122,7 +124,7 @@ test('worker self-registration remains available and cannot import a non-loopbac
   let result = await f.client(['add-computer', connection, '--local=1']);
   assert.equal(result.code, 0, result.stderr);
   const before = readFileSync(join(f.home, 'computers.json'), 'utf8');
-  assert.equal(JSON.parse(before).orchestrator_workspace, undefined);
+  assert.equal(JSON.parse(before).orchestrator_session, undefined);
   writeFileSync(connection, JSON.stringify({ ...info, local_url: 'http://192.0.2.10:8765/mcp' }));
   result = await f.client(['add-computer', connection, '--local=1']);
   assert.equal(result.code, 2);
@@ -154,4 +156,18 @@ test('a worker can still generate its own pairing code without management setup'
   assert.doesNotMatch(result.stdout + result.stderr, /fixture-local-token/);
   assert.deepEqual(worker.requests, ['/pair/start']);
   assert.equal(existsSync(f.home), false);
+});
+
+test('claim-orchestrator moves the orchestrator to the current session without any folder', async t => {
+  const f = fixture(t), worker = await waitingWorker(t);
+  assert.equal((await f.setup()).code, 0);
+  assert.equal(JSON.parse(readFileSync(join(f.home, 'computers.json'), 'utf8')).orchestrator_session, 'orchestrator-session');
+  const next = { cwd: f.root, env: { ...f.options.env, CLAUDE_CODE_SESSION_ID: 'new-conversation' } };
+  assert.equal((await f.client(['discover', `--hosts=${worker.address}`], next)).code, 2);
+  const claim = await f.client(['claim-orchestrator'], next);
+  assert.equal(claim.code, 0, claim.stderr);
+  assert.equal(JSON.parse(readFileSync(join(f.home, 'computers.json'), 'utf8')).orchestrator_session, 'new-conversation');
+  const discovery = await f.client(['discover', `--hosts=${worker.address}`], next);
+  assert.equal(discovery.code, 0, discovery.stderr);
+  assert.equal((await f.client(['discover', `--hosts=${worker.address}`])).code, 2, 'the previous session is no longer the orchestrator');
 });

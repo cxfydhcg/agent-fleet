@@ -10,7 +10,7 @@ const values = new Map();
 const flags = new Set();
 const booleans = new Set(['plan', 'local', 'full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop', 'desktop-only']);
 const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
-  'codex-executable', 'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address']);
+  'codex-executable', 'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address', 'session']);
 const argv = process.argv.slice(2);
 
 function fail(message) { console.error(message); process.exit(2); }
@@ -55,7 +55,7 @@ if (values.has('connectivity') && !['local', 'tailscale', 'lan'].includes(values
 if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--lan-address requires --connectivity lan.');
 if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en.');
 if (role === 'worker' && (values.has('connection') || values.has('registry-home') || flags.has('local'))) fail('Connection/registry options require orchestrator or both.');
-const workerOptions = ['engine', 'connectivity', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'];
+const workerOptions = ['engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'];
 if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
 // A worker's permissions are never left to a default: whoever runs setup must ask the owner and pass the choice.
 if (flags.has('full-access') && flags.has('restricted')) fail('Pass either --full-access or --restricted, not both.');
@@ -131,20 +131,22 @@ if (role !== 'orchestrator' && process.platform === 'darwin') {
   for (const [key, parameter] of Object.entries(switches)) if (flags.has(key)) args.push('-' + parameter);
   worker = lastObject(run('powershell', args));
 }
+// The orchestrator is the session running setup (by id), not a folder; claim-orchestrator moves it later.
+const session = (values.get('session') || process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || '').trim();
 if (flags.has('plan')) {
   console.log(JSON.stringify({ role, plan: true, ...(worker ? { worker } : {}),
-    desktop: { enabled: !flags.has('no-desktop'), workspace: values.get('workspace') || worker?.workspace || join(homedir(),'Documents','AgentFleet') },
-    ...(role !== 'worker' ? { orchestrator: { registry_home: registryHome, local_worker_registration: role === 'both', connection_file: values.get('connection') || null } } : {}) }, null, 2));
+    ...(worker ? { desktop: { enabled: !flags.has('no-desktop'), workspace: values.get('workspace') || worker.workspace } } : {}),
+    ...(role !== 'worker' ? { orchestrator: { registry_home: registryHome, session: session || null, local_worker_registration: role === 'both', connection_file: values.get('connection') || null } } : {}) }, null, 2));
   process.exit(0);
 }
-// The worker's own client (main-agent skill) treats sessions in the worker's workspace as the orchestrator session,
-// so its main agent stays reachable from there instead of falling back to a default folder.
-if (worker?.client_home && worker.workspace) {
+// The worker's own client (main-agent skill) treats the setup session as its orchestrator session, so this
+// computer's main agent is reachable from it; other sessions get their own agents.
+if (worker?.client_home && session) {
   const local = join(worker.client_home, 'computers.json');
   if (existsSync(local)) {
     const saved = JSON.parse(readFileSync(local, 'utf8').replace(/^\uFEFF/, ''));
-    if (saved.orchestrator_workspace !== resolve(worker.workspace)) {
-      saved.orchestrator_workspace = resolve(worker.workspace);
+    if (saved.orchestrator_session !== session) {
+      saved.orchestrator_session = session;
       writeFileSync(local, JSON.stringify(saved, null, 2) + '\n');
     }
   }
@@ -152,21 +154,21 @@ if (worker?.client_home && worker.workspace) {
 if (role !== 'worker') {
   const env = { ...process.env, AGENT_FLEET_HOME: registryHome };
   const setup = join(root, 'scripts/setup-orchestrator.mjs');
-  // The project folder the orchestrator session works in; only sessions there may talk to main agents.
-  const place = ['--workspace', resolve(values.get('workspace') || worker?.workspace || join(homedir(), 'Documents', 'AgentFleet'))];
-  run(process.execPath, [setup, ...place, '--no-desktop'], env);
+  // Only this session may talk to main agents and pair computers; the orchestrator has no folder of its own.
+  const place = session ? ['--session', session] : [];
+  run(process.execPath, [setup, ...place], env);
   if (values.has('language')) run(process.execPath, [join(root, 'skills/call-agent/fleet.mjs'), 'language', values.get('language')], env);
   if (role === 'both') {
     if (!worker.connection_file || !existsSync(worker.connection_file)) throw new Error('Worker connection file is missing; no local worker was registered.');
-    run(process.execPath, [setup, ...place, '--connection', worker.connection_file, '--local', '--no-desktop'], env);
+    run(process.execPath, [setup, ...place, '--connection', worker.connection_file, '--local'], env);
   }
-  if (values.has('connection')) run(process.execPath, [setup, ...place, '--connection', resolve(values.get('connection')), ...(flags.has('local') ? ['--local'] : []), '--no-desktop'], env);
+  if (values.has('connection')) run(process.execPath, [setup, ...place, '--connection', resolve(values.get('connection')), ...(flags.has('local') ? ['--local'] : [])], env);
 }
 const workerConfigPath = worker?.data_dir ? join(worker.data_dir, 'config.json') : null;
 const workerConfig = workerConfigPath && existsSync(workerConfigPath)
   ? JSON.parse(readFileSync(workerConfigPath, 'utf8').replace(/^\uFEFF/, '')) : undefined;
-const desktop = await ensureDesktopProjects({workspace: values.get('workspace') || worker?.workspace || join(homedir(),'Documents','AgentFleet'),
-  workerConfig, disabled:flags.has('no-desktop')});
+// Only a worker has Codex desktop projects (its main-agent and other-agents folders); the orchestrator has none.
+const desktop = worker ? await ensureDesktopProjects({workspace: values.get('workspace') || worker.workspace, workerConfig, disabled:flags.has('no-desktop')}) : null;
 if (worker) worker.desktop = desktop;
-console.log(JSON.stringify({ role, status: desktop.status === 'pending' ? 'desktop-setup-pending' : 'setup-complete', desktop, ...(worker ? { worker } : {}),
-  ...(role !== 'worker' ? { registry_home: registryHome } : {}) }, null, 2));
+console.log(JSON.stringify({ role, status: desktop?.status === 'pending' ? 'desktop-setup-pending' : 'setup-complete', ...(desktop ? { desktop } : {}), ...(worker ? { worker } : {}),
+  ...(role !== 'worker' ? { registry_home: registryHome, orchestrator_session: session || null } : {}) }, null, 2));

@@ -3,19 +3,18 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { ensureDesktopProject } from './setup-desktop.mjs';
 
 const args = process.argv.slice(2);
 let connection, local = false, home = process.env.AGENT_FLEET_HOME || join(homedir(), '.agent-fleet');
-let workspace = join(homedir(),'Documents','AgentFleet'), noDesktop = false;
+// The orchestrator is a session, not a folder: the Claude Code or Codex session running setup, by its id.
+let session = process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || '';
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--local') local = true;
-  else if (args[i] === '--no-desktop') noDesktop = true;
-  else if (['--connection', '--home','--workspace'].includes(args[i]) && args[i + 1] && !args[i + 1].startsWith('--')) {
+  else if (['--connection', '--home', '--session'].includes(args[i]) && args[i + 1] && !args[i + 1].startsWith('--')) {
     const key = args[i++];
-    if (key === '--connection') connection = resolve(args[i]); else if(key === '--workspace') workspace = resolve(args[i]); else home = resolve(args[i]);
+    if (key === '--connection') connection = resolve(args[i]); else if (key === '--session') session = args[i].trim(); else home = resolve(args[i]);
   } else {
-    console.error('Usage: node setup-orchestrator.mjs [--home PATH] [--connection PATH] [--local] [--workspace PATH] [--no-desktop]');
+    console.error('Usage: node setup-orchestrator.mjs [--home PATH] [--connection PATH] [--local] [--session ID]');
     process.exit(2);
   }
 }
@@ -46,10 +45,11 @@ if (existsSync(registry)) {
 }
 mkdirSync(join(home, 'tokens'), { recursive: true });
 if (!existsSync(registry)) writeFileSync(registry, JSON.stringify({ computers: {} }, null, 2) + '\n', { mode: 0o600 });
-// fleet.mjs lets only sessions in this folder (the orchestrator session) talk to main agents.
+// fleet.mjs lets only this session talk to main agents and pair computers; claim-orchestrator moves it.
+// An empty value means set up without a session yet: run claim-orchestrator from the orchestrator session.
 const saved = JSON.parse(readFileSync(registry, 'utf8'));
-if (saved.orchestrator_workspace !== workspace) {
-  saved.orchestrator_workspace = workspace;
+if (session ? saved.orchestrator_session !== session : typeof saved.orchestrator_session !== 'string') {
+  saved.orchestrator_session = session || '';
   writeFileSync(registry, JSON.stringify(saved, null, 2) + '\n');
 }
 if (connection) {
@@ -59,5 +59,6 @@ if (connection) {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status || 1);
 }
-const desktop = await ensureDesktopProject({workspace,disabled:noDesktop});
-console.log(JSON.stringify({ status: desktop.status === 'pending' ? 'desktop-setup-pending' : 'ready', desktop, registry, registered_workers: Object.keys(JSON.parse(readFileSync(registry, 'utf8')).computers) }, null, 2));
+const final = JSON.parse(readFileSync(registry, 'utf8'));
+console.log(JSON.stringify({ status: final.orchestrator_session ? 'ready' : 'session-pending', orchestrator_session: final.orchestrator_session || null,
+  registry, registered_workers: Object.keys(final.computers) }, null, 2));

@@ -46,7 +46,9 @@ class RoleSetupTests(unittest.TestCase):
 
     def run_setup(self, *args, actual=False):
         script = ROOT / 'plugin/scripts/setup.mjs' if actual else self.fixture / 'scripts/setup.mjs'
-        return subprocess.run(['node', str(script), *args, '--no-desktop'], env={**os.environ, 'AGENT_FLEET_HOME': str(self.home)},
+        env = {k: v for k, v in os.environ.items() if k not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
+        return subprocess.run(['node', str(script), *args, '--no-desktop'],
+                              env={**env, 'AGENT_FLEET_HOME': str(self.home), 'CLAUDE_CODE_SESSION_ID': 'fixture-session'},
                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
 
     def result(self, output):
@@ -70,7 +72,9 @@ class RoleSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.home / 'computers.json').exists())
         saved = json.loads((self.home / 'computers.json').read_text(encoding='utf-8'))
-        self.assertEqual(Path(saved['orchestrator_workspace']), Path.home() / 'Documents' / 'AgentFleet')
+        self.assertEqual(saved['orchestrator_session'], 'fixture-session')  # a session, no folder
+        self.assertNotIn('orchestrator_workspace', saved)
+        self.assertNotIn('desktop', self.result(result.stdout))
         self.assertFalse(self.data.exists())
         self.assertEqual(self.result(result.stdout)['role'], 'orchestrator')
 
@@ -81,9 +85,9 @@ class RoleSetupTests(unittest.TestCase):
         self.assertTrue((self.data / 'connection.json').exists())
         self.assertFalse(self.home.exists())
         self.assertEqual(self.result(result.stdout)['worker']['engine'], 'claude')
-        # The worker's own client treats its workspace as the orchestrator folder.
+        # The worker's own client treats the setup session as its orchestrator session.
         local = json.loads((self.data / 'local-client/computers.json').read_text(encoding='utf-8'))
-        self.assertEqual(Path(local['orchestrator_workspace']), (self.data / 'workspace').resolve())
+        self.assertEqual(local['orchestrator_session'], 'fixture-session')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_both_registers_its_worker_locally_without_exposing_token(self):

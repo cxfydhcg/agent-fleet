@@ -95,9 +95,10 @@ Set `codex_app_register_other_project` to `false` in the worker config to opt ou
 of requesting the named other-agents project during setup/desktop repair. This
 does not change task storage or disable the separate offline session sorter.
 
-For orchestrator-only setup, the public project folder defaults to
-`Documents/AgentFleet`; `--workspace PATH` chooses a different folder. Private
-registries and tokens stay separate. If the desktop app is absent, setup reports
+The orchestrator has no folder and no Codex desktop project: setup registers the
+session that runs it (by its Claude Code or Codex session id) as the orchestrator
+session, and `fleet.mjs claim-orchestrator` moves that role to another session.
+Only workers get desktop projects. Private registries and tokens stay separate. If the desktop app is absent, setup reports
 that explicitly. A `desktop.status` of `pending` means registration has not
 completed; respond to any folder-access prompt in Codex, then rerun setup.
 Use `--no-desktop` (PowerShell worker setup: `-NoDesktop`) for headless or

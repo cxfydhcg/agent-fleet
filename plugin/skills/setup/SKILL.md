@@ -85,6 +85,10 @@ worker. On reruns preserve the configured connectivity unless the user asks to c
 local needs no remote pairing; report that the worker is usable on this computer only.
 
 For **control** (orchestrator):
+- The orchestrator is a session, not a folder: setup registers the session running it (its
+  `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`, or `--session ID`) and creates no workspace or Codex desktop
+  project. Only that session reaches main agents and pairs computers; `fleet.mjs claim-orchestrator` moves the
+  role when the user asks to use another conversation. Report the registered session id.
 - The private registry is `~/.agent-fleet` unless `AGENT_FLEET_HOME` or
   `--registry-home` names an existing one. Preserve existing workers and tokens.
 - To connect a worker on another computer, prefer pairing over copying files: the worker shows an 8-digit
@@ -150,7 +154,7 @@ Codex/Terminal in System Settings → Privacy & Security; you cannot do that for
 - For **both**, setup registers this computer's worker with its own orchestrator
   over localhost; don't ask the user to transfer its connection file to itself.
 
-Other options: `--workspace` (also the orchestrator's public project folder),
+Other options: `--workspace` (the worker's folder; the orchestrator has none),
 `--data-dir`, `--connectivity local|tailscale|lan`, `--lan-address`, `--description`,
 `--claude-executable`, `--port`, `--tailscale-port`, `--skip-prerequisites`,
 `--no-autostart`, and `--no-desktop` for headless or Claude Code-only use.
@@ -177,8 +181,8 @@ To register another worker later, rerun with `--role orchestrator --connection`
 - Check each new or changed worker's main agent with `fleet.mjs check <computer>`,
   through main-agent's client (this computer) or call-agent's (another computer).
   It sends a fixed "reply with exactly OK" message straight to the main agent
-  from any session; don't use `export` for this, which from a session outside the
-  orchestrator folder goes to that session's own agent instead. Report the actual
+  from any session; don't use `export` for this, which from a session other than
+  the orchestrator session goes to that session's own agent instead. Report the actual
   status and reply; service-ready or HTTP health is not proof of a successful model turn.
 - For an orchestrator, run call-agent's `fleet.mjs overview`. With no workers
   registered, explain that the orchestrator is ready and needs a worker's
@@ -203,7 +207,8 @@ To register another worker later, rerun with `--role orchestrator --connection`
   (use the configured language and `--data-dir` if custom). Preview with `--plan`.
   This does not restart the service or change permissions, identity or pairing.
   Verify both project registrations before claiming completion.
-- Setup registers the workspace under Projects in Codex desktop on Windows and macOS and
+- Worker setup registers the workspace under Projects in Codex desktop on Windows and macOS (the
+  orchestrator registers none) and
   reports `desktop.status`, including when it reuses an existing worker. Verify
   `registered` and the path with the app's project-list tool when available;
   never report a sidebar project solely because its directory exists. `pending`

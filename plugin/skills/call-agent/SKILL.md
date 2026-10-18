@@ -15,7 +15,7 @@ node "${CLAUDE_SKILL_DIR}/fleet.mjs" <command> ...
 
 `fleet.mjs` sits next to this SKILL.md. If your agent doesn't substitute `${CLAUDE_SKILL_DIR}` (e.g. Codex), use the absolute path of this skill's folder instead. If no computers are registered yet, run `overview`; it prints an empty list. Then help the user set up a computer using this plugin's setup skill to choose orchestrator, worker, or both.
 
-**Who may talk to main agents.** Only the orchestrator session, a session working in the orchestrator's project folder (`orchestrator_workspace` in the registry, set by setup; default `~/Documents/AgentFleet`), reaches a computer's main agent. From any other session, `export` and `agent <电脑> <main agent>` go instead to that session's own agent on the computer. It is created on first use, reused for later messages from the same session, and filed in the worker's "other" folder (`AgentFleet-其他`). On that first send, pass `--title="<short task name>"`, a few words in the user's language that say what the work is (e.g. `--title="系统设置截图"`), so the user can recognize it in the sidebar. A name already in use gets a number added. Without a title it is named `<folder> · <session id>`. Later sends from the same session may omit `--title`; the registry remembers the session's agent. `fleet.mjs` decides this from the working directory and `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`. If neither id is set, pass `--from=<name>`. Tell the user which agent answered; don't work around the rule by changing directory.
+**Who may talk to main agents.** Only the orchestrator session reaches a computer's main agent: the Claude Code or Codex session registered by id (`orchestrator_session` in the registry), set by setup or moved later with `fleet.mjs claim-orchestrator`. The orchestrator needs no folder; its tasks and results live on the workers. From any other session, `export` and `agent <电脑> <main agent>` go instead to that session's own agent on the computer. It is created on first use, reused for later messages from the same session, and filed in the worker's "other" folder (`AgentFleet-其他`). On that first send, pass `--title="<short task name>"`, a few words in the user's language that say what the work is (e.g. `--title="系统设置截图"`), so the user can recognize it in the sidebar. A name already in use gets a number added. Without a title it is named `<current folder> · <session id>`. Later sends from the same session may omit `--title`; the registry remembers the session's agent. `fleet.mjs` decides this from `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`. If neither id is set, pass `--from=<name>`. Tell the user which agent answered. If the user has moved to a new conversation and wants it to be the orchestrator, run `claim-orchestrator` there only when they ask.
 
 ## 1. Parse the arguments
 
@@ -64,8 +64,8 @@ Session ownership: a main agent can continue, cancel or open only the sessions i
 
 Outgoing discovery, pairing and remote connection-file import require completed orchestrator/both
 setup in the selected registry. Pure workers may generate their own pairing code but cannot connect
-another computer. Discovery and pairing also require the configured orchestrator session; do not
-change directory to bypass that check.
+another computer. Discovery and pairing also require the orchestrator session; run `claim-orchestrator` only
+when the user asks to make the current session the orchestrator.
 
 Use this plugin's pair skill: on the new worker it shows a one-time code, and here it searches the local
 network and Tailscale and connects with the code the user gives (`discover`, then `pair <code>`, or
