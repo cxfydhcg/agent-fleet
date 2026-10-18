@@ -282,6 +282,36 @@ class PluginSetupTests(unittest.TestCase):
         self.assertEqual(path.read_text(), before)
         self.assertFalse(workspace.exists())
 
+    def test_mac_setup_downloads_claude_installer_with_curl(self):
+        sys.path.insert(0, str(ROOT / 'worker'))
+        try:
+            import install_mac
+        finally:
+            sys.path.remove(str(ROOT / 'worker'))
+        def setup(failing):
+            value = install_mac.Setup.__new__(install_mac.Setup)
+            value.data, value.language, value.calls = self.root / 'private', 'en', []
+            def run(*command, check=True, quiet=False):
+                value.calls.append(command[0])
+                return subprocess.CompletedProcess(command, 1 if command[0] == failing else 0)
+            value.run = run
+            return value
+        def refuse(*args): raise AssertionError('urllib must not download the installer')
+        original, urllib.request.urlretrieve = urllib.request.urlretrieve, refuse
+        try:
+            value = setup(None)
+            value.install_claude()
+            self.assertEqual(value.calls, ['curl', 'bash'])
+            self.assertTrue(value.claude)
+            for failing, calls in (('curl', ['curl']), ('bash', ['curl', 'bash'])):
+                value = setup(failing)
+                with self.assertRaises(SystemExit) as raised:
+                    value.install_claude()
+                self.assertIn('--claude-executable', str(raised.exception.code))
+                self.assertEqual(value.calls, calls)
+        finally:
+            urllib.request.urlretrieve = original
+
     def test_manifests_and_catalogs_reference_self_contained_plugins(self):
         catalog = json.loads((ROOT / '.agents/plugins/marketplace.json').read_text())
         self.assertEqual({p['name'] for p in catalog['plugins']}, {'agent-fleet'})

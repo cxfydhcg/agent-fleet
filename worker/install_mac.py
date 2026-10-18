@@ -30,6 +30,7 @@ LAUNCH_AGENT = 'com.agentfleet.worker'
 EXTRA_PATH = ['/opt/homebrew/bin', '/usr/local/bin', str(Path.home() / '.local' / 'bin')]
 TAILSCALE_APP = '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
 CLAUDE_MIN = (2, 1, 248)
+CLAUDE_INSTALLER = 'https://claude.ai/install.sh'
 
 
 class Setup:
@@ -176,11 +177,7 @@ class Setup:
             self.step('准备 Claude Code 命令行', 'Preparing the Claude Code CLI')
             self.claude = a.claude_executable or shutil.which('claude')
             if not self.claude:
-                script = self.data / 'install-claude.sh'
-                self.data.mkdir(parents=True, exist_ok=True)
-                urllib.request.urlretrieve('https://claude.ai/install.sh', script)
-                self.run('bash', str(script))
-                self.claude = shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
+                self.install_claude()
             if not Path(self.claude).exists():
                 self.fail('找不到 claude；可用 --claude-executable 指定路径', 'claude was not found; pass its path with --claude-executable')
             version = self.version(self.claude) or ''
@@ -191,6 +188,16 @@ class Setup:
             if self.run(self.claude, 'auth', 'status', check=False, quiet=True).returncode:
                 self.warnings.append(self.t('Claude Code 还没有登录：请本人运行 claude auth login，然后重新运行安装。',
                                             'Claude Code is not signed in: the owner must run claude auth login, then rerun this setup.'))
+
+    def install_claude(self):
+        # claude.ai refuses Python's urllib (HTTP 403), and a uv/pyenv Python may lack CA certificates; curl ships with macOS.
+        script = self.data / 'install-claude.sh'
+        self.data.mkdir(parents=True, exist_ok=True)
+        if (self.run('curl', '-fsSL', '-o', str(script), CLAUDE_INSTALLER, check=False, quiet=True).returncode
+                or self.run('bash', str(script), check=False).returncode):
+            self.fail(f'安装 Claude Code 命令行失败：请先运行 curl -fsSL {CLAUDE_INSTALLER} | bash，或用 --claude-executable 指定路径',
+                      f'Installing the Claude Code CLI failed: run curl -fsSL {CLAUDE_INSTALLER} | bash first, or pass its path with --claude-executable')
+        self.claude = shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
 
     def version(self, executable):
         try:
