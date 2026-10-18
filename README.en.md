@@ -113,9 +113,8 @@ The workspace can be chosen with `--workspace` at first setup; reruns keep it.
 
 ```
 AgentFleet\                    ← workspace, "AgentFleet" in the desktop app sidebar
-├── main-agent\                ← where the main agent works
-│   ├── AGENTS.md / CLAUDE.md  ← the main agent's instructions (same content)
-│   └── .codex\config.toml     ← a Codex main agent's connection to the dispatcher (holds the token; only the main agent loads it)
+├── main-codex\                ← where the Codex main agent works (AGENTS.md, .codex\config.toml); only with Codex
+├── main-claude\               ← where the Claude main agent works (CLAUDE.md); only with Claude
 ├── AgentFleet-Other\          ← sub-task folders, "AgentFleet-Other" in the sidebar
 │   └── <task name-task id>\   ← one folder per sub-task, with its output
 ├── shared\                    ← shared folder for exchanging files between agents

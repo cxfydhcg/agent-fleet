@@ -112,9 +112,11 @@ Claude Code：在对话框里输入
 
 ```
 AgentFleet\                    ← 工作区，桌面版侧边栏里的 “AgentFleet”
-├── main-agent\                ← 主 agent 工作的地方
-│   ├── AGENTS.md / CLAUDE.md  ← 主 agent 的工作说明（同一份内容）
-│   └── .codex\config.toml     ← Codex 主 agent 连接派任务服务的配置（含令牌，只有主 agent 加载）
+├── main-codex\                ← Codex 主 agent 工作的地方（装了 Codex 才有）
+│   ├── AGENTS.md              ← 它的工作说明
+│   └── .codex\config.toml     ← 它连接派任务服务的配置（含令牌，只有主 agent 加载）
+├── main-claude\               ← Claude 主 agent 工作的地方（装了 Claude 才有）
+│   └── CLAUDE.md              ← 它的工作说明
 ├── AgentFleet-其他\            ← 子任务的工作目录，桌面版侧边栏里的 “AgentFleet-其他”
 │   └── <任务名-任务id>\        ← 每个子任务一个文件夹，产出在这里
 ├── shared\                    ← 共享文件夹：各 agent 交换文件用
@@ -155,7 +157,7 @@ node <插件目录>/scripts/setup.mjs --role worker --engines codex,claude --mai
 
 去掉 `--plan` 才执行安装。Windows PowerShell 安装入口使用 `-Engines codex,claude`、`-MainAgentName`、`-SecondMainAgentName`；macOS 安装入口使用上述 `--` 参数。`--engine codex` / `--engine claude` 仍表示只选一个引擎。两个 CLI 都需要本人先登录。
 
-首次双引擎安装分别创建 `main-codex/AGENTS.md`（含专用 `.codex/config.toml`）和 `main-claude/CLAUDE.md`。单引擎安装继续使用 `main-agent`；已有安装重跑保留各自的 ID、名字、目录和说明。默认中文名字是“主agent export”和“Claude主agent”，英文为“Main agent”和“Claude main agent”。
+全新安装的主 Agent 文件夹按引擎命名：`main-codex/AGENTS.md`（含专用 `.codex/config.toml`）和 `main-claude/CLAUDE.md`，只装一个引擎就只有其中一个。0.7.2 以前装的电脑用的是 `main-agent`，重跑或更新会保留它；已有安装重跑保留各自的 ID、名字、目录和说明。默认中文名字是“主agent export”和“Claude主agent”，英文为“Main agent”和“Claude main agent”。
 
 管理会话按名字调用，例如 `fleet.mjs agent <电脑名> "Claude主agent" "整理文件"`；名字决定引擎，无需再选引擎。`export <电脑名>` 仍找第一个主 Agent；`check <电脑名> [名字]` 检查指定主 Agent，省略名字则逐个检查。`overview` 显示全部引擎和主 Agent。其他会话不能借主 Agent 名字取得管理权限。
 

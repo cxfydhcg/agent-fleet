@@ -28,7 +28,7 @@ foreach ($agentEngine in $engineList) {
     $savedMain = @($savedMains.main_agents | Where-Object { $_.engine -eq $agentEngine }) | Select-Object -First 1
     if ($savedMain.id) { $chosenId = $savedMain.id } elseif ($oldDefault -and $savedMains.main_agent_id) { $chosenId = $savedMains.main_agent_id }
     if (-not $chosenId) { $chosenId = [guid]::NewGuid().ToString() }
-    $chosenWorkspace = if ($oldMain) { $oldMain.workspace } elseif ($oldDefault -and $priorSettings.main_agent_workspaces) { $priorSettings.main_agent_workspaces[0] } elseif ($engineList.Count -eq 1) { Join-Path $Workspace 'main-agent' } else { Join-Path $Workspace "main-$agentEngine" }
+    $chosenWorkspace = if ($oldMain) { $oldMain.workspace } elseif ($oldDefault -and $priorSettings.main_agent_workspaces) { $priorSettings.main_agent_workspaces[0] } else { Join-Path $Workspace "main-$agentEngine" }
     $mainAgents += [ordered]@{name=$chosenName;engine=$agentEngine;id=$chosenId;workspace=$chosenWorkspace}
 }
 $MainAgentName = $mainAgents[0].name

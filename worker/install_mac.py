@@ -124,7 +124,7 @@ class Setup:
                 self.fail('主 Agent 名字无效或重复。', 'Invalid or duplicate main agent name.')
             if name != old.get('name') and name in saved_profile.get('agents', {}):
                 self.fail('主 Agent 名字与现有 Agent 冲突。', 'Main agent name conflicts with an existing agent.')
-            folder = old.get('workspace') or str(self.workspace / ('main-agent' if len(self.engines) == 1 else 'main-' + engine))
+            folder = old.get('workspace') or str(self.workspace / ('main-' + engine))  # older installs keep main-agent
             saved = next((m for m in saved_profile.get('main_agents', []) if m['engine'] == engine), {})
             legacy_engine = 'claude' if prior.get('executor') == 'claude' else 'codex'
             legacy_id = saved_profile.get('main_agent_id') if not prior.get('main_agents') and engine == legacy_engine else None

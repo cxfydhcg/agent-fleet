@@ -12,7 +12,7 @@ param(
     [string]$ManagerName = '',    # 可选：管理端调用这台电脑主 Agent 时用的名字（比如 经理cris），写进 connection.json
     [string]$Description = '',
     [string]$DataDir = (Join-Path $env:USERPROFILE 'AppData\Local\agent-fleet'),      # 内部数据：配置、令牌、任务记录
-    [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-agent\、AgentFleet-其他\（英文 AgentFleet-Other\）、shared\
+    [string]$Workspace = (Join-Path $env:USERPROFILE 'AgentFleet'),      # 工作区：main-codex\ 或 main-claude\（旧安装是 main-agent\）、AgentFleet-其他\（英文 AgentFleet-Other\）、shared\
     [int]$Port = 8765,
     [int]$TailscalePort = 8766,
     [switch]$FullAccess,          # 子任务不设沙箱并自动同意权限请求，才能操作桌面、浏览器和其他程序
