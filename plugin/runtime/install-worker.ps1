@@ -259,7 +259,7 @@ $config = [ordered]@{
     auto_approve = [bool]$FullAccess
     max_timeout_seconds = 7200
     writer_wait_seconds = 10
-    fork_when_busy = $false
+    fork_when_busy = $true
 }
 if ($Engine -eq 'claude') { $config['claude_version'] = $claudeVersion }
 # Keep user-added options on repeated setup (including quota and display preferences).

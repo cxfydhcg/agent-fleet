@@ -1344,7 +1344,7 @@ class TaskManager:
 
     async def resume_or_fork(self, connection, job, policy):
         """Load an existing session. The desktop app keeps every chat it has opened locked until it fully
-        exits; if the session stays held, fail, or fork it when fork_when_busy is on. Returns True if forked."""
+        exits; if the session stays held, fork it (as Claude workers do), or fail when fork_when_busy is off. Returns True if forked."""
         deadline = asyncio.get_running_loop().time() + self.config.get('writer_wait_seconds', 10)
         while True:
             try:
@@ -1360,7 +1360,7 @@ class TaskManager:
                     self.save(job)
                     await asyncio.sleep(5)
                     continue
-                if not self.config.get('fork_when_busy', False):
+                if not self.config.get('fork_when_busy', True):
                     raise RuntimeError('This session is held by another Codex window. The desktop app keeps chats it '
                                        'has opened locked until it fully exits. / 这个会话在桌面 App 里打开过，App 会一直占用它，'
                                        '直到 Codex 完全退出；请开一个新任务，或退出 Codex 后再继续。') from error
@@ -1551,7 +1551,7 @@ def build_app(config):
 
     busy_note = ('continuing such a session automatically forks a copy with the full history (thread_id changes, '
                  'forked_from_thread_id is set, the copy is named "…（续 time）" or "… (cont. time)"), and later continue_task calls follow the newest copy.'
-                 if config.get('fork_when_busy', False) else
+                 if config.get('fork_when_busy', True) else
                  'continuing such a session fails with an explanation; tell the human, or start a new task instead.')
     mcp = FastMCP('Codex Task Dispatcher',
         instructions='Submit tasks to Codex running on the server computer. submit_task creates a new session; continue_task(task_id, prompt) reuses an existing dispatched session with its conversation history and workspace. Wait for prior work in the session to finish before continuing. Paths refer to the server computer. Use idempotency_key when retrying submission. Poll get_task every 5–15 seconds. Completed means a final result was produced; inspect failed/timed_out/interrupted errors. Tasks run one at a time. Always include the returned desktop_link as a clickable Markdown link when reporting a task to the human, so they can open it without contacting another agent. desktop_url opens the local Codex app on the computer where clicked. If the human wants the chat shown on the server desktop, call open_task after the task finishes; it opens that chat directly without restarting the app. The user does not need to ask this dispatcher implementation chat to open it. Sessions appear in the Codex desktop app sidebar under their name. The desktop app keeps chats it has opened locked until it fully exits; ' + busy_note + ' A read-only live view of all sessions, which never locks them, is at /dashboard on this server. get_profile describes this computer (hardware, role, software, accounts) and its long-lived agents; keep it current with update_computer_profile and register_agent. A main agent can continue, cancel or open only the sessions it opened; the orchestrator controls every session and is the only one that sets an agent\'s can_dispatch / locked with register_agent.',

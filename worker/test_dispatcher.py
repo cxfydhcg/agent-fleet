@@ -381,7 +381,8 @@ class AppServerDispatcherTests(DispatcherTests):
         english.update_computer(manager_name='')
         self.assertNotIn('manager_name', english.profile['computer'])
 
-    async def test_session_open_elsewhere_fails_by_default(self):
+    async def test_session_open_elsewhere_fails_when_forking_is_off(self):
+        self.manager.config['fork_when_busy'] = False
         first = self.manager.submit('original', None, 10, None)
         await self.wait_for(first['task_id'], {'completed'})
         (self.root / 'busy').write_text('', encoding='utf-8')

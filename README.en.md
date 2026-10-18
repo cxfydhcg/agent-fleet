@@ -138,7 +138,7 @@ The fleet board's Files tab and `fleet.mjs files` / `fetch` reach only `shared` 
 ## Things to know
 
 - **The token is control of that computer.** Keep it on your own computers; don't send it to anyone or paste it into a chat.
-- **Don't open sessions agents are using in the Codex desktop app**: the app locks every session it opened until it fully quits, and the agent cannot continue meanwhile. Use the dashboard to watch.
+- **Opening an agent's session in a desktop app**: fine in Codex and Claude. While you hold it, new tasks for that agent continue in a fork with the full history, so you are not interrupted; the Codex desktop app holds every session it opened until it fully quits (set `fork_when_busy: false` to fail instead). To just watch progress, use the read-only dashboard, which is always current.
 - **Each computer runs one task at a time**, so tasks don't fight over the mouse and keyboard.
 - **No new tasks start while the Codex quota is used up**: the queue waits in order until it resets and notifies the orchestrator.
 - Sub-agents are told not to touch the dispatcher or the token, but that is only a rule: with full access they can technically read any file on the computer.

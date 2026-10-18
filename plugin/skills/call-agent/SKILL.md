@@ -49,7 +49,7 @@ Session ownership: a main agent can continue, cancel or open only the sessions i
 ## 3. Report back
 
 - Relay the agent's `reply` faithfully and briefly. Say which computer and agent answered.
-- `status` other than `completed`: give the `error`. If `hint` mentions a lock, explain it: the session was opened in the Codex desktop app, which keeps it locked until Codex fully exits. Suggest quitting Codex completely, or let 主agent export start a fresh task.
+- `status` other than `completed`: give the `error`. A session the owner holds in a desktop app normally continues in a fork (`forked_from_thread_id` set), for Codex and Claude alike. If `hint` mentions a lock, that worker has `fork_when_busy: false`: the session was opened in the Codex desktop app, which keeps it locked until Codex fully exits. Suggest quitting Codex completely, or send the work as a new task (`submit`).
 - Unknown agent (exit code 3): show the available names from the error and ask. Don't add `--new` on your own.
 - Computer unreachable (exit code 4): it is off, asleep or its worker service is not running. Say so; a waiting command already retries for about three minutes while a worker restarts itself after an update.
 - **Updating a worker remotely**: ask its main agent to update the agent-fleet plugin in its own app (Codex: `codex plugin marketplace upgrade agent-fleet` then `codex plugin add agent-fleet@agent-fleet`; Claude Code: `claude plugin marketplace update agent-fleet` then `claude plugin update agent-fleet@agent-fleet`) and rerun worker setup from the new plugin version with its existing settings and permission flag. Its own turn keeps the service busy, so setup deploys the code and the service restarts by itself once that turn ends; no delayed background job is needed.

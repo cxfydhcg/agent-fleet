@@ -285,7 +285,7 @@ class Setup:
             'executor': 'claude' if self.engine == 'claude' else 'app-server', 'engine': self.engine,
             'claude_executable': self.claude or '', 'local_only': self.connectivity != 'tailscale',
             'sandbox': 'danger-full-access' if self.full_access else 'workspace-write', 'auto_approve': self.full_access,
-            'max_timeout_seconds': 7200, 'writer_wait_seconds': 10, 'fork_when_busy': False,
+            'max_timeout_seconds': 7200, 'writer_wait_seconds': 10, 'fork_when_busy': True,
         }
         if self.claude_version:
             config['claude_version'] = self.claude_version
