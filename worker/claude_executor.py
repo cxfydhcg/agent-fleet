@@ -142,6 +142,17 @@ def command_for(manager, job, folder):
     else:
         job['thread_id'] = str(uuid.uuid4())
         command += ['--session-id', job['thread_id']]
+    # The session's title in Claude desktop's sidebar, by the same rule as Codex thread names: the task's name (or
+    # the start of its prompt) when it opens; on a resume only when the dispatcher's wanted title changed.
+    if job.get('resume_task_id'):
+        title = None if job.get('forked_from_thread_id') else manager.changed_title(job)
+    else:
+        title = (job.get('name') or ' '.join(job['prompt'].split())[:40]) + manager.title_suffix(job)
+    if title:
+        command += ['--name', title]
+        root = manager.session_root(job)
+        root['title_set'] = title
+        manager.save(root)
     if job.get('model'):
         command += ['--model', job['model']]
     if job.get('effort'):
