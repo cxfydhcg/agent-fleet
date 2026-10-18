@@ -1207,5 +1207,47 @@ class OutputFileTests(unittest.TestCase):
         self.assertEqual(file_response(self.shared / 'clip.mp4', 'bytes=200-').status_code, 416)
 
 
+
+class RestartWhenIdleTests(unittest.IsolatedAsyncioTestCase):
+    """Setup run while busy leaves a marker; the service restarts itself only once its queue is empty."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.config = {'state_dir': str(root / 'state'), 'tasks_dir': str(root / 'tasks'),
+                       'allowed_roots': [str(root / 'tasks')], 'computer_name': 'pc-test',
+                       '_config_path': str(root / 'config.json'), 'restart_check_interval': 0.05}
+        self.manager = TaskManager(self.config)
+        self.restarts = 0
+
+        def fake_restart():
+            self.restarts += 1
+        self.manager.restart_now = fake_restart
+        self.marker = self.manager.state / TaskManager.RESTART_MARKER
+
+    async def asyncTearDown(self):
+        self.manager.closing = True
+        self.temp.cleanup()
+
+    async def test_waits_for_the_queue_then_restarts_once(self):
+        self.manager.jobs['busy'] = {'task_id': 'busy', 'status': 'running'}
+        self.marker.write_text('now', encoding='utf-8')
+        loop = asyncio.create_task(self.manager.restart_loop())
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.restarts, 0, 'never restarts while a task runs')
+        self.assertTrue(self.marker.exists())
+        self.manager.jobs['busy']['status'] = 'completed'
+        await asyncio.wait_for(loop, 2)
+        self.assertEqual(self.restarts, 1)
+        self.assertFalse(self.marker.exists(), 'the marker is consumed so it restarts only once')
+
+    async def test_no_marker_no_restart(self):
+        loop = asyncio.create_task(self.manager.restart_loop())
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.restarts, 0)
+        self.manager.closing = True
+        await asyncio.wait_for(loop, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

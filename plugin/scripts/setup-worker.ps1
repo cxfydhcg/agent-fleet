@@ -105,7 +105,8 @@ if ($previous) {
     try { $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($previous.port)/health" -Headers $headers -TimeoutSec 3 } catch {}
     if ($health -and $health.service -eq 'codex-task-mcp') {
         $tasks = Invoke-RestMethod -Uri "http://127.0.0.1:$($previous.port)/api/tasks" -Headers $headers -TimeoutSec 3
-        if (@($tasks.tasks | Where-Object { $_.status -in @('queued','running') }).Count) { throw 'Worker is busy. Wait for its tasks before reconfiguration.' }
+        # Busy (often because this computer's own main agent is running setup): deploy now, restart when idle.
+        $deferRestart = [bool](@($tasks.tasks | Where-Object { $_.status -in @('queued','running') }).Count)
     }
     $profilePath = Join-Path $previous.state_dir 'profile.json'
     if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $profilePath)) {
@@ -147,7 +148,10 @@ p.write_text(json.dumps(c,indent=2),encoding='utf-8'); print(p)
 $configPath = (& $config.python_executable -c $resolveScript $configPath | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not resolve runtime paths.' }
 $config = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
-if ($health -and $health.service -eq 'codex-task-mcp') {
+if ($health -and $health.service -eq 'codex-task-mcp' -and $deferRestart) {
+    # The running service picks this up and relaunches on the new code once its queue is empty.
+    [System.IO.File]::WriteAllText((Join-Path $config.state_dir 'restart-when-idle'), (Get-Date).ToString('o'))
+} elseif ($health -and $health.service -eq 'codex-task-mcp') {
     & taskkill.exe /PID $health.pid /T /F | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not restart the idle worker.' }
 }
@@ -201,5 +205,5 @@ try {
 $desktop = Ensure-DesktopProject
 [ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'service-ready' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$resolvedData;client_home=$clientHome;connection_file=(Join-Path $resolvedData 'connection.json');dashboard="http://127.0.0.1:$($config.port)/dashboard";remote_url=$config.remote_url;lan_url=$config.lan_url;
     firewall_note=$(if ($config.lan_url) { "Allow inbound TCP $($config.port) on Private networks in Windows Firewall (administrator)." } else { '' });
-    full_access=[bool]$FullAccess;desktop=$desktop;pairing=$pairing;
+    full_access=[bool]$FullAccess;desktop=$desktop;pairing=$pairing;restart=$(if ($deferRestart) { 'when-idle' } else { 'done' });
     pair_script=(Join-Path $deployment 'worker\pair.ps1')} | ConvertTo-Json -Depth 5

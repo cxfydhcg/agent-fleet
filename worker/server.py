@@ -19,6 +19,7 @@ import secrets
 import shutil
 import signal
 import sys
+import subprocess
 import time
 import uuid
 from urllib.parse import quote
@@ -865,6 +866,35 @@ class TaskManager:
                         {r['project_id']: r['project_name'] for r in reports})
         return 'filed'
 
+    def idle(self):
+        return not any(j['status'] in ('queued', 'running') for j in self.jobs.values())
+
+    # Setup run while the service is busy (typically asked of this computer's own main agent, whose turn keeps
+    # it busy) deploys the new code and leaves this marker instead of killing the service mid-task. Once the
+    # queue is empty the service relaunches itself on the new code.
+    RESTART_MARKER = 'restart-when-idle'
+
+    async def restart_loop(self):
+        marker = self.state / self.RESTART_MARKER
+        while not self.closing:
+            await asyncio.sleep(self.config.get('restart_check_interval', 5))
+            if marker.exists() and self.idle() and self.config.get('_config_path'):
+                try:
+                    marker.unlink()
+                except OSError:
+                    continue
+                self.restart_now()
+                return
+
+    def restart_now(self):
+        launcher = Path(__file__).with_name('start_service.py')
+        detach = ({'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS} if os.name == 'nt'
+                  else {'start_new_session': True})
+        subprocess.Popen([self.config['python_executable'], str(launcher), '--config', self.config['_config_path'],
+                          '--after-pid', str(os.getpid())], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, **detach)
+        os._exit(0)  # every job is already saved; the launcher starts the new code once this process is gone
+
     async def folder_loop(self):
         while not self.closing:
             folders = self.app_folders()
@@ -1619,6 +1649,7 @@ def build_app(config):
         async with mcp.session_manager.run():
             manager.worker = asyncio.create_task(manager.work())
             manager.folder_task = asyncio.create_task(manager.folder_loop())
+            manager.restart_task = asyncio.create_task(manager.restart_loop())
             try:
                 yield
             finally:
@@ -1634,6 +1665,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', default=default_config)
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding='utf-8-sig'))
+    config['_config_path'] = str(Path(args.config).resolve())  # for restarting itself after an update
     app, manager = build_app(config)
     # LAN mode binds all interfaces; the bearer token and allowed_hosts still gate every request.
     uvicorn.run(app, host=config.get('bind_host', '127.0.0.1'), port=config.get('port', 8765), access_log=False)

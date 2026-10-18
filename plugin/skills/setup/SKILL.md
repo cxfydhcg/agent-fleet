@@ -125,7 +125,9 @@ Codex/Terminal in System Settings → Privacy & Security; you cannot do that for
   computer to that id, so renaming the main agent, changing its management name, or renaming the computer
   (same id in a new connection file) never loses the link.
 - To change any other setting of an existing worker, keep everything else and add
-  `--reconfigure`; the script refuses to interrupt active tasks.
+  `--reconfigure`. Setup never interrupts active tasks: when the worker is busy (for example its own main
+  agent is running setup), it deploys the new code and the service restarts itself once its queue is
+  empty (`restart: when-idle` in the result).
 - Permissions: default Codex mode uses workspace-write. Default Claude Code mode
   needs version 2.1.248+ and uses `--restricted`, file tools and `dontAsk`: file
   access stays in working directories and shell/code execution is unavailable.

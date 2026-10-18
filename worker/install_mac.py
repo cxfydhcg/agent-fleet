@@ -20,6 +20,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import time
 import sys
 import urllib.request
 import uuid
@@ -328,8 +329,11 @@ class Setup:
             except (OSError, ValueError, KeyError):
                 busy = False
             if busy:
-                self.warnings.append(self.t('服务正在执行任务，没有重启；等任务结束后重新运行本脚本，新设置才会生效。',
-                                            'The service is busy, so it was not restarted; rerun this script after its tasks finish to apply the new settings.'))
+                # Typically this computer's own main agent runs setup, so the service is busy with that very turn.
+                # The running service relaunches itself on the new code once its queue is empty.
+                (self.data / 'state' / 'restart-when-idle').write_text(time.strftime('%Y-%m-%dT%H:%M:%S'), encoding='utf-8')
+                self.warnings.append(self.t('服务正在执行任务；新代码已部署，任务全部结束后服务会自动重启生效。',
+                                            'The service is busy; the new code is deployed and the service restarts itself once its tasks finish.'))
                 return True
             self.run(*control, 'stop', '--config', str(self.config_path), check=False, quiet=True)
         started = self.run(*control, 'start', '--config', str(self.config_path),
