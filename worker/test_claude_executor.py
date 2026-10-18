@@ -39,7 +39,7 @@ if prompt != 'no-result':
 class DualMainCommandTests(unittest.TestCase):
     def test_second_main_has_dispatcher_access_own_name_and_claude_desktop_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             token = root/'fixture-token.txt'
             token.write_text('fixture-only-' * 4, encoding='utf-8')
             mains = [{'name': name, 'engine': engine, 'id': engine, 'workspace': str(root/('main-' + engine))}

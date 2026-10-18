@@ -16,7 +16,7 @@ from server import TaskManager
 class DualEngineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()  # the dispatcher resolves paths; macOS temp is /var -> /private/var
         self.mains = [{'name': name, 'engine': engine, 'id': engine + '-identity',
                        'workspace': str(self.root / ('main-' + engine))}
                       for engine, name in [('codex', '主agent export'), ('claude', 'Claude主agent')]]
@@ -793,7 +793,7 @@ class AppServerDispatcherTests(DispatcherTests):
         self.manager.config['codex_app_folders'] = True
         tasks = str(Path(self.config['tasks_dir']).resolve())
         (self.root / 'projects.json').write_text(json.dumps([
-            {'id': 'p-other', 'name': 'AgentFleet-其他', 'roots': [{'path': tasks.upper()}]}]), encoding='utf-8')
+            {'id': 'p-other', 'name': 'AgentFleet-其他', 'roots': [{'path': tasks.upper() if os.name == 'nt' else tasks}]}]), encoding='utf-8')
         first = self.manager.submit('direct', None, 10, None, name='发布员')
         await self.wait_for(first['task_id'], {'completed'})
         self.assertIn('project:thread/start:p-other', self.call_log(), 'opened directly: AgentFleet-Other, found by root')
