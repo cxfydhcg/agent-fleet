@@ -147,12 +147,33 @@ class RoleSetupTests(unittest.TestCase):
         self.assertNotIn('fixture-existing-token', result.stdout + result.stderr)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
+    def test_rerun_after_plugin_update_plans_a_redeploy(self):
+        self.data.mkdir()
+        workspace = self.root/'existing workspace'
+        service = workspace/'service/worker'; service.mkdir(parents=True)
+        (service/'server.py').write_text('# old code', encoding='utf-8')
+        token = self.data/'token.txt'; token.write_text('fixture-plan-token')
+        config = dict(executor='app-server',engine='codex',language='zh',main_agent_name='主agent export',main_agent_id='fixture-main',computer_name='fixture-pc',sandbox='workspace-write',
+            tasks_dir=str(workspace/'AgentFleet-其他'),state_dir=str(self.data/'state'),token_file=str(token),
+            port=18765,tailscale_port=18766,remote_url='',local_only=True)
+        (self.data/'config.json').write_text(json.dumps(config), encoding='utf-8')
+        plan = lambda: self.result(self.run_setup('--role','worker','--data-dir',str(self.data),'--restricted','--plan',actual=True).stdout)['worker']
+        self.assertTrue(plan()['update'], 'old code without a version stamp is redeployed')
+        (workspace/'service/plugin-version.txt').write_text('0.0.1', encoding='utf-8')
+        self.assertTrue(plan()['update'], 'code from an older plugin version is redeployed')
+        version = json.loads((ROOT/'plugin/plugin.json').read_text(encoding='utf-8'))['version']
+        (workspace/'service/plugin-version.txt').write_text(version, encoding='utf-8')
+        self.assertFalse(plan()['update'], 'current code is reused')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows worker setup')
     def test_reused_stopped_worker_is_started_without_rewriting_config(self):
         self.data.mkdir()
         workspace = self.root/'existing workspace'
         service = workspace/'service/worker'; service.mkdir(parents=True)
         for filename in ('start.ps1','start_service.py'):
             shutil.copyfile(ROOT/'worker'/filename,service/filename)
+        version = json.loads((ROOT/'plugin/plugin.json').read_text(encoding='utf-8'))['version']
+        (workspace/'service/plugin-version.txt').write_text(version, encoding='utf-8')
         (service/'server.py').write_text('''import argparse,json,os
 from http.server import BaseHTTPRequestHandler,HTTPServer
 p=argparse.ArgumentParser();p.add_argument('--config');a=p.parse_args()

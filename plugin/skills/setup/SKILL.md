@@ -125,7 +125,8 @@ Codex/Terminal in System Settings → Privacy & Security; you cannot do that for
   computer to that id, so renaming the main agent, changing its management name, or renaming the computer
   (same id in a new connection file) never loses the link.
 - To change any other setting of an existing worker, keep everything else and add
-  `--reconfigure`. Setup never interrupts active tasks: when the worker is busy (for example its own main
+  `--reconfigure`. Rerunning setup with unchanged settings after a plugin update redeploys the newer
+  worker code by itself (no `--reconfigure` needed). Setup never interrupts active tasks: when the worker is busy (for example its own main
   agent is running setup), it deploys the new code and the service restarts itself once its queue is
   empty (`restart: when-idle` in the result).
 - Permissions: default Codex mode uses workspace-write. Default Claude Code mode

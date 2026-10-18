@@ -63,9 +63,16 @@ if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $existingRegis
     $registeredComputer = $registered.computers.PSObject.Properties[$Name]
     if ($registeredComputer -and @($registeredComputer.Value.agents.PSObject.Properties | Where-Object { $_.Name -ceq $MainAgentName }).Count) { throw 'An agent already uses the requested main agent name; choose another name.' }
 }
+# Deployed worker code is stamped with the plugin version; rerunning setup after a plugin update redeploys it
+# with the existing settings instead of reusing the old code.
+$pluginManifest = Join-Path (Split-Path $PSScriptRoot) 'plugin.json'
+$pluginVersion = if (Test-Path -LiteralPath $pluginManifest) { (Get-Content -Encoding UTF8 -LiteralPath $pluginManifest -Raw | ConvertFrom-Json).version } else { '' }
+$versionStamp = Join-Path $Workspace 'service\plugin-version.txt'
+$outdated = [bool]($previous -and $pluginVersion -and (Test-Path -LiteralPath (Join-Path $Workspace 'service\worker\server.py')) -and
+    -not ((Test-Path -LiteralPath $versionStamp) -and (Get-Content -Encoding UTF8 -LiteralPath $versionStamp -Raw).Trim() -eq $pluginVersion))
 if ($Plan) {
     $tasksLeaf = if ($previous -and $previous.codex_app_folders.other) { $previous.codex_app_folders.other } elseif ($Language -eq 'en') { 'AgentFleet-Other' } else { 'AgentFleet-其他' }
-    [ordered]@{tasks_dir=(Join-Path $Workspace $tasksLeaf);engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure} | ConvertTo-Json
+    [ordered]@{tasks_dir=(Join-Path $Workspace $tasksLeaf);engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure;update=$outdated} | ConvertTo-Json
     return
 }
 if ($previous -and -not $Reconfigure) {
@@ -76,6 +83,10 @@ if ($previous -and -not $Reconfigure) {
         ($PSBoundParameters.ContainsKey('Language') -and $Language -ne $(if ($previous.language -eq 'en') { 'en' } else { 'zh' }))) {
         throw 'Requested settings differ from the installation. Use -Reconfigure after confirming the change.'
     }
+}
+if ($previous -and -not $Reconfigure -and $outdated) {
+    Write-Output "The plugin has newer worker code ($pluginVersion); redeploying it with the existing settings."
+} elseif ($previous -and -not $Reconfigure) {
     Write-Output 'Existing worker reused. Use the main-agent skill to check its status. Use -Reconfigure for a repair or change.'
     $existingData = Split-Path $previous.state_dir
     $existingHeaders = @{Authorization=('Bearer ' + (Get-Content -Encoding UTF8 -LiteralPath $previous.token_file -Raw).Trim())}
@@ -134,6 +145,7 @@ if ($SkipPrerequisites) { $installArgs += '-SkipPrerequisites' }
 if ($ClaudeExecutable) { $installArgs += @('-ClaudeExecutable',$ClaudeExecutable) }
 & powershell @installArgs
 if ($LASTEXITCODE -ne 0) { throw 'Worker installation failed; existing configuration is preserved in its backup.' }
+if ($pluginVersion) { [System.IO.File]::WriteAllText((Join-Path $deployment 'plugin-version.txt'), $pluginVersion) }
 $config = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
 # Desktop-app filesystem virtualization can redirect AppData. Resolve paths for autostart outside the app.
 $resolveScript = @'

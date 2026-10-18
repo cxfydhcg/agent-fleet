@@ -40,6 +40,13 @@ $tasksDir = Join-Path $Workspace $tasksLeaf
 if (-not $PSBoundParameters.ContainsKey('MainAgentName')) {
     $MainAgentName = $(if ($priorSettings -and $priorSettings.main_agent_name) { $priorSettings.main_agent_name } else { T '主agent export' 'Main agent' })
 }
+# A rerun (e.g. after a plugin update) keeps the management name and description unless new ones are given.
+$priorConnection = Join-Path $DataDir 'connection.json'
+if ((Test-Path -LiteralPath $priorConnection) -and -not ($PSBoundParameters.ContainsKey('ManagerName') -and $PSBoundParameters.ContainsKey('Description'))) {
+    $priorInfo = Get-Content -Encoding UTF8 -LiteralPath $priorConnection -Raw | ConvertFrom-Json
+    if (-not $PSBoundParameters.ContainsKey('ManagerName') -and $priorInfo.manager_name) { $ManagerName = $priorInfo.manager_name }
+    if (-not $PSBoundParameters.ContainsKey('Description') -and $priorInfo.description) { $Description = $priorInfo.description }
+}
 $ManagerName = $ManagerName.Trim()
 # The main agent's permanent id: the orchestrator maps to it, so renaming the main agent or changing its
 # management name never breaks the link. Reused from the service's own record, then from the old config.
