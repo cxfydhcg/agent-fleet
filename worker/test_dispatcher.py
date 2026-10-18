@@ -1146,5 +1146,66 @@ class CodexAppFolderTests(unittest.TestCase):
         self.assertEqual(report['assigned'], ['t1'])
 
 
+
+class OutputFileTests(unittest.TestCase):
+    """The read-only file API: only shared/tasks are visible, and ranges let videos be scrubbed."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.shared, self.tasks, self.private = root / 'shared', root / 'tasks', root / 'private'
+        for d in (self.shared / 'ep5', self.tasks / 't1', self.private):
+            d.mkdir(parents=True)
+        (self.shared / 'ep5' / 'cover.png').write_bytes(b'png')
+        (self.shared / 'clip.mp4').write_bytes(bytes(range(100)))
+        (self.private / 'token.txt').write_text('secret')
+        self.config = {'shared_dir': str(self.shared), 'tasks_dir': str(self.tasks)}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_paths_stay_inside_shared_and_tasks(self):
+        from server import resolve_output_path
+        self.assertEqual(resolve_output_path(self.config, 'ep5/cover.png'), (self.shared / 'ep5' / 'cover.png').resolve())
+        self.assertEqual(resolve_output_path(self.config, str(self.tasks / 't1')), (self.tasks / 't1').resolve())
+        for bad in ('../private/token.txt', str(self.private / 'token.txt'), str(self.shared.parent)):
+            with self.assertRaises(ValueError):
+                resolve_output_path(self.config, bad)
+        with self.assertRaises(ValueError):
+            resolve_output_path({}, 'anything')
+
+    def test_listing_shows_kinds_and_parent(self):
+        from server import list_output_dir
+        top = list_output_dir(self.config, '')
+        self.assertEqual([e['name'] for e in top['entries']][0], 'ep5')  # folders first
+        clip = next(e for e in top['entries'] if e['name'] == 'clip.mp4')
+        self.assertEqual((clip['kind'], clip['size']), ('video', 100))
+        self.assertIsNone(top['parent'])
+        inner = list_output_dir(self.config, 'ep5')
+        self.assertEqual(inner['entries'][0]['kind'], 'image')
+        self.assertEqual(Path(inner['parent']), self.shared.resolve())
+
+    def test_ranges(self):
+        from server import parse_range
+        self.assertIsNone(parse_range(None, 100))
+        self.assertEqual(parse_range('bytes=0-9', 100), (0, 9))
+        self.assertEqual(parse_range('bytes=90-', 100), (90, 99))
+        self.assertEqual(parse_range('bytes=-10', 100), (90, 99))
+        self.assertEqual(parse_range('bytes=50-500', 100), (50, 99))
+        with self.assertRaises(ValueError):
+            parse_range('bytes=100-', 100)
+
+    def test_file_response_streams_the_requested_bytes(self):
+        from server import file_response
+        response = file_response(self.shared / 'clip.mp4', 'bytes=10-19')
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers['content-range'], 'bytes 10-19/100')
+        self.assertEqual(response.media_type, 'video/mp4')
+        async def read():
+            return b''.join([chunk async for chunk in response.body_iterator])
+        self.assertEqual(asyncio.run(read()), bytes(range(10, 20)))
+        self.assertEqual(file_response(self.shared / 'clip.mp4', 'bytes=200-').status_code, 416)
+
+
 if __name__ == '__main__':
     unittest.main()

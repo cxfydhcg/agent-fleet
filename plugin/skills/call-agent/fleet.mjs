@@ -47,6 +47,8 @@
 //   node fleet.mjs list     <电脑> [数量]
 //   node fleet.mjs cancel   <电脑> <task_id>...       取消排队中或运行中的任务（已做的改动保留）
 //   node fleet.mjs tools    <电脑>
+//   node fleet.mjs files    <电脑> [文件夹]           列出那台电脑 shared（或 tasks）里的文件，只读；不写文件夹就列 shared
+//   node fleet.mjs fetch    <电脑> <文件路径> [--out=目录]  把那台电脑上的成果文件取回这台（默认 ~/Downloads/agent-fleet/<电脑>/）
 // 每台电脑用登记表里的 url；加 --remote 强制走 Tailscale（或局域网）地址。
 // 登记表和各电脑令牌在 ~/.agent-fleet/（或环境变量 AGENT_FLEET_HOME），不在项目文件夹里。
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -443,7 +445,7 @@ if (cmd === "dashboard") {
   const { createServer } = await import("node:http");
   const { randomBytes, timingSafeEqual } = await import("node:crypto");
   const key = randomBytes(24).toString("hex");
-  const API = new Set(["/api/tasks", "/api/profile", "/api/transcript", "/api/notifications"]);
+  const API = new Set(["/api/tasks", "/api/profile", "/api/transcript", "/api/notifications", "/api/files"]);
   // Re-read the registry so computers paired while the board is open show up.
   const computers = () => (existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, "utf8")).computers ?? {} : {});
   const workerGet = (target, path) => fetch(endpoint(target).replace(/\/mcp\/?$/, "") + path, {
@@ -494,6 +496,20 @@ if (cmd === "dashboard") {
         const upstream = await workerGet(target, match[2] + here.search);
         return send(res, upstream.status, "application/json", await upstream.text());
       }
+      // A worker's output file (image, video...), streamed with Range so videos can be scrubbed. The sandbox
+      // CSP keeps an opened file (an SVG or HTML) from running scripts in the board's origin.
+      if (match[2] === "/api/file") {
+        const upstream = await fetch(endpoint(target).replace(/\/mcp\/?$/, "") + "/api/file" + here.search, {
+          headers: { Authorization: `Bearer ${readFileSync(target.token_file, "utf8").trim()}`, ...(req.headers.range ? { Range: req.headers.range } : {}) } });
+        const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; frame-ancestors 'self'" };
+        for (const h of ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition"]) if (upstream.headers.get(h)) headers[h] = upstream.headers.get(h);
+        res.writeHead(upstream.status, headers);
+        if (!upstream.body) return res.end();
+        const { Readable } = await import("node:stream");
+        Readable.fromWeb(upstream.body).on("error", () => res.destroy()).pipe(res);
+        req.on("close", () => res.destroy());
+        return;
+      }
       return send(res, 404, "text/plain", "not found");
     } catch (error) {
       send(res, 502, "application/json", JSON.stringify({ error: String(error.message).slice(0, 200) }));
@@ -525,6 +541,9 @@ function boardPage() {
     title: T("机群看板", "Fleet board"), empty: T("还没有登记任何电脑。用 discover / pair 接入 worker。", "No computers registered yet. Connect a worker with discover / pair."),
     idle: T("空闲", "Idle"), offline: T("离线", "Offline"), running: T("运行", "running"), queued: T("排队", "queued"),
     pick: T("选择左边的一台电脑", "Pick a computer on the left"),
+    tasks: T("任务", "Tasks"), files: T("文件", "Files"), up: T("↑ 上一级", "↑ Up"), emptyDir: T("这个文件夹是空的", "This folder is empty"),
+    download: T("下载", "Download"), noPreview: T("这种文件不能预览，可以下载后打开。", "This file type can't be previewed; download it instead."),
+    pickFile: T("选择左边的文件预览", "Pick a file on the left to preview"), failed: T("读取失败：", "Could not load: "),
   };
   return `<!doctype html><html lang="${LANG === "en" ? "en" : "zh-CN"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${text.title}</title><style>
@@ -536,14 +555,44 @@ h1{font-size:15px;margin:0;padding:14px 16px;border-bottom:1px solid var(--line)
 .pc:hover{background:#252525}.pc.on{background:#2a2f3a}.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--off)}
 .dot.ok{background:var(--ok)}.dot.busy{background:var(--busy)}.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sub{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta{min-width:0}
-main{flex:1;min-width:0;display:flex}iframe{flex:1;border:0;background:var(--bg)}.hint{margin:auto;color:var(--dim);padding:24px;text-align:center}
-@media (max-width:720px){.app{flex-direction:column}aside{width:auto;max-height:40%;border-right:0;border-bottom:1px solid var(--line)}}
-</style></head><body><div class="app"><aside><h1>${text.title}</h1><div id="list"></div></aside><main id="main"><div class="hint">${text.pick}</div></main></div>
+main{flex:1;min-width:0;display:flex;flex-direction:column}iframe{flex:1;border:0;background:var(--bg)}.hint{margin:auto;color:var(--dim);padding:24px;text-align:center}
+.tabs{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+.tab{border:1px solid var(--line);background:none;color:var(--dim);border-radius:6px;padding:5px 14px;cursor:pointer;font:inherit}.tab.on{color:var(--text);background:#2a2f3a}
+#view{flex:1;min-height:0;display:flex}.files{display:flex;flex:1;min-height:0}.flist{width:340px;flex:none;overflow:auto;border-right:1px solid var(--line)}
+.fpath{padding:8px 12px;color:var(--dim);font-size:12px;word-break:break-all;border-bottom:1px solid var(--line)}
+.f{display:flex;gap:8px;width:100%;padding:8px 12px;border:0;border-bottom:1px solid var(--line);background:none;color:inherit;text-align:left;cursor:pointer;font:inherit}
+.f:hover{background:#252525}.f.on{background:#2a2f3a}.fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fs{color:var(--dim);font-size:12px;flex:none}
+.pv{flex:1;min-width:0;overflow:auto;display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px}
+.pv img,.pv video{max-width:100%;max-height:calc(100vh - 140px);background:#000}.pv pre{align-self:stretch;white-space:pre-wrap;word-break:break-all;margin:0;font:12px/1.5 ui-monospace,Consolas,monospace}
+.pv a{color:#8ab4ff}.pv .cap{color:var(--dim);font-size:12px;text-align:center;word-break:break-all}
+@media (max-width:720px){.app{flex-direction:column}aside{width:auto;max-height:40%;border-right:0;border-bottom:1px solid var(--line)}.files{flex-direction:column}.flist{width:auto;max-height:40%;border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body><div class="app"><aside><h1>${text.title}</h1><div id="list"></div></aside><main id="main"><div class="tabs"><button class="tab" id="t-tasks">${text.tasks}</button><button class="tab" id="t-files">${text.files}</button></div><div id="view"><div class="hint">${text.pick}</div></div></main></div>
 <script>
-const TEXT=${JSON.stringify(text)};let rows=[];let picked=null;try{picked=localStorage.getItem('fleetBoardPick')}catch{}
-const $=(id)=>document.getElementById(id);
-function show(name){picked=name;try{localStorage.setItem('fleetBoardPick',name)}catch{}
-  const f=document.createElement('iframe');f.src='/w/'+encodeURIComponent(name)+'/dashboard';f.title=name;$('main').replaceChildren(f);render()}
+const TEXT=${JSON.stringify(text)};let rows=[];let picked=null,tab='tasks';const dirs={};
+try{picked=localStorage.getItem('fleetBoardPick');tab=localStorage.getItem('fleetBoardTab')||'tasks'}catch{}
+const $=(id)=>document.getElementById(id);const el=(t,c,x)=>{const n=document.createElement(t);if(c)n.className=c;if(x!=null)n.textContent=x;return n};
+const w=(name)=>'/w/'+encodeURIComponent(name);
+const size=(b)=>b==null?'':b<1024?b+' B':b<1048576?(b/1024).toFixed(0)+' KB':b<1073741824?(b/1048576).toFixed(1)+' MB':(b/1073741824).toFixed(2)+' GB';
+const icon={dir:'📁',image:'🖼️',video:'🎬',audio:'🎵',text:'📄',other:'📦'};
+function show(name){picked=name;try{localStorage.setItem('fleetBoardPick',name)}catch{}draw();render()}
+function setTab(t){tab=t;try{localStorage.setItem('fleetBoardTab',t)}catch{}draw()}
+$('t-tasks').onclick=()=>setTab('tasks');$('t-files').onclick=()=>setTab('files');
+function draw(){$('t-tasks').classList.toggle('on',tab==='tasks');$('t-files').classList.toggle('on',tab==='files');if(!picked)return;
+  if(tab==='tasks'){const f=document.createElement('iframe');f.src=w(picked)+'/dashboard';f.title=picked;$('view').replaceChildren(f)}else openDir(picked,dirs[picked]||'')}
+async function openDir(name,path){const box=el('div','files'),list=el('div','flist'),pv=el('div','pv');pv.append(el('div','hint',TEXT.pickFile));box.append(list,pv);$('view').replaceChildren(box);
+  let d;try{const r=await fetch(w(name)+'/api/files?path='+encodeURIComponent(path),{cache:'no-store'});d=await r.json();if(!r.ok)throw new Error(d.error||r.status)}
+  catch(e){list.append(el('div','hint',TEXT.failed+e.message));return}
+  dirs[name]=d.path;list.append(el('div','fpath',d.path));
+  if(d.parent){const u=el('button','f');u.append(el('span','fn',TEXT.up));u.onclick=()=>openDir(name,d.parent);list.append(u)}
+  if(!d.entries.length)list.append(el('div','hint',TEXT.emptyDir));
+  for(const e of d.entries){const b=el('button','f');b.append(el('span','',icon[e.type==='dir'?'dir':e.kind]||'📦'),el('span','fn',e.name),el('span','fs',e.type==='dir'?'':size(e.size)));
+    b.onclick=()=>{if(e.type==='dir')return openDir(name,e.path);for(const x of list.querySelectorAll('.f.on'))x.classList.remove('on');b.classList.add('on');preview(name,e,pv)};list.append(b)}}
+async function preview(name,e,pv){const url=w(name)+'/api/file?path='+encodeURIComponent(e.path);pv.replaceChildren();
+  if(e.kind==='image'){const i=el('img');i.src=url;i.alt=e.name;pv.append(i)}
+  else if(e.kind==='video'||e.kind==='audio'){const m=el(e.kind);m.controls=true;m.src=url;m.preload='metadata';pv.append(m)}
+  else if(e.kind==='text'&&e.size<2000000){const pre=el('pre');pv.append(pre);try{pre.textContent=await (await fetch(url)).text()}catch(x){pre.textContent=TEXT.failed+x.message}}
+  else pv.append(el('div','hint',TEXT.noPreview));
+  const cap=el('div','cap',e.name+' · '+size(e.size)+' · '+new Date(e.mtime*1000).toLocaleString()+' · ');const a=el('a','',TEXT.download);a.href=url+'&download=1';cap.append(a);pv.append(cap)}
 function render(){const list=$('list');list.replaceChildren();
   if(!rows.length){const d=document.createElement('div');d.className='hint';d.textContent=TEXT.empty;list.append(d);return}
   for(const r of rows){const b=document.createElement('button');b.className='pc'+(r.name===picked?' on':'');b.onclick=()=>show(r.name);
@@ -553,7 +602,7 @@ function render(){const list=$('list');list.replaceChildren();
     s.textContent=!r.online?TEXT.offline:busy?TEXT.running+' '+(r.busy.running?.length||0)+' · '+TEXT.queued+' '+(r.busy.queued||0):TEXT.idle;
     if(r.label!==r.name)s.textContent+=' · '+r.name;m.append(n,s);b.append(dot,m);list.append(b)}}
 async function refresh(){try{rows=await (await fetch('/fleet/status',{cache:'no-store'})).json()}catch{}
-  render();if(!document.querySelector('iframe')&&rows.length)show(rows.some(r=>r.name===picked)?picked:rows[0].name)}
+  render();if(!$('view').querySelector('iframe,.files')&&rows.length)show(rows.some(r=>r.name===picked)?picked:rows[0].name)}
 refresh();setInterval(refresh,10000);
 </script></body></html>`;
 }
@@ -741,6 +790,44 @@ const toggle = (name) => {
 };
 // Normally unset: Codex's default model, like a new window.
 const modelChoice = () => Object.fromEntries(["model", "effort"].filter((k) => option(k)).map((k) => [k, option(k)]));
+
+// Files the agents produced on that computer (its shared and tasks folders), read-only.
+async function workerFile(path, extra = {}) {
+  const res = await fetch(endpoint(pc).replace(/\/mcp\/?$/, "") + path, {
+    headers: { Authorization: `Bearer ${readFileSync(pc.token_file, "utf8").trim()}`, ...extra }, cache: "no-store" });
+  if (!res.ok) {
+    // The file API answers errors as JSON {error}; a plain 404 means the worker predates it.
+    const body = await res.text().catch(() => "");
+    let message = null;
+    try { message = JSON.parse(body).error ?? null; } catch { /* not JSON */ }
+    console.error(res.status === 404 && message === null
+      ? T("这台电脑的派任务服务太旧，还没有文件接口；在那台电脑上重跑一次 setup 即可更新。", "That computer's service is too old to share files; rerun setup there to update it.")
+      : `${res.status} ${message || body || res.statusText}`);
+    process.exit(2);
+  }
+  return res;
+}
+if (cmd === "files") {
+  out(await (await workerFile(`/api/files?path=${encodeURIComponent(rest[0] ?? "")}`)).json());
+  process.exit(0);
+}
+if (cmd === "fetch") {
+  if (!rest[0]) { console.error(T("用法：fetch <电脑> <文件路径> [--out=目录]", "Usage: fetch <computer> <file path> [--out=folder]")); process.exit(2); }
+  const { createWriteStream } = await import("node:fs");
+  const { Readable } = await import("node:stream");
+  const { pipeline } = await import("node:stream/promises");
+  const res = await workerFile(`/api/file?path=${encodeURIComponent(rest[0])}&download=1`);
+  const fromHeader = /filename\*=UTF-8''([^;]+)/i.exec(res.headers.get("content-disposition") ?? "")?.[1];
+  const fileName = (fromHeader ? decodeURIComponent(fromHeader) : basename(rest[0].replace(/\\/g, "/"))).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_") || "file";
+  const folder = option("out") || join(homedir(), "Downloads", "agent-fleet", computer);
+  mkdirSync(folder, { recursive: true });
+  const target = join(folder, fileName);
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(target));
+  out({ computer, source: rest[0], saved: target, bytes: Number(res.headers.get("content-length")) || null });
+  // Exiting while the finished download's socket is still closing trips a libuv assertion on Windows.
+  await new Promise((done) => setTimeout(done, 100));
+  process.exit(0);
+}
 
 switch (cmd) {
   case "agents": {

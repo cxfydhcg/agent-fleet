@@ -96,7 +96,7 @@ On the orchestrator, just say things like:
 
 > Stop 【Manager Cris】 from starting new tasks
 
-Sub-agents' results go into the `shared/` folder of that computer's workspace (by default the `AgentFleet` folder in Documents). To watch progress, ask the AI on the orchestrator to open the fleet board (`fleet.mjs dashboard`): one page with every computer's tasks and sessions, no token to paste. Each computer also has its own read-only dashboard at `http://<that computer's address>:8765/dashboard` (port 8766 over Tailscale); the first time, paste that computer's token.
+Sub-agents' results go into the `shared/` folder of that computer's workspace (by default the `AgentFleet` folder in Documents). To see images or videos another computer produced, use the fleet board's Files tab, or ask the AI to bring them over with `fleet.mjs fetch`. To watch progress, ask the AI on the orchestrator to open the fleet board (`fleet.mjs dashboard`): one page with every computer's tasks and sessions, no token to paste. Each computer also has its own read-only dashboard at `http://<that computer's address>:8765/dashboard` (port 8766 over Tailscale); the first time, paste that computer's token.
 
 ## Names, language and control
 

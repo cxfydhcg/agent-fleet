@@ -95,7 +95,7 @@ Claude Code：在对话框里输入
 
 > 不让【经理cris】再开新任务
 
-子 Agent 的成果放在那台电脑工作区的 `shared/` 文件夹里（工作区默认是"文稿"（Documents）里的 `AgentFleet` 文件夹）。看进度用机群看板：在 orchestrator 上让 AI 打开它（`fleet.mjs dashboard`），一页看到所有电脑的任务和会话，不用粘贴令牌。单独看某一台也可以打开它自己的只读看板 `http://<那台电脑的地址>:8765/dashboard`（Tailscale 是 8766 端口），第一次要粘贴那台电脑的令牌。
+子 Agent 的成果放在那台电脑工作区的 `shared/` 文件夹里（工作区默认是"文稿"（Documents）里的 `AgentFleet` 文件夹）。要看别的电脑做出来的图片、视频，打开机群看板的「文件」页直接预览，或者让 AI 用 `fleet.mjs fetch` 取回来。看进度用机群看板：在 orchestrator 上让 AI 打开它（`fleet.mjs dashboard`），一页看到所有电脑的任务和会话，不用粘贴令牌。单独看某一台也可以打开它自己的只读看板 `http://<那台电脑的地址>:8765/dashboard`（Tailscale 是 8766 端口），第一次要粘贴那台电脑的令牌。
 
 ## 名字、语言和权限管理
 

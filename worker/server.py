@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 import uvicorn
 import claude_executor
 from tools.codex_app_folder import STATE_FILE, desktop_app_running, sort_into_folders, write_state
@@ -1318,6 +1318,106 @@ class TaskManager:
                 self.save(job)
 
 
+FILE_KINDS = {'image': {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'},
+              'video': {'.mp4', '.webm', '.mov', '.m4v', '.mkv'},
+              'audio': {'.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac'},
+              'text': {'.txt', '.md', '.json', '.log', '.csv', '.html', '.srt', '.vtt'}}
+CONTENT_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+                 '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+                 '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+                 '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.aac': 'audio/aac', '.txt': 'text/plain; charset=utf-8',
+                 '.md': 'text/plain; charset=utf-8', '.json': 'application/json', '.log': 'text/plain; charset=utf-8',
+                 '.csv': 'text/plain; charset=utf-8', '.html': 'text/plain; charset=utf-8', '.srt': 'text/plain; charset=utf-8',
+                 '.vtt': 'text/vtt', '.pdf': 'application/pdf'}
+
+
+def output_roots(config):
+    """Folders whose files the orchestrator may read: what agents produce (shared) and their task folders."""
+    roots = []
+    for key in ('shared_dir', 'tasks_dir'):
+        if config.get(key):
+            root = Path(config[key]).resolve()
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
+def resolve_output_path(config, raw):
+    """An absolute path, or one relative to the shared folder, that must stay inside an output root."""
+    roots = output_roots(config)
+    if not roots:
+        raise ValueError('this worker has no shared or tasks folder')
+    path = Path(raw) if raw and Path(raw).is_absolute() else roots[0] / (raw or '')
+    path = path.resolve()
+    if not any(path == root or path.is_relative_to(root) for root in roots):
+        raise ValueError('path is outside the shared and tasks folders')
+    return path
+
+
+def list_output_dir(config, raw):
+    path = resolve_output_path(config, raw)
+    if not path.is_dir():
+        raise ValueError('not a folder')
+    entries = []
+    for child in path.iterdir():
+        try:
+            stat = child.stat()
+            if child.is_dir():
+                entries.append({'name': child.name, 'path': str(child), 'type': 'dir', 'mtime': stat.st_mtime})
+            elif child.is_file():
+                kind = next((k for k, exts in FILE_KINDS.items() if child.suffix.lower() in exts), 'other')
+                entries.append({'name': child.name, 'path': str(child), 'type': 'file', 'kind': kind,
+                                'size': stat.st_size, 'mtime': stat.st_mtime})
+        except OSError:
+            continue  # vanished or unreadable
+    entries.sort(key=lambda e: (e['type'] != 'dir', -e['mtime']))
+    parent = path.parent if any(path.parent == r or path.parent.is_relative_to(r) for r in output_roots(config)) and path not in output_roots(config) else None
+    return {'path': str(path), 'parent': str(parent) if parent else None, 'roots': [str(r) for r in output_roots(config)],
+            'entries': entries[:1000], 'truncated': len(entries) > 1000}
+
+
+def parse_range(header, size):
+    """(start, end) for a single 'bytes=a-b' range, None for no/unsupported range, ValueError if unsatisfiable."""
+    match = re.fullmatch(r'bytes=(\d*)-(\d*)', (header or '').strip())
+    if not match or match.group(1) == match.group(2) == '':
+        return None
+    if match.group(1) == '':
+        start, end = max(size - int(match.group(2)), 0), size - 1
+    else:
+        start, end = int(match.group(1)), min(int(match.group(2)) if match.group(2) else size - 1, size - 1)
+    if start >= size or start > end:
+        raise ValueError('range not satisfiable')
+    return start, end
+
+
+def file_response(path, range_header=None, download=False):
+    """Stream a file with Range support, so videos can be scrubbed in the browser."""
+    size = path.stat().st_size
+    headers = {'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+               'Content-Disposition': ("attachment" if download else "inline") + "; filename*=UTF-8''" + quote(path.name)}
+    try:
+        span = parse_range(range_header, size)
+    except ValueError:
+        return Response(status_code=416, headers={**headers, 'Content-Range': f'bytes */{size}'})
+    start, end = span or (0, size - 1)
+
+    def chunks():
+        with path.open('rb') as handle:
+            handle.seek(start)
+            left = end - start + 1
+            while left > 0:
+                block = handle.read(min(1 << 20, left))
+                if not block:
+                    break
+                left -= len(block)
+                yield block
+    headers['Content-Length'] = str(max(end - start + 1, 0))
+    if span:
+        headers['Content-Range'] = f'bytes {start}-{end}/{size}'
+    return StreamingResponse(chunks() if size else iter(()), status_code=206 if span else 200,
+                             media_type=CONTENT_TYPES.get(path.suffix.lower(), 'application/octet-stream'), headers=headers)
+
+
 class BearerMiddleware:
     # The dashboard page itself holds no data; it asks for the token and sends it on every API call.
     # Pairing answers only while a window opened with the token is running, and hands out the token only
@@ -1491,6 +1591,25 @@ def build_app(config):
         except ValueError as error:
             return JSONResponse({'error': str(error)}, status_code=404)
         return JSONResponse({'entries': entries}, headers={'Cache-Control': 'no-store'})
+
+    # Read-only access to what agents produce, so the orchestrator can preview or fetch it. Only the
+    # shared and tasks folders are visible; anything resolving outside them (.., links) is refused.
+    @mcp.custom_route('/api/files', methods=['GET'])
+    async def api_files(request):
+        try:
+            return JSONResponse(list_output_dir(config, request.query_params.get('path', '')), headers={'Cache-Control': 'no-store'})
+        except (ValueError, OSError) as error:
+            return JSONResponse({'error': str(error)}, status_code=404)
+
+    @mcp.custom_route('/api/file', methods=['GET'])
+    async def api_file(request):
+        try:
+            path = resolve_output_path(config, request.query_params.get('path', ''))
+            if not path.is_file():
+                raise ValueError('not a file')
+        except (ValueError, OSError) as error:
+            return JSONResponse({'error': str(error)}, status_code=404)
+        return file_response(path, request.headers.get('range'), request.query_params.get('download') == '1')
 
     app = mcp.streamable_http_app()
 

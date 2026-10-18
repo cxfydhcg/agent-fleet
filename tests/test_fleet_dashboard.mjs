@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
@@ -14,13 +14,26 @@ const TOKEN = 'worker-secret-token';
 async function fakeWorker() {
   const seen = [];
   const server = createServer((req, res) => {
-    seen.push({ url: req.url, auth: req.headers.authorization });
+    seen.push({ url: req.url, auth: req.headers.authorization, range: req.headers.range });
     if (req.url === '/dashboard') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       return res.end("<html><head><title>w</title></head><body><script>fetch('/api/tasks')</script></body></html>");
     }
     if (req.headers.authorization !== `Bearer ${TOKEN}`) { res.writeHead(401); return res.end('{}'); }
+    if (req.url.startsWith('/api/file?')) {
+      // A 100-byte "video" that honours a single Range, like worker/server.py.
+      const bytes = Buffer.from(Array.from({ length: 100 }, (_, i) => i));
+      const m = /bytes=(\d+)-(\d+)/.exec(req.headers.range ?? '');
+      const head = { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes', 'Content-Disposition': "inline; filename*=UTF-8''clip%20%E7%89%87.mp4" };
+      if (m) {
+        res.writeHead(206, { ...head, 'Content-Range': `bytes ${m[1]}-${m[2]}/100`, 'Content-Length': String(m[2] - m[1] + 1) });
+        return res.end(bytes.subarray(Number(m[1]), Number(m[2]) + 1));
+      }
+      res.writeHead(200, { ...head, 'Content-Length': '100' });
+      return res.end(bytes);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (req.url.startsWith('/api/files')) return res.end(JSON.stringify({ path: '/w/shared', parent: null, entries: [{ name: 'clip.mp4', type: 'file', kind: 'video', size: 100 }] }));
     if (req.url === '/api/profile') return res.end(JSON.stringify({ busy: { running: [{ task_id: 't1' }], queued: 2 }, agents: [{ name: 'main' }] }));
     if (req.url.startsWith('/api/tasks')) return res.end(JSON.stringify({ tasks: [{ task_id: 't1' }] }));
     res.end('{}');
@@ -79,6 +92,17 @@ test('the fleet board shows every worker without exposing tokens', async (t) => 
   assert.match(dash, /<head><script>/, 'the worker page is routed through the board');
   assert.ok(dash.includes('"/w/pc-1"') && !dash.includes(TOKEN));
 
+  // Files: the listing and the bytes come through the board, with the token added and Range passed on.
+  const listing = await (await get('/w/pc-1/api/files?path=')).json();
+  assert.equal(listing.entries[0].kind, 'video');
+  const part = await get('/w/pc-1/api/file?path=%2Fw%2Fshared%2Fclip.mp4', { range: 'bytes=10-19' });
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get('content-range'), 'bytes 10-19/100');
+  assert.match(part.headers.get('content-security-policy'), /sandbox/, 'opened files cannot script the board');
+  assert.deepEqual([...new Uint8Array(await part.arrayBuffer())], Array.from({ length: 10 }, (_, i) => i + 10));
+  assert.equal(worker.seen.at(-1).range, 'bytes=10-19');
+  assert.equal(worker.seen.at(-1).auth, `Bearer ${TOKEN}`);
+
   assert.equal((await get('/w/pc-1/api/other')).status, 404, 'only the read-only API is forwarded');
   assert.equal((await get('/w/nobody/api/tasks')).status, 404);
   // fetch() ignores a Host header, so send this one by hand.
@@ -86,4 +110,25 @@ test('the fleet board shows every worker without exposing tokens', async (t) => 
   const rebinding = await new Promise((done, fail) => request({ host: '127.0.0.1', port, path: '/fleet/status',
     headers: { host: 'evil.example', cookie } }, (res) => { res.resume(); done(res.statusCode); }).on('error', fail).end());
   assert.equal(rebinding, 403, 'DNS rebinding is refused');
+});
+
+test('fetch saves a worker file locally under its own name', async (t) => {
+  const worker = await fakeWorker();
+  const home = mkdtempSync(join(tmpdir(), 'fleet-fetch-'));
+  mkdirSync(join(home, 'tokens'));
+  writeFileSync(join(home, 'tokens', 'pc-1.txt'), TOKEN + '\n');
+  writeFileSync(join(home, 'computers.json'), JSON.stringify({ computers: {
+    'pc-1': { url: worker.url, token_file: join(home, 'tokens', 'pc-1.txt'), main_agent_name: 'main', agents: {} } } }));
+  t.after(() => { worker.server.close(); rmSync(home, { recursive: true, force: true }); });
+  const out = join(home, 'downloads');
+  const child = spawn(process.execPath, [FLEET, 'fetch', 'pc-1', '/w/shared/clip.mp4', `--out=${out}`], { env: { ...process.env, AGENT_FLEET_HOME: home, AGENT_FLEET_LANG: 'en' } });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  child.stderr.on('data', (d) => { stderr += d; });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0, stderr);
+  const saved = JSON.parse(stdout).saved;
+  assert.equal(saved, join(out, 'clip 片.mp4'));
+  assert.equal(readFileSync(saved).length, 100);
+  assert.ok(!stdout.includes(TOKEN) && !stderr.includes(TOKEN));
 });
