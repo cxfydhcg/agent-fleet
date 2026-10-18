@@ -85,6 +85,21 @@ test('orchestrator and disabled folder sorting register only the main project', 
   }
 });
 
+test('a rerun does not open new Claude desktop drafts for folders opened before', async () => {
+  const state = mkdtempSync(join(tmpdir(), 'claude-opened-'));
+  try {
+    const config = { ...workerConfig, engine: 'claude', state_dir: state };
+    const first = fakeApp({ pending: true });
+    assert.equal((await ensureDesktopProjects({ workspace, workerConfig: config }, first.runtime)).status, 'opened');
+    assert.equal(first.launches.length, 2);
+    const again = fakeApp({ pending: true });
+    const report = await ensureDesktopProjects({ workspace, workerConfig: config }, again.runtime);
+    assert.equal(again.launches.length, 0);
+    assert.equal(report.projects.main.status, 'opened-before');
+    assert.equal(report.projects.other.status, 'opened-before');
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
 test('a Claude worker opens both folders in Claude desktop and never touches Codex', async () => {
   const app = fakeApp({ pending: true });
   app.runtime.readState = () => { throw new Error('Codex state must not be read for a Claude worker'); };

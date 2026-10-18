@@ -215,7 +215,7 @@ To register another worker later, rerun with `--role orchestrator --connection`
   owner confirms the folder prompt; the other-agents folder (`tasks_dir`) is opened the same way, so
   expect two prompts. The Code sidebar lists sessions, not folders, so a draft appears there only
   after a message is sent in it. Claude desktop has no project list to read back, so
-  `desktop.status` is `opened` (or `not-installed`), never `registered`; tell the owner to confirm
+  `desktop.status` is `opened` (or `not-installed`), never `registered`; a rerun reports `opened-before` and opens no new draft for folders an earlier setup already opened; tell the owner to confirm
   the prompts and send a message in each draft, and don't claim more than that. Nothing is
   registered in Codex.
   When setup itself runs in the Claude desktop app and a session-starting tool is available (in

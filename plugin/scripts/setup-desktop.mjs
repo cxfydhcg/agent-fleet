@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve, join, normalize, win32, isAbsolute } from 'node:path';
+import { resolve, join, normalize, win32, isAbsolute, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -35,11 +35,14 @@ export async function ensureDesktopProjects({ workspace, workerConfig, disabled 
   // A Claude worker opens its other-agents folder in Claude desktop as well; the Codex project-name rule doesn't apply.
   const claudeOther = workerConfig?.engine === 'claude' && !disabled &&
     typeof workerConfig.tasks_dir === 'string' && isAbsolute(workerConfig.tasks_dir);
+  // Every rerun (e.g. after a plugin update) would open new Claude desktop drafts; remember the folders opened once.
+  if (workerConfig?.engine === 'claude' && typeof workerConfig.state_dir === 'string' && !runtime.claudeRecord)
+    runtime = { ...runtime, claudeRecord: join(workerConfig.state_dir, 'claude-desktop-opened.json') };
   const main = await ensureDesktopProject({ workspace, disabled, engine: workerConfig?.engine }, runtime);
   const projects = { main };
   if (otherEnabled && ['registered', 'pending'].includes(main.status))
     projects.other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir }, runtime);
-  else if (claudeOther && main.status === 'opened')
+  else if (claudeOther && ['opened', 'opened-before'].includes(main.status))
     projects.other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir, engine: 'claude' }, runtime);
   const incomplete = Object.values(projects).find(project => project.status !== 'registered');
   return { status: incomplete?.status || 'registered', projects,
@@ -106,10 +109,21 @@ export async function ensureDesktopProject({ workspace, disabled = false, engine
 async function openClaudeFolder(workspace, platform, runtime) {
   const installed = runtime.installed || appInstalled(platform, 'claude', 'claude://code/new');
   if (!installed()) return { status: 'not-installed', app: 'claude', workspace };
+  const record = runtime.claudeRecord;
+  const key = value => platform === 'win32' ? win32.normalize(value).toLowerCase() : normalize(value);
+  let opened = [];
+  try { opened = record ? JSON.parse(readFileSync(record, 'utf8')) : []; } catch {}
+  if (!Array.isArray(opened)) opened = [];
+  if (opened.some(path => typeof path === 'string' && key(path) === key(workspace)))
+    return { status: 'opened-before', app: 'claude', workspace,
+      message: 'An earlier setup already opened this folder in Claude desktop, so no new draft was opened. If it is not in the sidebar, open it from the Code tab.' };
   const createDirectory = runtime.mkdir || (path => mkdirSync(path, { recursive: true }));
   createDirectory(workspace);
   const launch = runtime.launch || appLauncher(platform, 'Claude');
   launch(claudeWorkspaceUrl(workspace));
+  if (record) {
+    try { mkdirSync(dirname(record), { recursive: true }); writeFileSync(record, JSON.stringify([...opened, workspace], null, 2)); } catch {}
+  }
   return { status: 'opened', app: 'claude', workspace,
     message: 'Claude desktop opened a new Code draft in this folder. Confirm the folder prompt, then send a message in the draft; the folder appears in the sidebar only after that.' };
 }
