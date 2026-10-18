@@ -3,9 +3,11 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -66,6 +68,37 @@ def show_in_desktop(session_id):
             subprocess.Popen(['open', url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
+
+
+def desktop_session_dirs(override=None):
+    """Where Claude desktop keeps its sidebar index (local_<id>.json per session)."""
+    if override:
+        return [Path(override)]
+    if os.name == 'nt':
+        local, roaming = os.environ.get('LOCALAPPDATA'), os.environ.get('APPDATA')
+        dirs = [p / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code-sessions'
+                for p in (Path(local) / 'Packages').glob('Claude_*')] if local else []
+        return dirs + ([Path(roaming) / 'Claude' / 'claude-code-sessions'] if roaming else [])
+    return [Path.home() / 'Library' / 'Application Support' / 'Claude' / 'claude-code-sessions']
+
+
+def session_states(home=None, desktop_dir=None):
+    """(session ids that still have a transcript, session ids archived in Claude desktop)."""
+    projects = Path(home or Path.home()) / '.claude' / 'projects'
+    transcripts = {p.stem for p in projects.glob('*/*.jsonl')} if projects.is_dir() else set()
+    archived = set()
+    for folder in desktop_session_dirs(desktop_dir):
+        for index in folder.glob('**/local_*.json'):
+            try:
+                info = json.loads(index.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if info.get('isArchived') and info.get('cliSessionId'):
+                archived.add(info['cliSessionId'])
+    return transcripts, archived
+
+
+LIMIT_TEXT = re.compile(r'usage limit|rate limit|limit reached|out of (extra )?usage|hit your limit', re.I)
 
 
 def rule_path(path):
@@ -185,6 +218,7 @@ def folder_note(job):
 
 async def run(manager, job):
     folder = manager.jobs_dir / job['task_id']
+    manager.check_claude_quota(job)  # raises before anything starts while the last usage limit holds
     command = command_for(manager, job, folder)
     manager.mark_running(job)
     env = os.environ.copy()
@@ -203,10 +237,10 @@ async def run(manager, job):
             await manager.kill(process)
             raise
         manager.processes[job['task_id']] = process
-        result = None
+        result, limited, spoke, requeued = None, False, False, False
 
         async def consume():
-            nonlocal result
+            nonlocal result, limited, spoke
             process.stdin.write(job['prompt'].encode('utf-8'))
             await process.stdin.drain()
             process.stdin.close()
@@ -219,10 +253,19 @@ async def run(manager, job):
                     continue
                 if event.get('session_id'):
                     job['thread_id'] = event['session_id']
+                if event.get('type') == 'rate_limit_event':
+                    info = event.get('rate_limit_info') or {}
+                    used = info.get('utilization')
+                    if info.get('status') == 'rejected':
+                        manager.claude_limit, limited = info, True
+                    elif (isinstance(used, (int, float)) and
+                          used * 100 >= manager.config.get('quota_guard_threshold', 100)):
+                        manager.claude_limit = info  # at the owner's threshold: this turn finishes, the next ones wait
                 if event.get('type') == 'assistant':
                     texts = [c.get('text', '') for c in event.get('message', {}).get('content', []) if c.get('type') == 'text']
                     if texts:
                         job['latest_message'] = '\n'.join(texts)[-4000:]
+                        spoke = True
                 if event.get('type') == 'result':
                     result = event
                 manager.save(job)
@@ -253,9 +296,23 @@ async def run(manager, job):
                     error_log.flush()
                     detail = '\n'.join(str(e) for e in errors) or (result or {}).get('result')
                     detail = detail or (folder / 'stderr.log').read_text(encoding='utf-8', errors='replace')
-                    job.update(status='failed', error=str(detail or 'Claude Code did not produce a successful final result')[-2000:])
+                    if not limited and detail and LIMIT_TEXT.search(str(detail)):
+                        reset = re.search(r'\|(\d{10})\b', str(detail))
+                        manager.claude_limit = {'status': 'rejected', 'resetsAt': int(reset.group(1)) if reset else None}
+                        limited = True
+                    if limited and not spoke and manager.config.get('quota_guard', True):
+                        # Refused for the usage limit before doing anything: back in line, like a Codex quota pause.
+                        job['status'] = 'queued'
+                        for key in ('started_at', 'exit_code', 'latest_message'):
+                            job.pop(key, None)
+                        requeued = True
+                    else:
+                        job.update(status='failed', error=str(detail or 'Claude Code did not produce a successful final result')[-2000:])
         finally:
             await manager.kill(process)
             manager.processes.pop(job['task_id'], None)
-            job.setdefault('finished_at', datetime.now(timezone.utc).isoformat())
+            if not requeued:
+                job.setdefault('finished_at', datetime.now(timezone.utc).isoformat())
             manager.save(job)
+        if requeued:
+            manager.check_claude_quota(job)  # raises: the queue waits for the reset, then this task runs again

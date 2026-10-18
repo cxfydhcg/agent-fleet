@@ -210,18 +210,12 @@ To register another worker later, rerun with `--role orchestrator --connection`
   (use the configured language and `--data-dir` if custom). Preview with `--plan`.
   This does not restart the service or change permissions, identity or pairing.
   Verify both project registrations before claiming completion.
-- A Claude worker (`--engine claude`) gets its folder in the Claude desktop app instead of Codex:
-  setup opens `claude://code/new?folder=<workspace>`, which opens a Code draft there after the
-  owner confirms the folder prompt; the other-agents folder (`tasks_dir`) is opened the same way, so
-  expect two prompts. The Code sidebar lists sessions, not folders, so a draft appears there only
-  after a message is sent in it. Claude desktop has no project list to read back, so
-  `desktop.status` is `opened` (or `not-installed`), never `registered`; a rerun reports `opened-before` and opens no new draft for folders an earlier setup already opened; tell the owner to confirm
-  the prompts and send a message in each draft, and don't claim more than that. Nothing is
-  registered in Codex.
-  When setup itself runs in the Claude desktop app and a session-starting tool is available (in
-  Claude Code: `start_session` with `cwd`), offer to start one short session in each folder instead,
-  so both appear in the sidebar without the owner typing. Each such session must only reply briefly
-  and never change files there: the worker service uses them.
+- A Claude worker (`--engine claude`) needs nothing opened or registered: the worker imports each new
+  session into Claude desktop (named after its task), and Claude desktop groups sessions by the folder they
+  start in, so "AgentFleet" and "AgentFleet-Other" appear with the first session in each, grouped by the
+  same rule as Codex. `desktop.status` is `automatic` (or `not-installed`). The verification turn
+  (`fleet.mjs check`) creates the main agent's session, so "AgentFleet" shows up right after setup. Nothing is
+  registered in Codex, and no drafts are opened.
 - A Codex worker's setup registers the workspace under Projects in Codex desktop on Windows and macOS (the
   orchestrator registers none) and
   reports `desktop.status`, including when it reuses an existing worker. Verify

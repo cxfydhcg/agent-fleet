@@ -24,6 +24,10 @@ prompt=sys.stdin.buffer.read().decode('utf-8')
 session=args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
 print(json.dumps({'type':'system','subtype':'init','session_id':session}),flush=True)
 if prompt == 'slow': time.sleep(60)
+if prompt == 'limited':
+    print(json.dumps({'type':'rate_limit_event','rate_limit_info':{'status':'rejected','resetsAt':int(time.time())+3600,'rateLimitType':'five_hour'}}),flush=True)
+    print(json.dumps({'type':'result','session_id':session,'subtype':'success','is_error':True,'result':"You've hit your limit"}),flush=True)
+    sys.exit(1)
 print(json.dumps({'type':'assistant','session_id':session,'message':{'content':[{'type':'text','text':prompt}]}}),flush=True)
 if prompt != 'no-result':
     result={'type':'result','session_id':session,'subtype':'success','is_error':False,'result':prompt}
@@ -49,7 +53,9 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
                            claude_launcher_args=[str(self.fake)], state_dir=str(self.root / 'state'),
                            tasks_dir=str(self.root / 'tasks'), shared_dir=str(self.shared),
                            allowed_roots=[str(self.root)], token_file=str(self.token),
-                           main_agent_workspaces=[str(self.main)], sandbox='workspace-write')
+                           main_agent_workspaces=[str(self.main)], sandbox='workspace-write',
+                           # Never read this computer's real Claude transcripts or desktop index.
+                           claude_home=str(self.root / 'no-home'), claude_desktop_sessions_dir=str(self.root / 'no-desktop'))
         # Never open the real Claude desktop app from tests; record what would have been shown.
         self.shown, self.held = [], set()
         self.patches = [patch.object(claude_executor, 'show_in_desktop', self.shown.append),
@@ -79,7 +85,7 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
         public = self.manager.public(job, True)
         self.assertEqual(public['engine'], 'claude')
         self.assertEqual(public['result'], text)
-        self.assertNotIn('desktop_url', public)
+        self.assertEqual(public['desktop_url'], 'claude://resume?session=' + job['thread_id'])
         self.assertNotIn('archived', public)
         second = self.manager.submit('follow up', None, 10, None, resume_task_id=job['task_id'])
         resumed = await self.finished(second['task_id'])
@@ -90,8 +96,11 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
         transcript = self.manager.transcript(job['thread_id'])
         self.assertEqual([e['text'] for e in transcript if e['kind'] == 'user'], [text, 'follow up'])
         self.assertEqual([e['text'] for e in transcript if e['kind'] == 'agent'], [text, 'follow up'])
-        with self.assertRaisesRegex(ValueError, 'no Codex desktop link'):
-            self.manager.open_desktop(job['task_id'])
+        if os.name == 'nt':
+            with patch('os.startfile') as start:
+                opened = self.manager.open_desktop(job['task_id'])
+            start.assert_called_once_with(public['desktop_url'])
+            self.assertIn('fork', opened['desktop_open_note'])
 
     async def test_error_and_missing_result_are_failures(self):
         for prompt in ('fail', 'no-result'):
@@ -190,6 +199,37 @@ class SidebarFolderTests(ClaudeExecutorTests):
         old.pop('cwd')  # a session created before this change ran in its own folder
         await self.finished(self.manager.submit('again', None, 10, None, resume_task_id=old['task_id'])['task_id'])
         self.assertEqual(self.cwd(), Path(old['workspace']).resolve())
+
+
+class ClaudeParityTests(ClaudeExecutorTests):
+    """What Codex workers do, Claude workers do too."""
+
+    async def test_usage_limit_pauses_the_queue_like_a_codex_quota_pause(self):
+        task = self.manager.submit('limited', None, 10, None, name='blocked')
+        async with asyncio.timeout(5):
+            while not self.manager.quota_wait:
+                await asyncio.sleep(0.02)
+        job = self.manager.get(task['task_id'])
+        self.assertEqual(job['status'], 'queued', 'refused before doing anything: back in line, not failed')
+        self.assertTrue(job['latest_message'].startswith('等待 Claude 额度重置'))
+        self.assertNotIn('finished_at', job)
+        self.assertTrue(self.manager.quota_paused)
+        await self.manager.cancel(task['task_id'])
+
+    async def test_sessions_archived_or_deleted_in_claude_desktop_count_as_removed(self):
+        home, index = self.root / 'home', self.root / 'desktop'
+        (home / '.claude' / 'projects' / 'p').mkdir(parents=True)
+        (index / 'a' / 'b').mkdir(parents=True)
+        self.manager.config.update(claude_home=str(home), claude_desktop_sessions_dir=str(index))
+        jobs = {}
+        for name in ('kept', 'archived', 'deleted'):
+            jobs[name] = await self.finished(self.manager.submit(name, None, 10, None, name=name)['task_id'])
+        for name in ('kept', 'archived'):
+            (home / '.claude' / 'projects' / 'p' / (jobs[name]['thread_id'] + '.jsonl')).write_text('{}', encoding='utf-8')
+        (index / 'a' / 'b' / 'local_x.json').write_text(json.dumps({'cliSessionId': jobs['archived']['thread_id'], 'isArchived': True}), encoding='utf-8')
+        self.manager._claude_cache = None
+        self.assertEqual({n: self.manager.removed(j) for n, j in jobs.items()}, {'kept': False, 'archived': True, 'deleted': True})
+        self.assertIsNone(self.manager.named_session('archived'), 'a removed session is not continued')
 
 
 class ClaudeDesktopTests(ClaudeExecutorTests):

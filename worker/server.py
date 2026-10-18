@@ -67,14 +67,16 @@ def quota_exhausted(result, threshold, language='zh'):
 
 
 class QuotaExhausted(Exception):
-    """The Codex quota is used up; raised before any session is started, so the job can simply wait its turn."""
+    """The engine's quota is used up; raised before any session is started, so the job can simply wait its turn."""
 
-    def __init__(self, labels, resets_at, language='zh'):
-        self.labels, self.resets_at = labels, resets_at
+    def __init__(self, labels, resets_at, language='zh', engine='Codex'):
+        self.labels, self.resets_at, self.engine = labels, resets_at, engine
         text = TEXT[language]
         when = (text['quota_at'].format(time=local_clock(resets_at)) if resets_at else
                 text['quota_poll'].format(minutes=max(1, round(QUOTA_RECHECK_SECONDS / 60))))
-        super().__init__(text['quota_note'] + text['quota_used'].format(labels=text['quota_joiner'].join(labels), when=when))
+        super().__init__(text['quota_note'].format(engine=engine) +
+                         text['quota_used'].format(labels=text['quota_joiner'].join(labels), when=when))
+
 
 
 class AppServerError(RuntimeError):
@@ -109,11 +111,11 @@ WORKER_RULES_EN = '''You are a sub-agent (worker) sent to do one specific task. 
 # notes meant for the calling agent stay in English.
 TEXT = {
     'zh': {
-        'quota_note': '等待 Codex 额度重置：', 'windows': {'primary': '5 小时', 'secondary': '每周'}, 'quota_joiner': '和',
+        'quota_note': '等待 {engine} 额度重置：', 'windows': {'primary': '5 小时', 'secondary': '每周'}, 'quota_joiner': '和',
         'quota_at': '预计 {time}（本地时间）后自动开始', 'quota_poll': '每 {minutes} 分钟检查一次，恢复后自动开始',
         'quota_used': '{labels}额度已用完，{when}',
-        'quota_back_title': 'Codex 额度已恢复，任务继续', 'quota_back': '排队的任务按原顺序继续运行，先从「{name}」开始。',
-        'quota_paused_title': 'Codex 额度用完，任务暂停', 'quota_paused_until': '到 {time}',
+        'quota_back_title': '{engine} 额度已恢复，任务继续', 'quota_back': '排队的任务按原顺序继续运行，先从「{name}」开始。',
+        'quota_paused_title': '{engine} 额度用完，任务暂停', 'quota_paused_until': '到 {time}',
         'quota_paused': '{reason}。排队中的 {queued} 个任务会按原顺序等到那时再开始，不需要人处理。',
         'wake_header': '【自动通知 · 派任务服务】', 'wake_intro': '你派出的子任务已结束：\n',
         'wake_line': '- 「{name}」 task_id={task_id} 状态={status}\n  结果：{result}', 'wake_unnamed': '未命名', 'wake_none': '（无）',
@@ -126,13 +128,13 @@ TEXT = {
         'worker_rules': WORKER_RULES,
     },
     'en': {
-        'quota_note': 'Waiting for the Codex quota to reset: ', 'windows': {'primary': '5-hour', 'secondary': 'weekly'},
+        'quota_note': 'Waiting for the {engine} quota to reset: ', 'windows': {'primary': '5-hour', 'secondary': 'weekly'},
         'quota_joiner': ' and ', 'quota_at': 'starts automatically after about {time} (local time)',
         'quota_poll': 'checking every {minutes} minutes, starts automatically once it is back',
         'quota_used': 'the {labels} quota is used up; {when}',
-        'quota_back_title': 'Codex quota is back, tasks continue',
+        'quota_back_title': '{engine} quota is back, tasks continue',
         'quota_back': 'Queued tasks continue in their original order, starting with "{name}".',
-        'quota_paused_title': 'Codex quota used up, tasks paused', 'quota_paused_until': ' until {time}',
+        'quota_paused_title': '{engine} quota used up, tasks paused', 'quota_paused_until': ' until {time}',
         'quota_paused': '{reason}. The {queued} queued task(s) wait until then, in their original order; nobody needs to act.',
         'wake_header': '[Automatic notice · dispatcher]', 'wake_intro': 'Sub-tasks you dispatched have finished:\n',
         'wake_line': '- "{name}" task_id={task_id} status={status}\n  Result: {result}', 'wake_unnamed': 'unnamed',
@@ -146,6 +148,7 @@ TEXT = {
         'worker_rules': WORKER_RULES_EN,
     },
 }
+QUOTA_NOTES = tuple(t['quota_note'].format(engine=e) for t in TEXT.values() for e in ('Codex', 'Claude'))
 SECRET_FIELD = re.compile(r'pass|secret|token|cookie|key|otp', re.IGNORECASE)
 APPROVE_LABEL = re.compile(r'accept|allow|approve|yes|continue|同意|允许|批准|继续', re.IGNORECASE)
 
@@ -348,6 +351,7 @@ class TaskManager:
         self.jobs = {}
         self.processes = {}
         self.codex_projects = {}  # sidebar folder root -> Codex app-server project id
+        self.claude_limit = None  # the last usage-limit rejection Claude Code reported, until it resets
         self.queue = asyncio.Queue()
         self.worker = None
         self.closing = False
@@ -367,6 +371,7 @@ class TaskManager:
         self.folders_pending, self.folders_status, self.folder_task = True, None, None
         self.pairing = None  # the open pairing window: {'code', 'expires', 'attempts'}
         self._archived_cache = None
+        self._claude_cache = None
         self.notifications_file = self.state / 'notifications.jsonl'
         self.notifications = [json.loads(line) for line in self.notifications_file.read_text(encoding='utf-8').splitlines()
                               if line.strip()] if self.notifications_file.exists() else []
@@ -400,12 +405,17 @@ class TaskManager:
         return self._archived_cache[1], self._archived_cache[2]
 
     def removed(self, job):
-        """True once the user archived or deleted this task's session in the Codex app."""
-        if job.get('engine') == 'claude':
-            return False
+        """True once the user archived or deleted this task's session in the desktop app (Codex or Claude)."""
         thread = job.get('thread_id')
         if not thread or job['status'] not in FINISHED:
             return False
+        if job.get('engine') == 'claude':
+            if self._claude_cache is None or time.monotonic() - self._claude_cache[0] > 5:
+                self._claude_cache = (time.monotonic(), *claude_executor.session_states(
+                    self.config.get('claude_home'), self.config.get('claude_desktop_sessions_dir')))
+            transcripts, archived = self._claude_cache[1], self._claude_cache[2]
+            # No transcripts at all means they are kept somewhere else, not that every session was deleted.
+            return thread in archived or bool(transcripts) and thread not in transcripts
         active, archived = self.session_files()
         return thread in archived or thread not in active
 
@@ -417,9 +427,11 @@ class TaskManager:
             response['owner'] = owner.get('name') or owner['task_id']
         if self.removed(job):
             response['archived'] = True
-        if job.get('thread_id') and job.get('engine') != 'claude':
-            response['desktop_url'] = 'codex://threads/' + quote(job['thread_id'], safe='')
-            label = (job.get('name') or 'Codex task').replace('[', '(').replace(']', ')').replace('\n', ' ')
+        if job.get('thread_id'):
+            claude = job.get('engine') == 'claude'
+            response['desktop_url'] = (('claude://resume?session=' if claude else 'codex://threads/') +
+                                       quote(job['thread_id'], safe=''))
+            label = (job.get('name') or ('Claude task' if claude else 'Codex task')).replace('[', '(').replace(']', ')').replace('\n', ' ')
             response['desktop_link'] = f"[{self.text['open_link'].format(label=label)}]({response['desktop_url']})"
         if include_result and job['status'] in ('completed', 'failed', 'cancelled', 'interrupted', 'timed_out'):
             result = self.jobs_dir / job['task_id'] / 'result.txt'
@@ -682,8 +694,6 @@ class TaskManager:
     def open_desktop(self, task_id, caller=None):
         job = self.get(task_id)
         self.authorize(job, caller, 'open')
-        if job.get('engine') == 'claude':
-            raise ValueError('Claude Code sessions have no Codex desktop link; use the dashboard or claude --resume')
         if not job.get('thread_id'):
             raise ValueError('The task has not created a session yet; query get_task again later')
         # Opening a session while a dispatcher turn owns it can contend for its writer lease.
@@ -698,9 +708,12 @@ class TaskManager:
         else:
             import subprocess
             subprocess.run(['open', response['desktop_url']], check=True, timeout=15)
-        return {**response, 'desktop_open_status': 'requested',
-                'desktop_open_location': 'server computer',
-                'desktop_open_note': 'Requested opening in the Codex desktop app on the server computer. This does not verify that the UI rendered. The desktop app keeps chats it has opened locked until it fully exits, so this dispatcher cannot continue this session until then. For viewing only, use /dashboard instead.'}
+        note = ('Requested opening in the Claude desktop app on the server computer. This does not verify that the UI rendered. '
+                'While the owner is working in it there, the dispatcher continues this session in a fork instead, so neither is interrupted. '
+                'For viewing only, use /dashboard instead.' if job.get('engine') == 'claude' else
+                'Requested opening in the Codex desktop app on the server computer. This does not verify that the UI rendered. The desktop app keeps chats it has opened locked until it fully exits, so this dispatcher cannot continue this session until then. For viewing only, use /dashboard instead.')
+        return {**response, 'desktop_open_status': 'requested', 'desktop_open_location': 'server computer',
+                'desktop_open_note': note}
 
     def latest_thread(self, thread_id):
         """Follow forks made while a session was held elsewhere, so continuing always uses the newest copy.
@@ -1272,13 +1285,39 @@ class TaskManager:
         blocked = quota_exhausted(result, self.config.get('quota_guard_threshold', 100), self.language)
         if blocked:
             raise QuotaExhausted(*blocked, self.language)
-        if (job.get('latest_message') or '').startswith(tuple(t['quota_note'] for t in TEXT.values())):
+        self.quota_recovered(job, 'Codex')
+
+    def quota_recovered(self, job, engine):
+        """The job is about to start with quota left: clear its waiting note and, after a pause, say it's back."""
+        if (job.get('latest_message') or '').startswith(QUOTA_NOTES):
             job.pop('latest_message')
             self.save(job)
         if self.quota_paused:
             self.quota_paused = False
-            self.notify(self.text['quota_back_title'], self.text['quota_back'].format(name=job.get('name') or job['task_id'][:8]),
+            self.notify(self.text['quota_back_title'].format(engine=engine),
+                        self.text['quota_back'].format(name=job.get('name') or job['task_id'][:8]),
                         task_ids=[job['task_id']], sender='dispatcher')
+
+    def check_claude_quota(self, job):
+        """Claude's counterpart of check_quota. Claude Code reports its limits only while running, so the last
+        rejection it reported holds the queue until its reset time; with no reset time known, the next try after
+        the poll interval finds out again."""
+        limit = self.claude_limit
+        if limit and self.config.get('quota_guard', True):
+            resets = limit.get('resetsAt') if isinstance(limit.get('resetsAt'), (int, float)) else None
+            if resets is None or resets > time.time():
+                if resets is None:
+                    self.claude_limit = None
+                kind = str(limit.get('rateLimitType') or '')
+                windows = self.text['windows']
+                label = windows['secondary'] if ('day' in kind or 'week' in kind) else windows['primary']
+                paused = QuotaExhausted([label], resets, self.language, 'Claude')
+                if job['status'] == 'queued':
+                    job['latest_message'] = str(paused)
+                    self.save(job)
+                raise paused
+            self.claude_limit = None
+        self.quota_recovered(job, 'Claude')
 
     async def wait_for_quota(self, job, paused):
         """Hold the whole queue behind this job until the quota should be back. The orchestrator hears about
@@ -1290,7 +1329,7 @@ class TaskManager:
         if not self.quota_paused:
             self.quota_paused = True
             queued = sum(j['status'] == 'queued' for j in self.jobs.values())
-            self.notify(self.text['quota_paused_title'] + (self.text['quota_paused_until'].format(time=local_clock(paused.resets_at))
+            self.notify(self.text['quota_paused_title'].format(engine=paused.engine) + (self.text['quota_paused_until'].format(time=local_clock(paused.resets_at))
                                                            if paused.resets_at else ''),
                         self.text['quota_paused'].format(reason=paused, queued=queued),
                         task_ids=[job['task_id']], sender='dispatcher')

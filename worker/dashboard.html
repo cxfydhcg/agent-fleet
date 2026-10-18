@@ -98,7 +98,7 @@
   // Agent-generated content (task names, messages, transcripts) is data and is never translated.
   const I18N = {
     zh: {
-      title: 'Codex 任务看板', logout: '更换令牌', loading: '加载中…', pickSession: '选择左侧的一个会话查看对话内容',
+      title: 'Agent Fleet 任务看板', logout: '更换令牌', loading: '加载中…', pickSession: '选择左侧的一个会话查看对话内容',
       loginTitle: '输入服务令牌', loginHelp: '令牌在派任务服务的 client.local.json 或 token.txt 里。只保存在这个浏览器中，用来读取任务数据。',
       tokenPlaceholder: '粘贴令牌', view: '查看',
       status: { completed: '完成', running: '运行中', queued: '排队', failed: '失败', timed_out: '超时', interrupted: '中断', cancelled: '已取消' },
@@ -110,13 +110,14 @@
       agentsFold: '常驻 Agent（{0}）', mainBadge: '（主）', lockedBadge: '（锁定）', noDispatchBadge: '（不能派任务）',
       sameNameBadge: '（{0} 个同名会话）', sessions: '会话', noTasks: '还没有任务', turns: '{0} 轮', forks: '分叉 {0}',
       back: '← 返回', workdir: '工作目录 {0}', sessionLabel: '会话 ', notCreated: '尚未创建',
-      readOnlyNote: '这里只读查看，不会占用会话。', openPrefix: ' 想亲自接着聊时可以 ', openInApp: '在 Codex App 中打开',
+      readOnlyNote: '这里只读查看，不会占用会话。', openPrefix: ' 想亲自接着聊时可以 ', openInApp: '在 {0} App 中打开',
       openSuffix: '。注意：打开后这个会话就归你了，在 Codex 完全退出之前，Agent 不能再往里面派任务。只想看进度的话，留在这个页面就好。',
+      openSuffixClaude: '。你在 Claude 桌面版里接着聊时，Agent 再派来的任务会另开一个分叉，不会打断你。只想看进度的话，留在这个页面就好。',
       noConversation: '还没有对话内容', toolCall: '工具调用 · {0} · {1}', transcriptFailed: '读取对话失败：{0}',
       taskFailed: '任务 {0} {1}：{2}', updated: '更新于 {0}', connFailed: '连接失败，稍后重试',
     },
     en: {
-      title: 'Codex task board', logout: 'Change token', loading: 'Loading…', pickSession: 'Select a session on the left to view its conversation',
+      title: 'Agent Fleet task board', logout: 'Change token', loading: 'Loading…', pickSession: 'Select a session on the left to view its conversation',
       loginTitle: 'Enter the service token', loginHelp: 'The token is in the dispatcher\'s client.local.json or token.txt. It is stored only in this browser and is used to read task data.',
       tokenPlaceholder: 'Paste the token', view: 'View',
       status: { completed: 'Completed', running: 'Running', queued: 'Queued', failed: 'Failed', timed_out: 'Timed out', interrupted: 'Interrupted', cancelled: 'Cancelled' },
@@ -130,8 +131,9 @@
       turns: (n) => n + (n === 1 ? ' turn' : ' turns'), forks: (n) => n + (n === 1 ? ' fork' : ' forks'),
       back: '← Back', workdir: 'working folder {0}', sessionLabel: 'session ', notCreated: 'not created yet',
       readOnlyNote: 'This view is read-only and does not take over the session.', openPrefix: ' To continue the conversation yourself, you can ',
-      openInApp: 'open it in the Codex app',
+      openInApp: 'open it in the {0} app',
       openSuffix: '. Note: once you open it, the session is yours, and agents cannot dispatch tasks to it until Codex fully exits. If you only want to follow progress, stay on this page.',
+      openSuffixClaude: '. While you continue it in Claude desktop, tasks agents send continue in a fork, so you are not interrupted. If you only want to follow progress, stay on this page.',
       noConversation: 'No conversation yet', toolCall: 'Tool call · {0} · {1}', transcriptFailed: 'Could not load the conversation: {0}',
       taskFailed: 'Task {0} {1}: {2}', updated: 'Updated {0}', connFailed: 'Connection failed, retrying shortly',
     },
@@ -284,9 +286,11 @@
     info.append(document.createTextNode(t('turns', g.tasks.length) + ' · ' + t('workdir', g.latest.workspace || '') + ' · ' + t('sessionLabel')), el('code', null, g.thread || t('notCreated')));
     const note = el('div', 'note');
     note.append(document.createTextNode(t('readOnlyNote')));
-    if (g.thread && g.latest.engine !== 'claude') {
-      const open = el('a', 'link', t('openInApp')); open.href = 'codex://threads/' + encodeURIComponent(g.thread);
-      note.append(document.createTextNode(t('openPrefix')), open, document.createTextNode(t('openSuffix')));
+    if (g.thread) {
+      const claude = g.latest.engine === 'claude';
+      const open = el('a', 'link', t('openInApp', claude ? 'Claude' : 'Codex'));
+      open.href = (claude ? 'claude://resume?session=' : 'codex://threads/') + encodeURIComponent(g.thread);
+      note.append(document.createTextNode(t('openPrefix')), open, document.createTextNode(t(claude ? 'openSuffixClaude' : 'openSuffix')));
     }
     const body = el('div');
     if (g.thread) {

@@ -85,49 +85,17 @@ test('orchestrator and disabled folder sorting register only the main project', 
   }
 });
 
-test('a rerun does not open new Claude desktop drafts for folders opened before', async () => {
-  const state = mkdtempSync(join(tmpdir(), 'claude-opened-'));
-  try {
-    const config = { ...workerConfig, engine: 'claude', state_dir: state };
-    const first = fakeApp({ pending: true });
-    assert.equal((await ensureDesktopProjects({ workspace, workerConfig: config }, first.runtime)).status, 'opened');
-    assert.equal(first.launches.length, 2);
-    const again = fakeApp({ pending: true });
-    const report = await ensureDesktopProjects({ workspace, workerConfig: config }, again.runtime);
-    assert.equal(again.launches.length, 0);
-    assert.equal(report.projects.main.status, 'opened-before');
-    assert.equal(report.projects.other.status, 'opened-before');
-  } finally { rmSync(state, { recursive: true, force: true }); }
-});
-
-test('a Claude worker opens both folders in Claude desktop and never touches Codex', async () => {
-  const app = fakeApp({ pending: true });
-  app.runtime.readState = () => { throw new Error('Codex state must not be read for a Claude worker'); };
-  const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, app.runtime);
-  assert.equal(report.status, 'opened');
+test('a Claude worker needs nothing opened or registered: sessions bring their folders into Claude desktop', async () => {
+  const forbidden = () => { throw new Error('Unexpected desktop interaction'); };
+  const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, {
+    platform: 'darwin', installed: () => true, readState: forbidden, mkdir: forbidden, launch: forbidden });
+  assert.equal(report.status, 'automatic');
   assert.equal(report.projects.main.app, 'claude');
-  assert.equal(report.projects.other.app, 'claude');
-  assert.equal(app.launches.length, 2);
-  const url = new URL(app.launches[0]);
-  assert.equal(url.protocol, 'claude:');
-  assert.equal(url.hostname, 'code');
-  assert.equal(url.pathname, '/new');
-  assert.equal(url.searchParams.get('folder'), workspace);
-  assert.equal(new URL(app.launches[1]).searchParams.get('folder'), tasks);
-  assert.deepEqual(app.directories, [workspace, tasks]);
-});
-
-test('a Claude worker skips the other folder when its task path is unusable or Claude desktop is missing', async () => {
-  for (const tasks_dir of [undefined, 'relative tasks']) {
-    const app = fakeApp({ pending: true });
-    const report = await ensureDesktopProjects({ workspace, workerConfig: { engine: 'claude', tasks_dir } }, app.runtime);
-    assert.equal(report.projects.other, undefined);
-    assert.equal(app.launches.length, 1);
-  }
+  assert.equal(report.projects.other.status, 'automatic');
   const absent = fakeApp({ installed: false });
-  const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, absent.runtime);
-  assert.equal(report.status, 'not-installed');
-  assert.equal(report.projects.other, undefined);
+  const missing = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, absent.runtime);
+  assert.equal(missing.status, 'not-installed');
+  assert.equal(missing.projects.other, undefined);
   assert.equal(absent.launches.length, 0);
 });
 
