@@ -19,7 +19,7 @@ WORKER = ROOT / 'plugin/scripts/setup-worker.ps1'
 
 class PluginSetupTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT.parent)
+        self.temp = tempfile.TemporaryDirectory(dir=ROOT)
         self.root = Path(self.temp.name)
         self.home = self.root / 'registry'
 
@@ -304,6 +304,13 @@ class PluginSetupTests(unittest.TestCase):
             self.assertTrue((plugin / 'runtime/worker/tools/pairing.py').is_file())  # what the pair skill runs on a worker
             self.assertTrue((plugin / 'scripts/setup.mjs').is_file())
             self.assertTrue((plugin / 'scripts/start.mjs').is_file())
+
+    def test_windows_sources_and_bundles_have_one_utf8_bom(self):
+        for name in ('install-worker.ps1', 'worker/resolve-engines.ps1', 'plugin/scripts/setup-worker.ps1',
+                     'plugin/runtime/install-worker.ps1', 'plugin/runtime/worker/resolve-engines.ps1'):
+            data = (ROOT/name).read_bytes()
+            self.assertTrue(data.startswith(b'\xef\xbb\xbf'), name)
+            self.assertNotIn('\ufeff', data.decode('utf-8-sig'), name)
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows worker startup')
     def test_background_worker_does_not_hold_installer_capture_pipes(self):

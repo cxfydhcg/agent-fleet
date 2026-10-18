@@ -5,6 +5,8 @@
     [string]$Workspace = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'AgentFleet'),
     [string]$DataDir = (Join-Path $env:USERPROFILE 'AppData\Local\agent-fleet'),
     [string]$Name = $env:COMPUTERNAME.ToLower(),
+    [string]$Engines = '',
+    [string]$SecondMainAgentName = '',
     [string]$MainAgentName = '',
     [ValidateSet('', 'zh', 'en')][string]$Language = '',
     [string]$ManagerName = '',
@@ -19,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 if ($Restricted -and $FullAccess) { throw 'Pass either -FullAccess or -Restricted, not both.' }
 $configPath = Join-Path $DataDir 'config.json'
 function Ensure-DesktopProject {
-    $desktopArgs = @((Join-Path $PSScriptRoot 'setup-desktop.mjs'),'--workspace',$Workspace,'--engine',$Engine)
+    $desktopArgs = @((Join-Path $PSScriptRoot 'setup-desktop.mjs'),'--workspace',$Workspace,'--config',$configPath)
     if ($NoDesktop) { $desktopArgs += '--no-desktop' }
     $desktopOutput = & node @desktopArgs
     if ($LASTEXITCODE -ne 0) { throw 'Worker is configured, but desktop project registration failed.' }
@@ -36,7 +38,6 @@ if ($previous) {
     if (-not $PSBoundParameters.ContainsKey('LanAddress') -and $Connectivity -eq 'Lan' -and $previous.lan_address) { $LanAddress = $previous.lan_address }
     if (-not $PSBoundParameters.ContainsKey('Workspace')) { $Workspace = Split-Path $previous.tasks_dir }
     if (-not $PSBoundParameters.ContainsKey('Name')) { $Name = $previous.computer_name }
-    if (-not $PSBoundParameters.ContainsKey('MainAgentName') -and $previous.main_agent_name) { $MainAgentName = $previous.main_agent_name }
     if (-not $PSBoundParameters.ContainsKey('FullAccess')) { $FullAccess = $previous.sandbox -eq 'danger-full-access' }
     if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = $previous.port }
     if (-not $PSBoundParameters.ContainsKey('TailscalePort')) { $TailscalePort = $previous.tailscale_port }
@@ -46,7 +47,10 @@ if (-not $Language) {
     if ($previous) { $Language = $(if ($previous.language -eq 'en') { 'en' } else { 'zh' }) }
     elseif ((Get-Culture).Name -like 'zh*') { $Language = 'zh' } else { $Language = 'en' }
 }
-if (-not $MainAgentName) { $MainAgentName = $(if ($Language -eq 'en') { 'Main agent' } else { '主agent export' }) }
+function T($zh, $en) { if ($Language -eq 'en') { $en } else { $zh } }
+$priorSettings = $previous
+$setupBound = $PSBoundParameters
+. (Join-Path (Split-Path $PSScriptRoot) 'runtime\worker\resolve-engines.ps1')
 if ($LanAddress -and $Connectivity -ne 'Lan') { throw '-LanAddress requires -Connectivity Lan.' }
 if ($Connectivity -eq 'Lan' -and -not $LanAddress) {
     # The adapter with a default gateway is the one other computers on the network can reach.
@@ -57,11 +61,15 @@ if ($Connectivity -eq 'Lan' -and -not $LanAddress) {
 $MainAgentName = $MainAgentName.Trim()
 if ($MainAgentName.Length -lt 1 -or $MainAgentName.Length -gt 100 -or $MainAgentName -match '[\x00-\x1f\x7f]' -or $MainAgentName.StartsWith('--') -or $MainAgentName -in @('__proto__','constructor','prototype')) { throw 'Main agent name must contain 1 to 100 printable characters, without a leading --.' }
 $oldMainName = if ($previous -and $previous.main_agent_name) { $previous.main_agent_name } else { '主agent export' }
+$previousMains = if ($previous.main_agents) { @($previous.main_agents) } elseif ($previous) { @(@{name=$oldMainName;engine=$oldEngine}) } else { @() }
 $existingRegistry = Join-Path $DataDir 'local-client\computers.json'
-if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $existingRegistry)) {
+if (Test-Path -LiteralPath $existingRegistry) {
     $registered = Get-Content -Encoding UTF8 -LiteralPath $existingRegistry -Raw | ConvertFrom-Json
     $registeredComputer = $registered.computers.PSObject.Properties[$Name]
-    if ($registeredComputer -and @($registeredComputer.Value.agents.PSObject.Properties | Where-Object { $_.Name -ceq $MainAgentName }).Count) { throw 'An agent already uses the requested main agent name; choose another name.' }
+    foreach ($main in $mainAgents) {
+        $priorMain = @($previousMains | Where-Object { $_.engine -eq $main.engine }) | Select-Object -First 1
+        if ($main.name -cne $priorMain.name -and $registeredComputer -and @($registeredComputer.Value.agents.PSObject.Properties | Where-Object { $_.Name -ceq $main.name }).Count) { throw (T '主 Agent 名字与现有 Agent 冲突。' 'An agent already uses the requested main agent name; choose another name.') }
+    }
 }
 # Deployed worker code is stamped with the plugin version; rerunning setup after a plugin update redeploys it
 # with the existing settings instead of reusing the old code.
@@ -72,13 +80,13 @@ $outdated = [bool]($previous -and $pluginVersion -and (Test-Path -LiteralPath (J
     -not ((Test-Path -LiteralPath $versionStamp) -and (Get-Content -Encoding UTF8 -LiteralPath $versionStamp -Raw).Trim() -eq $pluginVersion))
 if ($Plan) {
     $tasksLeaf = if ($previous -and $previous.codex_app_folders.other) { $previous.codex_app_folders.other } elseif ($Language -eq 'en') { 'AgentFleet-Other' } else { 'AgentFleet-其他' }
-    [ordered]@{tasks_dir=(Join-Path $Workspace $tasksLeaf);engine=$Engine;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure;update=$outdated} | ConvertTo-Json
+    [ordered]@{tasks_dir=(Join-Path $Workspace $tasksLeaf);engine=$Engine;engines=$engineList;main_agents=$mainAgents;connectivity=$Connectivity;lan_address=$LanAddress;main_agent_name=$MainAgentName;language=$Language;workspace=$Workspace;data_dir=$DataDir;full_access=[bool]$FullAccess;existing=[bool]$previous;reconfigure=[bool]$Reconfigure;update=$outdated} | ConvertTo-Json -Depth 6
     return
 }
 if ($previous -and -not $Reconfigure) {
-    if ($Engine -ne $oldEngine -or ([bool]$FullAccess -ne ($previous.sandbox -eq 'danger-full-access')) -or
+    if (($engineList -join ',') -ne $(@($(if ($previous.engines) { $previous.engines } else { $oldEngine })) -join ',') -or ([bool]$FullAccess -ne ($previous.sandbox -eq 'danger-full-access')) -or
         $Connectivity -ne $oldConnectivity -or ($Connectivity -eq 'Lan' -and $LanAddress -ne $previous.lan_address) -or
-        $Workspace -ne (Split-Path $previous.tasks_dir) -or $Name -ne $previous.computer_name -or $MainAgentName -cne $oldMainName -or
+        $Workspace -ne (Split-Path $previous.tasks_dir) -or $Name -ne $previous.computer_name -or $MainAgentName -cne $oldMainName -or ($previous.main_agents -and $mainAgents.Count -gt 1 -and $mainAgents[1].name -cne $previous.main_agents[1].name) -or
         $Port -ne $previous.port -or $TailscalePort -ne $previous.tailscale_port -or
         ($PSBoundParameters.ContainsKey('Language') -and $Language -ne $(if ($previous.language -eq 'en') { 'en' } else { 'zh' }))) {
         throw 'Requested settings differ from the installation. Use -Reconfigure after confirming the change.'
@@ -103,7 +111,7 @@ if ($previous -and -not $Reconfigure -and $outdated) {
         if ($existingHealth.service -ne 'codex-task-mcp') { throw 'The configured port is not the expected worker.' }
     }
     $desktop = Ensure-DesktopProject
-    [ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'existing-worker' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;
+    [ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'existing-worker' });engine=$Engine;engines=$engineList;main_agents=$mainAgents;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;
         data_dir=$existingData;client_home=(Join-Path $existingData 'local-client');
         connection_file=(Join-Path $existingData 'connection.json');
         dashboard="http://127.0.0.1:$($previous.port)/dashboard";remote_url=$previous.remote_url;lan_url=$previous.lan_url;
@@ -120,9 +128,12 @@ if ($previous) {
         $deferRestart = [bool](@($tasks.tasks | Where-Object { $_.status -in @('queued','running') }).Count)
     }
     $profilePath = Join-Path $previous.state_dir 'profile.json'
-    if ($MainAgentName -cne $oldMainName -and (Test-Path -LiteralPath $profilePath)) {
+    if (Test-Path -LiteralPath $profilePath) {
         $savedProfile = Get-Content -Encoding UTF8 -LiteralPath $profilePath -Raw | ConvertFrom-Json
-        if (@($savedProfile.agents.PSObject.Properties | Where-Object { $_.Name -ceq $MainAgentName }).Count) { throw 'An agent already uses the requested main agent name; choose another name.' }
+        foreach ($main in $mainAgents) {
+            $priorMain = @($previousMains | Where-Object { $_.engine -eq $main.engine }) | Select-Object -First 1
+            if ($main.name -cne $priorMain.name -and @($savedProfile.agents.PSObject.Properties | Where-Object { $_.Name -ceq $main.name }).Count) { throw (T '主 Agent 名字与现有 Agent 冲突。' 'An agent already uses the requested main agent name; choose another name.') }
+        }
     }
 }
 $runtime = Join-Path (Split-Path $PSScriptRoot) 'runtime'
@@ -134,8 +145,9 @@ New-Item -ItemType Directory -Force -Path $deployment | Out-Null
 Copy-Item -LiteralPath (Join-Path $runtime 'worker') -Destination $deployment -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $runtime 'install-worker.ps1'),(Join-Path $runtime 'LICENSE') -Destination $deployment -Force
 $installArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $deployment 'install-worker.ps1'),
-    '-Engine',$Engine,'-Workspace',$Workspace,'-DataDir',$DataDir,'-Name',$Name,'-MainAgentName',$MainAgentName,'-Port',"$Port",'-TailscalePort',"$TailscalePort",'-NoStart','-NoAutostart')
+    '-Engines',($engineList -join ','),'-Workspace',$Workspace,'-DataDir',$DataDir,'-Name',$Name,'-MainAgentName',$MainAgentName,'-Port',"$Port",'-TailscalePort',"$TailscalePort",'-NoStart','-NoAutostart')
 $installArgs += @('-Language',$Language)
+if ($mainAgents.Count -gt 1) { $installArgs += @('-SecondMainAgentName',$mainAgents[1].name) }
 if ($ManagerName) { $installArgs += @('-ManagerName',$ManagerName) }
 if ($Description) { $installArgs += @('-Description',$Description) }
 if ($Connectivity -ne 'Tailscale') { $installArgs += '-LocalOnly' }
@@ -160,6 +172,8 @@ p.write_text(json.dumps(c,indent=2),encoding='utf-8'); print(p)
 $configPath = (& $config.python_executable -c $resolveScript $configPath | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not resolve runtime paths.' }
 $config = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
+# The installer, rather than this preview, owns ids generated for a fresh installation.
+$mainAgents = @($config.main_agents)
 if ($health -and $health.service -eq 'codex-task-mcp' -and $deferRestart) {
     # The running service picks this up and relaunches on the new code once its queue is empty.
     [System.IO.File]::WriteAllText((Join-Path $config.state_dir 'restart-when-idle'), (Get-Date).ToString('o'))
@@ -204,18 +218,20 @@ try {
     $client = Join-Path $PSScriptRoot 'fleet.mjs'
     & node $client add-computer (Join-Path $resolvedData 'connection.json') --local=1
     if ($LASTEXITCODE -ne 0) { throw 'Worker started, but local registration failed.' }
-    & node $client describe-agent $Name $MainAgentName $(if ($Language -eq 'en') { '--role=Main agent responsible for this worker' } else { '--role=负责这台电脑的主 Agent' }) '--type=main'
-    if ($LASTEXITCODE -ne 0) { throw 'Worker started, but main-agent profile registration failed.' }
-    if ($MainAgentName -cne $oldMainName) {
-        $updatedProfile = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $config.state_dir 'profile.json') -Raw | ConvertFrom-Json
-        if (@($updatedProfile.agents.PSObject.Properties | Where-Object { $_.Name -ceq $oldMainName }).Count) {
-            & node $client remove-agent $Name $oldMainName
+    foreach ($main in $mainAgents) {
+        & node $client describe-agent $Name $main.name $(if ($Language -eq 'en') { '--role=Main agent responsible for this worker' } else { '--role=负责这台电脑的主 Agent' }) '--type=main'
+        if ($LASTEXITCODE -ne 0) { throw 'Worker started, but main-agent profile registration failed.' }
+    }
+    $updatedProfile = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $config.state_dir 'profile.json') -Raw | ConvertFrom-Json
+    foreach ($priorMain in $previousMains) {
+        if ($priorMain.name -cnotin @($mainAgents.name) -and @($updatedProfile.agents.PSObject.Properties | Where-Object { $_.Name -ceq $priorMain.name }).Count) {
+            & node $client remove-agent $Name $priorMain.name
             if ($LASTEXITCODE -ne 0) { throw 'Main agent renamed, but old profile cleanup failed.' }
         }
     }
 } finally { $env:AGENT_FLEET_HOME = $savedFleetHome }
 $desktop = Ensure-DesktopProject
-[ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'service-ready' });engine=$Engine;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$resolvedData;client_home=$clientHome;connection_file=(Join-Path $resolvedData 'connection.json');dashboard="http://127.0.0.1:$($config.port)/dashboard";remote_url=$config.remote_url;lan_url=$config.lan_url;
+[ordered]@{status=$(if ($desktop.status -eq 'pending') { 'desktop-setup-pending' } else { 'service-ready' });engine=$Engine;engines=$engineList;main_agents=$mainAgents;computer=$Name;main_agent_name=$MainAgentName;workspace=$Workspace;data_dir=$resolvedData;client_home=$clientHome;connection_file=(Join-Path $resolvedData 'connection.json');dashboard="http://127.0.0.1:$($config.port)/dashboard";remote_url=$config.remote_url;lan_url=$config.lan_url;
     firewall_note=$(if ($config.lan_url) { "Allow inbound TCP $($config.port) on Private networks in Windows Firewall (administrator)." } else { '' });
     full_access=[bool]$FullAccess;desktop=$desktop;pairing=$pairing;restart=$(if ($deferRestart) { 'when-idle' } else { 'done' });
     pair_script=(Join-Path $deployment 'worker\pair.ps1')} | ConvertTo-Json -Depth 5

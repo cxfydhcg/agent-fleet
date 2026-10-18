@@ -229,9 +229,12 @@
     const title = el('div', 'title'); title.append(el('span', null, profile.computer_name || m.hostname || t('thisComputer')));
     if (profile.busy && profile.busy.running.length) title.append(el('span', 'badge s-running', t('busy', profile.busy.running.join(t('listSep')))));
     else if (!profile.quota_wait) title.append(el('span', 'badge s-completed', t('idle')));
-    if (profile.quota_wait) { // the queue is paused until the Codex quota resets
-      const until = profile.quota_wait.until ? ' ' + new Date(profile.quota_wait.until).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) : '';
-      const badge = el('span', 'badge s-queued', t('quotaWait') + until); badge.title = profile.quota_wait.message || ''; title.append(badge);
+    if (profile.quota_wait) {
+      for (const wait of Object.values(profile.quota_wait.engines || { one: profile.quota_wait })) {
+        const until = wait.until ? ' ' + new Date(wait.until).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) : '';
+        const engine = (wait.engine || profile.engine) === 'claude' ? 'Claude' : 'Codex';
+        const badge = el('span', 'badge s-queued', engine + ': ' + t('quotaWait') + until); badge.title = wait.message || ''; title.append(badge);
+      }
     }
     const gpu = (m.nvidia && m.nvidia.length) ? m.nvidia.map((g) => g.name + ' ' + Math.round(g.vram_total_mb / 1024) + 'GB').join(t('listSep'))
       : (m.gpus || []).map((g) => g.name).filter((n) => !/virtual|remote|basic/i.test(n)).join(t('listSep')) || t('noGpu');

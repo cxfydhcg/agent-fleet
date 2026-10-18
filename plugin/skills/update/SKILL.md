@@ -36,3 +36,7 @@ there with this skill.
 One line per computer: before -> after version, whether the service restarted, and any error. Mention that
 the apps' "Restart to apply changes" only concerns their skill texts: new sessions pick up the new version,
 and the worker services already run the new code.
+
+## Preserve dual-engine workers / 保留双引擎配置
+
+Rerun setup without passing engine or main-name options unless the owner explicitly requests a change. It preserves **both** engines, names, permanent ids, folders and instructions. The deployed version stamp applies to the shared service, and restart-when-idle waits for every engine's queued/running task to finish. After reconnection, inspect `overview` and both `main_agents`; use `check <computer> [name]` only for an authorized installation check. 更新时保留两个主 Agent，切勿为更新而改成单引擎或中断另一引擎的工作。

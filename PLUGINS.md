@@ -9,8 +9,8 @@ Install **one plugin**, then run setup and choose this computer's role:
 | Both | Set up the worker and orchestrator, and register this worker locally automatically. |
 
 The same plugin works in Codex and Claude Code. For a worker, separately choose
-whether its main agent and tasks run Codex or Claude Code. It includes five skills:
-setup, start, pair, main-agent and call-agent. Setup is the installation entry point: it asks whether
+whether its main agents and tasks run Codex, Claude Code, or both. It includes six skills:
+setup, start, pair, update, main-agent and call-agent. Setup is the installation entry point: it asks whether
 this computer controls other agents, is controlled by another computer, or both,
 and also handles registering workers, renames, reconfiguration and repairs.
 
@@ -77,14 +77,10 @@ It preserves the same session and never opens it. Claude worker chats remain in
 the worker dashboard. A sidebar project and a visible main-agent chat are checked
 separately.
 
-A Claude worker (`--engine claude`) puts its folder in the Claude desktop app, not
-Codex: setup opens `claude://code/new?folder=<workspace>`, and the app opens a
-Code draft in that folder after the owner confirms its folder prompt; the
-other-agents folder (`tasks_dir`, e.g. `AgentFleet-其他`) is opened the same way. Claude
-desktop exposes no project list to verify, so `desktop.status` is `opened` (or
-`not-installed`), never `registered`. The Code sidebar lists sessions, not
-folders, so each folder shows up there only after a message is sent in its draft.
-No Codex project is created.
+A Claude engine imports completed first turns into Claude desktop, grouped by
+the AgentFleet or other-agents working directory. Setup opens no drafts;
+`desktop.status` is `automatic` (or `not-installed`). A dual-engine worker also
+registers its Codex projects; each session goes to the app for its actual engine.
 
 Repair only these project registrations for an installed worker, without
 redeploying or restarting the service, changing permissions, or reopening pairing:
@@ -157,7 +153,7 @@ If a remote orchestrator already registered the worker, import its updated priva
 connection file there to update the name and preserve its session pointer.
 The `--name` option is the computer's identifier; `--main-agent-name` names its agent.
 
-Worker installation currently supports Windows. It defaults to local-only
+Worker installation supports Windows and macOS. It defaults to local-only
 connectivity, restricted permissions, and a workspace in `Documents/AgentFleet`.
 Choose the actual worker engine separately from the app used to invoke setup:
 
@@ -185,8 +181,7 @@ the setup skill must explain this and obtain explicit agreement first.
 
 `-Plan` prints non-secret planned settings. Existing installations are reused.
 Use `-Reconfigure` for an intentional repair, engine switch or network change;
-the script preserves extra configuration keys and refuses to interrupt busy
-workers. Session history remains on disk, but sessions cannot continue under a
+the script preserves extra configuration keys and defers a busy worker restart until every queue is idle. Session history remains on disk, but sessions cannot continue under a
 different engine. Custom main-agent instructions and worker rules are preserved.
 
 The worker runtime is copied to `workspace/service`, rather than running from the
@@ -213,14 +208,13 @@ metadata, preserves existing workers and never prints the token value.
 Tell the orchestrator a goal, such as "Ask editing-pc's main agent to organize
 these files." It uses the bundled call-agent client. Each computer's main agent
 decides how to delegate, yields after dispatching, and is woken automatically
-when children finish. Only one task runs per computer at a time.
+when children finish. Each engine runs one task at a time; two engines can run concurrently.
 
 The local dashboard is normally `http://127.0.0.1:8765/dashboard`. Its login asks
 for the token from the private worker data directory. Codex sessions must not be
 opened in the desktop app while the dispatcher needs to continue them. Claude
 sessions have dashboard transcripts and CLI session IDs, with no Codex deep links.
-Codex's quota guard applies to the Codex app-server engine; Claude failures and
-limits are reported by its CLI, without claiming Codex-style quota-reset support.
+Quota guards pause each engine independently. Codex checks before a turn; Claude reports limits during a turn and waits until its reported reset.
 
 ## Build and verify
 
@@ -248,3 +242,5 @@ connection files, tokens, logs and `.git` from distribution. Keep the MIT licens
 Authoring references: [Codex plugin packaging](https://developers.openai.com/plugins/build/plugins),
 [Claude Code plugins](https://code.claude.com/docs/en/plugins), and
 [Claude CLI](https://code.claude.com/docs/en/cli-reference).
+
+双引擎安装 / Dual-engine setup: use `--engines codex,claude --main-agent-name "Main agent" --second-main-agent-name "Claude main agent"`. Each engine keeps its own identity and workspace; reruns preserve both. Address either main with `fleet.mjs agent <computer> <name>` from the orchestrator session. `check <computer> [name]` checks one or all.

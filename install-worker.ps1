@@ -4,6 +4,9 @@
 # 可以重复运行：令牌、主agent export 的说明文件和已有数据会保留。
 param(
     [string]$Name = $env:COMPUTERNAME.ToLower(),
+    [string]$Engines = '',
+    [string]$SecondMainAgentName = '',
+    [switch]$Plan,
     [string]$MainAgentName = '',  # 默认：中文 主agent export，英文 Main agent
     [ValidateSet('', 'zh', 'en')][string]$Language = '',  # 用户能看到的文字用哪种语言；默认沿用上次的设置，第一次按系统语言
     [string]$ManagerName = '',    # 可选：管理端调用这台电脑主 Agent 时用的名字（比如 经理cris），写进 connection.json
@@ -24,6 +27,7 @@ param(
     [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex')
 )
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $priorSettings = $null
 if (Test-Path -LiteralPath (Join-Path $DataDir 'config.json')) {
     $priorSettings = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $DataDir 'config.json') -Raw | ConvertFrom-Json
@@ -33,13 +37,23 @@ if (-not $Language) {
     elseif ((Get-Culture).Name -like 'zh*') { $Language = 'zh' } else { $Language = 'en' }
 }
 function T($zh, $en) { if ($Language -eq 'en') { $en } else { $zh } }
+if ($priorSettings) {
+    if (-not $PSBoundParameters.ContainsKey('Workspace')) { $Workspace = Split-Path $priorSettings.tasks_dir }
+    if (-not $PSBoundParameters.ContainsKey('Name')) { $Name = $priorSettings.computer_name }
+    if (-not $PSBoundParameters.ContainsKey('FullAccess')) { $FullAccess = $priorSettings.sandbox -eq 'danger-full-access' }
+    if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = $priorSettings.port }
+    if (-not $PSBoundParameters.ContainsKey('TailscalePort')) { $TailscalePort = $priorSettings.tailscale_port }
+    if (-not $PSBoundParameters.ContainsKey('LocalOnly')) { $LocalOnly = $priorSettings.local_only }
+    if (-not $PSBoundParameters.ContainsKey('LanAddress')) { $LanAddress = $priorSettings.lan_address }
+}
 $tasksLeaf = if ($priorSettings -and $priorSettings.codex_app_folders.other) { $priorSettings.codex_app_folders.other } else { T 'AgentFleet-其他' 'AgentFleet-Other' }
 if ($tasksLeaf -in @('.', '..') -or $tasksLeaf.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { throw 'The task project name must be a valid directory name.' }
 if ($priorSettings -and $priorSettings.tasks_dir -and (Split-Path -Leaf $priorSettings.tasks_dir) -cne $tasksLeaf) { throw 'Task directory name must match the configured project name; automatic migration is not supported.' }
 $tasksDir = Join-Path $Workspace $tasksLeaf
-if (-not $PSBoundParameters.ContainsKey('MainAgentName')) {
-    $MainAgentName = $(if ($priorSettings -and $priorSettings.main_agent_name) { $priorSettings.main_agent_name } else { T '主agent export' 'Main agent' })
-}
+$setupBound = $PSBoundParameters
+. (Join-Path $PSScriptRoot 'worker\resolve-engines.ps1')
+if ($Plan) { [ordered]@{engine=$Engine;engines=$engineList;main_agent_name=$MainAgentName;main_agents=$mainAgents;workspace=$Workspace} | ConvertTo-Json -Depth 6; return }
+
 # A rerun (e.g. after a plugin update) keeps the management name and description unless new ones are given.
 $priorConnection = Join-Path $DataDir 'connection.json'
 if ((Test-Path -LiteralPath $priorConnection) -and -not ($PSBoundParameters.ContainsKey('ManagerName') -and $PSBoundParameters.ContainsKey('Description'))) {
@@ -48,13 +62,6 @@ if ((Test-Path -LiteralPath $priorConnection) -and -not ($PSBoundParameters.Cont
     if (-not $PSBoundParameters.ContainsKey('Description') -and $priorInfo.description) { $Description = $priorInfo.description }
 }
 $ManagerName = $ManagerName.Trim()
-# The main agent's permanent id: the orchestrator maps to it, so renaming the main agent or changing its
-# management name never breaks the link. Reused from the service's own record, then from the old config.
-$MainAgentId = ''
-$savedProfile = Join-Path $DataDir 'state\profile.json'
-if (Test-Path -LiteralPath $savedProfile) { $MainAgentId = (Get-Content -Encoding UTF8 -LiteralPath $savedProfile -Raw | ConvertFrom-Json).main_agent_id }
-if (-not $MainAgentId -and $priorSettings) { $MainAgentId = $priorSettings.main_agent_id }
-if (-not $MainAgentId) { $MainAgentId = [guid]::NewGuid().ToString() }
 if ($ManagerName.Length -gt 100 -or $ManagerName -match '[\x00-\x1f\x7f]') { throw 'ManagerName must contain at most 100 printable characters.' }
 $MainAgentName = $MainAgentName.Trim()
 if ($MainAgentName.Length -lt 1 -or $MainAgentName.Length -gt 100 -or $MainAgentName -match '[\x00-\x1f\x7f]' -or $MainAgentName.StartsWith('--') -or $MainAgentName -in @('__proto__','constructor','prototype')) { throw 'Main agent name must contain 1 to 100 printable characters, without a leading --.' }
@@ -88,14 +95,14 @@ if (-not $SkipPrerequisites) {
     $hasPython = (Have 'py') -or (Have 'python')
     if (-not $hasPython) { Winget-Install 'Python.Python.3.12' }
     if (-not $LocalOnly -and -not (Test-Path $tailscale)) { Winget-Install 'Tailscale.Tailscale' }
-    if ($Engine -eq 'claude' -and -not (Have 'git')) { Winget-Install 'Git.Git' }
+    if ('claude' -in $engineList -and -not (Have 'git')) { Winget-Install 'Git.Git' }
 }
 if (-not (Have 'node')) { throw (T '找不到 Node.js' 'Node.js not found') }
 
 # 2. Agent CLI
 $nodeExe = (Get-Command node).Source
 $codexJs = $null
-if ($Engine -eq 'codex') {
+if ('codex' -in $engineList) {
 Step (T "安装 Codex 命令行 $CodexVersion" "Installing the Codex CLI $CodexVersion")
 $npmRoot = (& npm root -g).Trim()
 $codexJs = Join-Path $npmRoot '@openai\codex\bin\codex.js'
@@ -113,7 +120,8 @@ try {
     $loginExitCode = $LASTEXITCODE
 } finally { $ErrorActionPreference = $loginErrorPreference }
 if ($loginExitCode -ne 0) { $warnings.Add((T 'Codex 还没有登录：运行 codex login 用你的 ChatGPT 账号登录，否则任务会失败。' 'Codex is not signed in: run codex login with your ChatGPT account, or tasks will fail.')) }
-} else {
+}
+if ('claude' -in $engineList) {
     Step (T '准备 Claude Code 命令行' 'Preparing the Claude Code CLI')
     if (-not $ClaudeExecutable) {
         $nativeClaude = Get-Command claude.exe -ErrorAction SilentlyContinue
@@ -180,14 +188,17 @@ if (-not $LocalOnly -and (Test-Path $tailscale)) {
 if (-not $LocalOnly -and -not $tsName) { $warnings.Add((T 'Tailscale 还没有登录：登录后重新运行本脚本，其他电脑才能连到这台。' 'Tailscale is not signed in: sign in, then rerun this script so other computers can reach this one.')) }
 
 # 6. This computer's main agent
+foreach ($main in $mainAgents) {
+$Engine = $main.engine
+$MainAgentName = $main.name
 Step (T "创建主 Agent：$MainAgentName" "Creating the main agent: $MainAgentName")
-$mainWorkspace = Join-Path $Workspace 'main-agent'
+$mainWorkspace = $main.workspace
 New-Item -ItemType Directory -Force -Path (Join-Path $mainWorkspace '.codex') | Out-Null
 $agentsFile = Join-Path $mainWorkspace 'AGENTS.md'
 if (-not (Test-Path $agentsFile)) {
     $template = [System.IO.File]::ReadAllText((Join-Path $worker (T 'templates\main-agent\AGENTS.md' 'templates\main-agent\AGENTS.en.md')))
     $permissionNote = if ($FullAccess) { T '子任务以完整权限运行，可操作桌面、浏览器和其他应用；所有权限请求自动批准。' 'Sub-tasks run with full access and can operate the desktop, browsers and other apps; every permission request is approved automatically.' } elseif ($Engine -eq 'claude') { T '子任务使用 Claude Code restricted 模式：文件工具限于工作目录和 shared 文件夹，命令执行关闭；这不是操作系统级沙箱。' 'Sub-tasks use Claude Code restricted mode: file tools are limited to the working folder and the shared folder, and command execution is off. This is not an OS-level sandbox.' } else { T '子任务使用 Codex workspace-write 沙箱，不自动批准额外权限。' 'Sub-tasks use the Codex workspace-write sandbox; extra permissions are not approved automatically.' }
-    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace).Replace('{{TASKS_DIR_NAME}}', $tasksLeaf).Replace('{{AGENT_ENGINE}}', $Engine).Replace('{{MAIN_AGENT_NAME}}', $MainAgentName).Replace('{{PERMISSION_NOTE}}', $permissionNote))
+    Write-Utf8 $agentsFile ($template.Replace('{{COMPUTER_NAME}}', $Name).Replace('{{WORKSPACE}}', $Workspace).Replace('{{TASKS_DIR_NAME}}', $tasksLeaf).Replace('{{AGENT_ENGINE}}', $Engine).Replace('{{MAIN_AGENT_NAME}}', $MainAgentName).Replace('{{MAIN_AGENT_WORKSPACE}}', $mainWorkspace).Replace('{{PERMISSION_NOTE}}', $permissionNote))
 }
 if (-not (Test-Path (Join-Path $mainWorkspace 'CLAUDE.md'))) { Copy-Item -LiteralPath $agentsFile -Destination (Join-Path $mainWorkspace 'CLAUDE.md') }
 if ($Engine -eq 'codex') {
@@ -211,6 +222,11 @@ if (-not $existing.Contains("[projects.'$trustKey']")) {
     [System.IO.File]::AppendAllText($codexConfig, "`n[projects.'$trustKey']`ntrust_level = `"trusted`"`n", (New-Object System.Text.UTF8Encoding $false))
 }
 }
+
+}
+$Engine = $engineList[0]
+$MainAgentName = $mainAgents[0].name
+$mainWorkspace = $mainAgents[0].workspace
 
 # Fixed rules for every sub-task; the user can edit this file any time, no restart needed.
 $rulesFile = Join-Path $Workspace 'worker-rules.md'
@@ -253,6 +269,8 @@ $config = [ordered]@{
     main_agent_workspaces = @($mainWorkspace)
     executor = $(if ($Engine -eq 'claude') { 'claude' } else { 'app-server' })
     engine = $Engine
+    engines = $engineList
+    main_agents = $mainAgents
     claude_executable = $ClaudeExecutable
     local_only = [bool]$LocalOnly
     sandbox = $(if ($FullAccess) { 'danger-full-access' } else { 'workspace-write' })
@@ -261,7 +279,7 @@ $config = [ordered]@{
     writer_wait_seconds = 10
     fork_when_busy = $true
 }
-if ($Engine -eq 'claude') { $config['claude_version'] = $claudeVersion }
+if ('claude' -in $engineList) { $config['claude_version'] = $claudeVersion }
 # Keep user-added options on repeated setup (including quota and display preferences).
 if (Test-Path $configPath) {
     $oldConfig = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -271,7 +289,7 @@ if (Test-Path $configPath) {
 }
 # Codex sessions go into two desktop-app sidebar folders: what the main agent opened, and what other agents
 # opened directly. Added once, so a user who changed or turned it off keeps that choice.
-if ($Engine -eq 'codex' -and -not $config.Contains('codex_app_folders')) {
+if ('codex' -in $engineList -and -not $config.Contains('codex_app_folders')) {
     $config['codex_app_folders'] = [ordered]@{ main = 'AgentFleet'; other = (T 'AgentFleet-其他' 'AgentFleet-Other') }
 }
 Write-Utf8 $configPath ($config | ConvertTo-Json -Depth 5)
@@ -297,6 +315,8 @@ if ($LASTEXITCODE -ne 0) { $warnings.Add((T '服务没有正常启动，看 stat
 $connection = [ordered]@{
     name = $Name
     engine = $Engine
+    engines = $engineList
+    main_agents = $mainAgents
     description = $Description
     local_url = "http://127.0.0.1:$Port/mcp"
     tailscale_url = $remoteUrl
@@ -310,7 +330,7 @@ $connection = [ordered]@{
     dashboard = $(if ($tsName) { "http://${tsName}:$TailscalePort/dashboard" } elseif ($LanAddress) { "http://${LanAddress}:$Port/dashboard" } else { "http://127.0.0.1:$Port/dashboard" })
 }
 $connectionFile = Join-Path $DataDir 'connection.json'
-Write-Utf8 $connectionFile ($connection | ConvertTo-Json)
+Write-Utf8 $connectionFile ($connection | ConvertTo-Json -Depth 6)
 
 Write-Host ''
 Write-Host (T "完成：$Name 已接入。" "Done: $Name is connected.") -ForegroundColor Green

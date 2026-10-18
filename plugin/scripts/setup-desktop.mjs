@@ -19,6 +19,17 @@ const stateReader = runtime => runtime.readState || (() => {
 
 // Both projects are registered through the app's public workspace entry point.
 export async function ensureDesktopProjects({ workspace, workerConfig, disabled = false }, runtime = {}) {
+  if (workerConfig) workerConfig = { ...workerConfig,
+    engine: workerConfig.engines?.[0] || workerConfig.engine || (workerConfig.executor === 'claude' ? 'claude' : 'codex') };
+  if (workerConfig?.engines?.length > 1) {
+    const projects = {};
+    for (const engine of workerConfig.engines) {
+      const result = await ensureDesktopProjects({ workspace, disabled, workerConfig: { ...workerConfig, engines: [engine], engine } }, runtime);
+      projects[engine] = result;
+    }
+    const incomplete = Object.values(projects).find(p => !['registered', 'automatic'].includes(p.status));
+    return { status: incomplete?.status || 'registered', projects };
+  }
   const folders = workerConfig?.codex_app_folders;
   const otherEnabled = !!folders && workerConfig.codex_app_register_other_project !== false &&
     workerConfig.engine !== 'claude' && !disabled;
@@ -111,14 +122,18 @@ async function openClaudeFolder(workspace, platform, runtime) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  let workspace, disabled = false, engine = 'codex';
+  let workspace, configPath, disabled = false, engine = 'codex';
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--no-desktop') disabled = true;
     else if (args[i] === '--workspace' && args[i+1] && !args[i+1].startsWith('--')) workspace = args[++i];
+    else if (args[i] === '--config' && args[i+1]) configPath = args[++i];
     else if (args[i] === '--engine' && ['codex', 'claude'].includes(args[i+1])) engine = args[++i];
     else throw new Error('Usage: node setup-desktop.mjs --workspace PATH [--engine codex|claude] [--no-desktop]');
   }
   if (!workspace && !disabled) throw new Error('--workspace is required');
-  try { console.log(JSON.stringify(await ensureDesktopProject({ workspace, disabled, engine }), null, 2)); }
+  try {
+    const result = configPath ? await ensureDesktopProjects({ workspace, disabled, workerConfig: JSON.parse(readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '')) }) : await ensureDesktopProject({ workspace, disabled, engine });
+    console.log(JSON.stringify(result, null, 2));
+  }
   catch { console.error('Desktop project setup failed. Worker data and sessions are preserved.'); process.exitCode = 1; }
 }

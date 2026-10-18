@@ -13,6 +13,178 @@ from unittest.mock import patch
 from server import TaskManager
 
 
+class DualEngineTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.mains = [{'name': name, 'engine': engine, 'id': engine + '-identity',
+                       'workspace': str(self.root / ('main-' + engine))}
+                      for engine, name in [('codex', '主agent export'), ('claude', 'Claude主agent')]]
+        self.config = {'state_dir': str(self.root / 'state'), 'tasks_dir': str(self.root / 'other'),
+                       'allowed_roots': [str(self.root)], 'engines': ['codex', 'claude'], 'main_agents': self.mains,
+                       'main_agent_name': self.mains[0]['name'], 'main_agent_id': self.mains[0]['id']}
+        self.manager = TaskManager(self.config)
+        self.manager.removed = lambda job: False
+
+    async def asyncTearDown(self):
+        await self.manager.shutdown()
+        self.temp.cleanup()
+
+    def submit(self, **kwargs):
+        return self.manager.get(self.manager.submit('fixture', None, 10, None, **kwargs)['task_id'])
+
+    async def until(self, condition):
+        async with asyncio.timeout(5):
+            while not condition():
+                await asyncio.sleep(.01)
+
+    def loops(self):
+        self.manager.workers = {e: asyncio.create_task(self.manager.work(e)) for e in self.manager.engines}
+
+    async def test_routing_by_name_identity_workspace_and_registered_main(self):
+        for key in ('name', 'id'):
+            main = self.submit(name=self.mains[1][key])
+            self.assertEqual((main['engine'], main['workspace'], main['name']),
+                             ('claude', self.mains[1]['workspace'], self.mains[1]['name']))
+            self.assertFalse(self.manager.is_worker(main))
+            self.assertEqual(self.manager.sidebar_side(main), 'main')
+            main.update(status='completed')
+        routed = self.manager.submit('fixture', self.mains[1]['workspace'], 10, None)
+        self.assertEqual(routed['engine'], 'claude')
+        self.manager.register_agent('alias', 'fixture', agent_type='main')
+        self.manager.profile['agents']['alias']['engine'] = 'claude'
+        self.manager.get(routed['task_id'])['status'] = 'completed'
+        # A main registration carries its engine even if it has another management name.
+        self.assertEqual(self.submit(name='alias')['engine'], 'claude')
+
+    async def test_explicit_parent_and_resume_engine(self):
+        self.assertEqual(self.submit()['engine'], 'codex')
+        self.assertEqual(self.submit(engine='claude')['engine'], 'claude')
+        with self.assertRaises(ValueError):
+            self.submit(engine='invalid')
+        main = self.submit(name=self.mains[1]['name'])
+        main.update(status='running', thread_id='parent-thread')
+        child = self.submit(parent_task_id=main['task_id'])
+        self.assertEqual(child['engine'], 'claude')
+        self.assertEqual(self.manager.sidebar_side(child), 'main')
+        child.update(status='completed', thread_id='child-thread')
+        resumed = self.submit(resume_task_id=child['task_id'])
+        self.assertEqual(resumed['engine'], 'claude')
+        with self.assertRaises(ValueError):
+            self.submit(resume_task_id=child['task_id'], engine='codex')
+
+    async def test_parallel_engines_serialize_their_own_queue(self):
+        active, maximum, started = {}, {}, []
+        releases = {e: asyncio.Semaphore(0) for e in self.manager.engines}
+
+        async def run(job):
+            engine = job['engine']
+            active[engine] = active.get(engine, 0) + 1
+            maximum[engine] = max(maximum.get(engine, 0), active[engine])
+            started.append(job['task_id'])
+            job['status'] = 'running'
+            await releases[engine].acquire()
+            active[engine] -= 1
+            job['status'] = 'completed'
+
+        self.manager.run_job = run
+        jobs = {e: [self.submit(engine=e) for _ in range(2)] for e in self.manager.engines}
+        self.loops()
+        await self.until(lambda: len(started) == 2)
+        self.assertEqual(active, {'codex': 1, 'claude': 1})
+        self.assertEqual({j['task_id'] for rows in jobs.values() for j in rows if j['status'] == 'queued'},
+                         {rows[1]['task_id'] for rows in jobs.values()})
+        releases['codex'].release()
+        await self.until(lambda: len(started) == 3)
+        self.assertEqual(jobs['claude'][1]['status'], 'queued')
+        for engine in self.manager.engines:
+            for _ in range(2):
+                releases[engine].release()
+        await asyncio.gather(*(q.join() for q in self.manager.queues.values()))
+        self.assertEqual(maximum, {'codex': 1, 'claude': 1})
+
+    async def test_quota_pauses_and_recovers_each_engine_independently(self):
+        from server import QuotaExhausted
+        blocked = {'codex', 'claude'}
+
+        async def run(job):
+            if job['engine'] in blocked:
+                raise QuotaExhausted(['fixture'], time.time() + 60, engine=job['engine'].title())
+            self.manager.quota_recovered(job, job['engine'].title())
+            job['status'] = 'completed'
+
+        self.manager.run_job = run
+        jobs = {e: [self.submit(engine=e) for _ in range(2)] for e in self.manager.engines}
+        self.loops()
+        await self.until(lambda: len(self.manager.quota_waits) == 2)
+        self.assertEqual(set(self.manager.quota_wait['engines']), {'codex', 'claude'})
+        for engine, still_paused in [('codex', 'claude'), ('claude', None)]:
+            blocked.remove(engine)
+            self.manager.quota_wakes[engine].set()
+            await asyncio.wait_for(self.manager.queues[engine].join(), 5)
+            self.assertTrue(all(j['status'] == 'completed' for j in jobs[engine]))
+            if still_paused:
+                self.assertEqual(self.manager.quota_wait['engine'], still_paused)
+                self.assertTrue(all(j['status'] == 'queued' for j in jobs[still_paused]))
+        self.assertIsNone(self.manager.quota_wait)
+        self.assertFalse(self.manager.quota_paused)
+
+    async def test_profile_pairing_and_permanent_ids(self):
+        async def machine(refresh):
+            return {'hostname': 'fixture'}
+        self.manager.machine_info = machine
+        profile = await self.manager.full_profile()
+        self.assertEqual(profile['engines'], ['codex', 'claude'])
+        self.assertEqual([m['id'] for m in profile['main_agents']], [m['id'] for m in self.mains])
+        self.assertEqual(profile['main_agent'], profile['main_agents'][0])
+        token = self.root / 'fixture-token.txt'
+        token.write_text('fixture-only-' * 4, encoding='utf-8')
+        self.manager.config['token_file'] = str(token)
+        code = self.manager.start_pairing()['code']
+        claimed = self.manager.claim_pairing(code)
+        self.assertEqual(claimed['main_agents'], profile['main_agents'])
+        self.assertEqual(claimed['engines'], profile['engines'])
+        self.assertIsNone(self.manager.claim_pairing(code))
+        changed = [{**m, 'id': 'different-' + m['engine']} for m in self.mains]
+        restarted = TaskManager({**self.config, 'main_agents': changed})
+        self.assertEqual([m['id'] for m in restarted.mains], [m['id'] for m in self.mains])
+
+    async def test_submit_tool_exposes_explicit_engine_and_rejects_disabled_engine(self):
+        import server
+        from mcp.server.fastmcp.exceptions import ToolError
+        created = []
+        class Recording(server.FastMCP):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                created.append(self)
+        token = self.root/'fixture-token.txt'
+        token.write_text('fixture-only-' * 4, encoding='utf-8')
+        with patch('server.FastMCP', Recording):
+            _, self.manager = server.build_app({**self.config, 'token_file': str(token), 'allowed_hosts': []})
+        await created[0].call_tool('submit_task', {'prompt': 'fixture', 'engine': 'claude'})
+        self.assertEqual(next(iter(self.manager.jobs.values()))['engine'], 'claude')
+        with self.assertRaises(ToolError):
+            await created[0].call_tool('submit_task', {'prompt': 'fixture', 'engine': 'unknown'})
+        self.assertEqual(len(self.manager.jobs), 1)
+
+    async def test_second_main_rename_preserves_profile_identity_workspace_and_resume(self):
+        job = self.submit(name=self.mains[1]['name'])
+        job.update(status='completed', thread_id='fixture-claude-session')
+        self.manager.save(job)
+        self.manager.profile['agents']['Claude主agent']['can_dispatch'] = False
+        self.manager.register_agent('Claude renamed', 'setup registered the new name before the busy restart', agent_type='main')
+        renamed = [{**m, 'name': 'Claude renamed' if m['engine'] == 'claude' else m['name']} for m in self.mains]
+        restarted = TaskManager({**self.config, 'main_agents': renamed})
+        restarted.removed = lambda job: False
+        self.assertNotIn('Claude主agent', restarted.profile['agents'])
+        self.assertEqual(restarted.profile['agents']['Claude renamed']['engine'], 'claude')
+        self.assertFalse(restarted.profile['agents']['Claude renamed']['can_dispatch'])
+        followup = restarted.submit('fixture', None, 10, None, resume_task_id=job['task_id'])
+        self.assertEqual((followup['name'], followup['engine'], followup['workspace']),
+                         ('Claude renamed', 'claude', self.mains[1]['workspace']))
+        self.assertEqual(restarted.mains[1]['id'], self.mains[1]['id'])
+
+
 class DispatcherTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()

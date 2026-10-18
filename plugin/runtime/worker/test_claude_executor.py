@@ -36,6 +36,33 @@ if prompt != 'no-result':
 '''
 
 
+class DualMainCommandTests(unittest.TestCase):
+    def test_second_main_has_dispatcher_access_own_name_and_claude_desktop_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            token = root/'fixture-token.txt'
+            token.write_text('fixture-only-' * 4, encoding='utf-8')
+            mains = [{'name': name, 'engine': engine, 'id': engine, 'workspace': str(root/('main-' + engine))}
+                     for engine, name in [('codex', 'Code owner'), ('claude', 'Claude owner')]]
+            manager = TaskManager({'state_dir': str(root/'state'), 'tasks_dir': str(root/'other'),
+                'allowed_roots': [str(root)], 'engines': ['codex', 'claude'], 'main_agents': mains,
+                'claude_executable': sys.executable, 'token_file': str(token)})
+            job = manager.get(manager.submit('fixture', None, 10, None, name='Claude owner')['task_id'])
+            (Path(job['workspace'])/'CLAUDE.md').write_text('fixture instructions', encoding='utf-8')
+            folder = manager.jobs_dir/job['task_id']
+            command = command_for(manager, job, folder)
+            self.assertEqual(job['engine'], 'claude')
+            self.assertEqual(Path(job['cwd']), root)
+            self.assertIn('mcp__codex_tasks__*', command)
+            self.assertIn('--restricted', command)
+            self.assertNotIn('--dangerously-skip-permissions', command)
+            prompt = command[command.index('--append-system-prompt') + 1]
+            self.assertIn('Claude owner', prompt)
+            self.assertNotIn('Code owner', prompt)
+            mcp = json.loads((folder/'claude-mcp.json').read_text(encoding='utf-8'))
+            self.assertEqual(mcp['mcpServers']['codex_tasks']['headers']['X-Agent-Fleet-Task'], job['task_id'])
+
+
 class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -159,8 +186,8 @@ class ClaudeExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('--dangerously-skip-permissions', full)
         self.assertNotIn('--restricted', full)
         self.config['executor'] = 'app-server'
-        with self.assertRaisesRegex(ValueError, 'different agent engine'):
-            self.manager.submit('wrong engine', None, 10, None, resume_task_id=job['task_id'])
+        continued = self.manager.submit('same session engine', None, 10, None, resume_task_id=job['task_id'])
+        self.assertEqual(continued['engine'], 'claude')
 
 
 if __name__ == '__main__':

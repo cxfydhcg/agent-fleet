@@ -48,7 +48,9 @@ async function waitingWorker(t) {
     }
     if (req.url === '/pair/claim' && JSON.parse(body).code === '1234-5678') {
       return send({ name: 'remote-pc', token: 'fixture-remote-token', main_agent_id: 'remote-main',
-        main_agent_name: 'Remote Main', engine: 'codex', lan_url: address, local_url: address });
+        main_agent_name: 'Remote Main', engine: 'codex', engines: ['codex', 'claude'],
+        main_agents: [{name: 'Remote Main', id: 'remote-main', engine: 'codex'},
+                      {name: 'Claude Main', id: 'remote-claude', engine: 'claude'}], lan_url: address, local_url: address });
     }
     res.writeHead(403); res.end('{}');
   });
@@ -99,6 +101,10 @@ test('completed orchestrator setup allows discovery and pairing without printing
   assert.equal(JSON.parse(result.stdout).main_agent_id, 'remote-main');
   assert.doesNotMatch(result.stdout + result.stderr, /fixture-remote-token/);
   assert.equal(readFileSync(join(f.home, 'tokens', 'remote-pc.txt'), 'utf8').trim(), 'fixture-remote-token');
+  const pc = JSON.parse(readFileSync(join(f.home, 'computers.json'), 'utf8')).computers['remote-pc'];
+  assert.deepEqual(pc.engines, ['codex', 'claude']);
+  assert.equal(pc.main_agents[1].id, 'remote-claude');
+  assert.equal(pc.agents['Claude Main'].engine, 'claude');
 });
 
 test('other sessions cannot use a configured management registry to pair', async t => {

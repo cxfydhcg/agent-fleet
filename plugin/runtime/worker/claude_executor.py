@@ -199,7 +199,7 @@ def command_for(manager, job, folder):
         if instructions.is_file():
             note = ('\nRuntime facts: this turn runs Claude Code. Permission profile: ' +
                     ('full access' if '--dangerously-skip-permissions' in command else 'restricted file tools; no shell or code execution') +
-                    '. Current main agent name: ' + json.dumps(manager.config.get('main_agent_name') or job.get('name'), ensure_ascii=False) +
+                    '. Current main agent name: ' + json.dumps(job.get('name'), ensure_ascii=False) +
                     '. These current settings override any older name/engine/permission description in preserved workspace instructions.')
             command += ['--append-system-prompt', instructions.read_text(encoding='utf-8-sig') + note + folder_note(job)]
         elif folder_note(job):

@@ -10,7 +10,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const values = new Map();
 const flags = new Set();
 const booleans = new Set(['plan', 'local', 'full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'no-desktop', 'desktop-only']);
-const valued = new Set(['role', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
+const valued = new Set(['role', 'engine', 'engines', 'second-main-agent-name', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'language', 'description',
   'codex-executable', 'connection', 'registry-home', 'claude-executable', 'port', 'tailscale-port', 'lan-address', 'session']);
 const argv = process.argv.slice(2);
 
@@ -43,7 +43,8 @@ if (flags.has('desktop-only')) {
   if (flags.has('plan')) {
     console.log(JSON.stringify({ role, plan: true, desktop_only: true, workspace,
       other_workspace: config.codex_app_folders && config.codex_app_register_other_project !== false &&
-        config.executor !== 'claude' && config.engine !== 'claude' ? config.tasks_dir : null }, null, 2));
+        (config.engines ? config.engines.includes('codex') : config.executor !== 'claude' && config.engine !== 'claude') ? config.tasks_dir : null,
+      engines: config.engines || [config.executor === 'claude' ? 'claude' : 'codex'], main_agents: config.main_agents || [] }, null, 2));
   } else {
     const desktop = await ensureDesktopProjects({ workspace, workerConfig: config, disabled: flags.has('no-desktop') });
     console.log(JSON.stringify({ role, desktop_only: true,
@@ -56,7 +57,8 @@ if (values.has('connectivity') && !['local', 'tailscale', 'lan'].includes(values
 if (values.has('lan-address') && values.get('connectivity') !== 'lan') fail('--lan-address requires --connectivity lan.');
 if (values.has('language') && !['zh', 'en'].includes(values.get('language'))) fail('Language must be zh or en.');
 if (role === 'worker' && (values.has('connection') || values.has('registry-home') || flags.has('local'))) fail('Connection/registry options require orchestrator or both.');
-const workerOptions = ['engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'];
+if (values.has('engines') && (values.has('engine') || !/^(codex|claude)(,(codex|claude))?$/.test(values.get('engines')) || new Set(values.get('engines').split(',')).size !== values.get('engines').split(',').length)) fail('请选择不同的引擎，且不要同时指定 --engine。 / Choose distinct engines; do not combine --engine and --engines.');
+const workerOptions = ['engines', 'second-main-agent-name', 'engine', 'connectivity', 'workspace', 'data-dir', 'name', 'main-agent-name', 'manager-name', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'];
 if (role === 'orchestrator' && (workerOptions.some(k => values.has(k)) || ['full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure'].some(k => flags.has(k)))) fail('Worker options require worker or both.');
 // A worker's permissions are never left to a default: whoever runs setup must ask the owner and pass the choice.
 if (flags.has('full-access') && flags.has('restricted')) fail('Pass either --full-access or --restricted, not both.');
@@ -107,7 +109,7 @@ function setupMacWorker() {
   const previous = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '')) : null;
   const workspace = resolve(values.get('workspace') || (previous?.tasks_dir ? dirname(previous.tasks_dir) : join(homedir(), 'Documents', 'AgentFleet')));
   const args = ['--data-dir', dataDir, '--workspace', workspace, '--json'];
-  for (const key of ['engine', 'connectivity', 'name', 'main-agent-name', 'manager-name', 'language', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'])
+  for (const key of ['engine', 'engines', 'second-main-agent-name', 'connectivity', 'name', 'main-agent-name', 'manager-name', 'language', 'description', 'claude-executable', 'codex-executable', 'port', 'tailscale-port', 'lan-address'])
     if (values.has(key)) args.push('--' + key, values.get(key));
   for (const key of ['full-access', 'restricted', 'skip-prerequisites', 'no-autostart', 'reconfigure', 'plan']) if (flags.has(key)) args.push('--' + key);
   if (flags.has('plan')) return lastObject(run('bash', [join(root, 'runtime', 'install-worker.sh'), ...args]));
@@ -116,15 +118,18 @@ function setupMacWorker() {
   cpSync(join(root, 'runtime', 'worker'), join(deployment, 'worker'), { recursive: true, force: true });
   for (const file of ['install-worker.sh', 'LICENSE']) cpSync(join(root, 'runtime', file), join(deployment, file), { force: true });
   // The worker reports this as its version (/health, profile), as on Windows.
-  writeFileSync(join(deployment, 'plugin-version.txt'), JSON.parse(readFileSync(join(root, 'plugin.json'), 'utf8')).version);
+  const version = JSON.parse(readFileSync(join(root, 'plugin.json'), 'utf8')).version;
+  writeFileSync(join(deployment, 'plugin-version.txt'), version);
   const result = lastObject(run('bash', [join(deployment, 'install-worker.sh'), ...args]));
   const clientHome = join(dataDir, 'local-client');
   const env = { ...process.env, AGENT_FLEET_HOME: clientHome };
   const client = join(root, 'scripts', 'fleet.mjs');
   run(process.execPath, [client, 'add-computer', result.connection_file, '--local=1'], env);
   if (result.status === 'service-ready') {
-    run(process.execPath, [client, 'describe-agent', result.computer, result.main_agent_name,
-      result.language === 'en' ? '--role=Main agent responsible for this worker' : '--role=负责这台电脑的主 Agent', '--type=main'], env);
+    for (const main of result.main_agents ?? [{name: result.main_agent_name}]) {
+      run(process.execPath, [client, 'describe-agent', result.computer, main.name,
+        result.language === 'en' ? '--role=Main agent responsible for this worker' : '--role=负责这台电脑的主 Agent', '--type=main'], env);
+    }
   }
   return { ...result, data_dir: dataDir, client_home: clientHome };
 }
@@ -136,7 +141,7 @@ if (role !== 'orchestrator' && process.platform === 'darwin') {
   // The worker's data always goes to the real AppData\Local, never to an app's private storage.
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/setup-worker.ps1'), '-NoDesktop',
     ...(values.has('data-dir') ? [] : ['-DataDir', windowsDataDir()])];
-  const mappings = { engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
+  const mappings = { engines: 'Engines', 'second-main-agent-name': 'SecondMainAgentName', engine: 'Engine', connectivity: 'Connectivity', workspace: 'Workspace', 'data-dir': 'DataDir',
     name: 'Name', 'main-agent-name': 'MainAgentName', 'manager-name': 'ManagerName', language: 'Language', description: 'Description', 'claude-executable': 'ClaudeExecutable', port: 'Port', 'tailscale-port': 'TailscalePort', 'lan-address': 'LanAddress' };
   for (const [key, parameter] of Object.entries(mappings)) if (values.has(key)) args.push('-' + parameter, values.get(key));
   const switches = { plan: 'Plan', 'full-access': 'FullAccess', restricted: 'Restricted', 'skip-prerequisites': 'SkipPrerequisites', 'no-autostart': 'NoAutostart', reconfigure: 'Reconfigure' };
