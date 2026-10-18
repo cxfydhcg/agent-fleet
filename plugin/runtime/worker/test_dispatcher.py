@@ -680,9 +680,39 @@ class AppServerDispatcherTests(DispatcherTests):
         self.assertEqual([(e['kind'], e.get('text')) for e in entries if e['kind'] != 'tool'],
                          [('user', '第一问'), ('agent', '第一答'), ('fork', entries[2]['text']), ('user', '第二问')])
         self.assertEqual(entries[-1]['kind'], 'tool')
-        self.assertIn('submit_task', entries[-1]['text'])
+        self.assertIn('submit_task', entries[-1]['input'])
         with self.assertRaises(ValueError):
             self.manager.transcript('someone-elses-chat')
+
+    async def test_transcript_tool_calls_carry_their_input_and_output(self):
+        home = self.root / 'codex-home'
+        day = home / 'sessions' / '2026' / '10' / '18'
+        day.mkdir(parents=True)
+        self.manager.config['codex_home'] = str(home)
+        def command(cmd, output, code):
+            return json.dumps({'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution', 'command': cmd, 'aggregated_output': output, 'exit_code': code, 'status': 'completed'}}})
+        (day / 'rollout-x-cx-thread.jsonl').write_text('\n'.join([
+            command(['/bin/zsh', '-lc', 'pwd'], '/work\n', 0), command(['git', 'push'], 'rejected', 1)]), encoding='utf-8')
+        self.manager.jobs['cx'] = {'task_id': 'cx', 'thread_id': 'cx-thread', 'created_at': '1', 'status': 'completed'}
+        shell, push = self.manager.transcript('cx-thread')
+        self.assertEqual((shell['type'], shell['input'], shell['output'], shell['error']), ('CommandExecution', 'pwd', '/work\n', False))
+        self.assertEqual((push['input'], push['error']), ('git push', True))
+        # Claude: a tool result arrives in the next user message and is matched to its call by id.
+        self.manager.jobs['cl'] = {'task_id': 'cl', 'thread_id': 'cl-thread', 'engine': 'claude', 'prompt': 'list files',
+                                   'created_at': '2', 'started_at': '3', 'finished_at': '4', 'status': 'completed'}
+        folder = self.manager.jobs_dir / 'cl'
+        folder.mkdir(parents=True)
+        (folder / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in [
+            {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': 'tu1', 'name': 'Bash', 'input': {'command': 'ls'}}]}},
+            {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tu1', 'is_error': False,
+                                                      'content': [{'type': 'text', 'text': 'a.txt'}]}]}},
+            {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': '**one** file'}]}},
+            {'type': 'result', 'result': '**one** file'}]), encoding='utf-8')
+        user, tool, reply = self.manager.transcript('cl-thread')
+        self.assertEqual((user['kind'], reply['kind'], reply['text']), ('user', 'agent', '**one** file'))
+        self.assertEqual((tool['type'], json.loads(tool['input']), tool['output'], tool['error']), ('Bash', {'command': 'ls'}, 'a.txt', False))
+
 
     async def test_full_access_asks_and_auto_approves(self):
         self.manager.config.update(auto_approve=True, sandbox='danger-full-access')
@@ -1391,6 +1421,18 @@ class PairingTests(unittest.TestCase):
         self.assertEqual((claimed['name'], claimed['token'], claimed['main_agent_id']), ('win-pc', 's' * 40, self.manager.profile['main_agent_id']))
         self.assertEqual(self.client.post('/pair/claim', json={'code': started['code']}).status_code, 404)  # used once
         self.assertEqual(self.client.get('/pair/info').status_code, 404)
+
+    def test_task_board_files_sessions_into_the_sidebar_folders(self):
+        ws = Path(self.manager.root).parent
+        job = lambda task_id, workspace, **extra: {'task_id': task_id, 'workspace': str(workspace), 'created_at': task_id,
+                                                   'status': 'completed', 'name': task_id, **extra}
+        self.manager.jobs.update({j['task_id']: j for j in [
+            job('1-main', ws / 'main-agent'),
+            job('2-child', self.manager.root / 'child', parent_task_id='1-main'),  # opened by the main agent
+            job('3-direct', self.manager.root / 'direct')]})                       # opened directly by someone else
+        board = self.client.get('/api/tasks', headers=self.auth).json()
+        self.assertEqual(board['folders'], {'main': 'ws', 'other': 'tasks'})
+        self.assertEqual({t['task_id']: t['folder'] for t in board['tasks']}, {'1-main': 'main', '2-child': 'main', '3-direct': 'other'})
 
     def test_wrong_codes_and_time_close_the_window(self):
         import server
