@@ -27,6 +27,16 @@ def pid_alive(pid):
     return True
 
 
+def service_env(config, environ=None, posix=os.name != 'nt'):
+    env = dict(os.environ if environ is None else environ)
+    if posix:
+        # launchd jobs and login items start with a minimal PATH (/usr/bin:/bin:...). The Codex and Claude CLIs are
+        # often Node scripts from Homebrew or npm, so put back the directories setup found them in.
+        extra = list(config.get('service_path') or []) + ['/opt/homebrew/bin', '/usr/local/bin', str(Path.home() / '.local' / 'bin')]
+        env['PATH'] = ':'.join(dict.fromkeys(p for p in env.get('PATH', '').split(':') + extra if p))
+    return env
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True, type=Path)
@@ -46,7 +56,8 @@ def main():
         # Detached from the caller: no console window on Windows, its own session elsewhere, so closing the
         # terminal (or a login script exiting) does not stop the service.
         detach = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session': True}
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, close_fds=True, **detach)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, close_fds=True,
+                                   env=service_env(config), **detach)
     print(process.pid)
 
 

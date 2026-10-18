@@ -274,7 +274,9 @@ class Setup:
             'computer_name': self.name, 'main_agent_name': self.main_name, 'main_agent_id': main_id, 'language': self.language,
             'port': self.port, 'tailscale_port': self.tailscale_port, 'remote_url': self.remote_url,
             'bind_host': '0.0.0.0' if self.lan_address else '127.0.0.1', 'lan_address': self.lan_address, 'lan_url': self.lan_url,
-            'python_executable': str(self.python), 'codex_executable': self.codex, 'codex_launcher_executable': self.codex,
+            'python_executable': str(self.python), 'codex_executable': self.codex,
+            # Where node and the CLIs live: the service may later start from launchd with a minimal PATH.
+            'service_path': list(dict.fromkeys(str(Path(p).parent) for p in (shutil.which('node'), shutil.which('codex'), shutil.which('claude')) if p)), 'codex_launcher_executable': self.codex,
             'codex_launcher_args': [], 'codex_version': self.args.codex_version if self.engine == 'codex' else None,
             'tailscale_executable': self.tailscale_executable, 'state_dir': str(self.data / 'state'),
             'token_file': str(self.token_file), 'worker_rules_file': str(self.workspace / 'worker-rules.md'),

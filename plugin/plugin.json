@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-fleet",
-  "version": "0.6.20",
+  "version": "0.6.21",
   "description": "Set up this computer as an orchestrator, worker, or both in Codex or Claude Code.",
   "extensions": {
     "com.openai": {

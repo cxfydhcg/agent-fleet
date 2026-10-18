@@ -1208,6 +1208,21 @@ class OutputFileTests(unittest.TestCase):
 
 
 
+class ServiceEnvTests(unittest.TestCase):
+    def test_minimal_launchd_path_gets_the_cli_directories_back(self):
+        import start_service
+        env = start_service.service_env({'service_path': ['/Users/me/.nvm/bin']}, {'PATH': '/usr/bin:/bin'}, posix=True)
+        parts = env['PATH'].split(':')
+        self.assertEqual(parts[:2], ['/usr/bin', '/bin'])
+        self.assertIn('/Users/me/.nvm/bin', parts)
+        self.assertIn('/opt/homebrew/bin', parts)
+        self.assertEqual(len(parts), len(set(parts)))
+
+    def test_windows_environment_is_unchanged(self):
+        import start_service
+        self.assertEqual(start_service.service_env({}, {'PATH': r'C:\bin'}, posix=False), {'PATH': r'C:\bin'})
+
+
 class RestartWhenIdleTests(unittest.IsolatedAsyncioTestCase):
     """Setup run while busy leaves a marker; the service restarts itself only once its queue is empty."""
 
