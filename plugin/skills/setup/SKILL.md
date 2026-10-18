@@ -10,6 +10,17 @@ start a worker. Resolve its root from this skill's directory (`../..`), or use
 `${CLAUDE_PLUGIN_ROOT}` in Claude Code. All setup goes through the bundled
 `scripts/setup.mjs`; do not depend on a checkout outside the plugin.
 
+## How to ask
+
+Every setup choice (language, role, permission mode, connectivity) is a multiple-choice question. When
+the app offers a choice tool, ask through it so the user clicks an option instead of typing: in Claude
+Code that is `AskUserQuestion`; in Codex, its question tool (such as `request_user_input`) when available. One question per
+decision, each option a short label with a one-line description, the recommended option first and
+marked "(推荐)" or "(Recommended)". The tool adds a free-text "Other" itself; don't add one. Once the
+language is known, role, permission mode and connectivity can go in one call as separate questions,
+asked only for the ones the request hasn't already settled. Without a choice tool, ask in plain text
+and list the same options. Never infer an answer the user hasn't given.
+
 ## 1. Settle the language first
 
 Before anything else, decide the language, and use it for the whole setup conversation and as
@@ -19,7 +30,8 @@ Before anything else, decide the language, and use it for the whole setup conver
   picked in one short line and that they can switch. These instructions are in English; that is not a
   reason to answer in English.
 - If it is unclear (e.g. only a slash command or a button), ask this one question first, in both
-  languages: "中文还是 English？/ Chinese or English?" Ask nothing else until it is answered.
+  languages: "中文还是 English？/ Chinese or English?", as a choice with the options `中文` and
+  `English`. Ask nothing else until it is answered.
 - An existing worker keeps its language unless the user asks to change it (`--reconfigure`).
 
 The setting only decides fixed text people see (default session titles and folder names, the dashboard,
@@ -28,7 +40,7 @@ languages either way, and agents reply in the language a person writes to them i
 
 ## 2. Ask how this computer will be used
 
-If the request already says, use it. Otherwise ask in plain words, and don't
+If the request already says, use it. Otherwise ask, as a choice (see How to ask), and don't
 infer an answer merely because the plugin was installed:
 
 - **Control other agents** (orchestrator): this computer sends goals to agents
@@ -39,7 +51,7 @@ infer an answer merely because the plugin was installed:
   for fleet tasks.
 
 For **be controlled** or **both**, settle the permission mode in the same exchange, so the worker is
-installed with it rather than changed later. Unless the request already says, ask one plain question:
+installed with it rather than changed later. Unless the request already says, ask it as a choice:
 
 - **Full access** (`--full-access`): sub-tasks can operate the desktop, browsers and other apps
   (Computer Use), run any command, and every permission request is approved automatically. They can
@@ -62,7 +74,7 @@ scope (Windows: `winget install --id OpenJS.NodeJS.LTS --exact`), then refresh P
 Pass the language from step 1 as `--language zh|en` for every role.
 
 For a fresh **worker** or **both** setup, unless the user already chose connectivity, ask how this
-computer should be reachable and always show all three choices together:
+computer should be reachable, as a choice that always shows all three options together:
 
 - **Only this computer / 仅本机** (`local`, default): listen on loopback only; no other computer can connect.
 - **Trusted local network / 可信局域网** (`lan`): other computers on that network can connect; HTTP is unencrypted.
