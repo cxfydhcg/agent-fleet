@@ -11,6 +11,7 @@ export const projectForWorkspace = (state, workspace, platform = process.platfor
 };
 
 export const desktopWorkspaceUrl = workspace => 'codex://new?path=' + encodeURIComponent(workspace);
+export const claudeWorkspaceUrl = workspace => 'claude://code/new?folder=' + encodeURIComponent(workspace);
 
 const stateReader = runtime => runtime.readState || (() => {
   const path = join(runtime.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'), '.codex-global-state.json');
@@ -31,7 +32,7 @@ export async function ensureDesktopProjects({ workspace, workerConfig, disabled 
     if (directoryName !== expectedName)
       throw new Error('Task directory name must match the configured project name. / 任务目录名称必须与配置的项目名称一致。');
   }
-  const main = await ensureDesktopProject({ workspace, disabled }, runtime);
+  const main = await ensureDesktopProject({ workspace, disabled, engine: workerConfig?.engine }, runtime);
   const projects = { main };
   if (otherEnabled && ['registered', 'pending'].includes(main.status))
     projects.other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir }, runtime);
@@ -40,44 +41,49 @@ export async function ensureDesktopProjects({ workspace, workerConfig, disabled 
     ...(incomplete?.message ? { message: incomplete.message } : {}) };
 }
 
-export async function ensureDesktopProject({ workspace, disabled = false }, runtime = {}) {
+// Whether an app handles links with this scheme (Windows: a registered URL protocol).
+const appInstalled = (platform, scheme, probeUrl) => () => {
+  if (platform === 'darwin') return spawnSync('osascript', ['-l', 'JavaScript', '-e',
+    `ObjC.import("AppKit"); !!$.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString(${JSON.stringify(probeUrl)}))`],
+    { encoding: 'utf8', timeout: 10000 }).stdout.trim() === 'true';
+  const result = spawnSync('powershell', ['-NoProfile', '-Command',
+    `if (Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\\${scheme}') { exit 0 } else { exit 3 }`],
+    { windowsHide: true, encoding: 'utf8', timeout: 10000 });
+  if (result.error) throw result.error;
+  if (result.status !== 0 && result.status !== 3) throw new Error(`Could not check ${scheme} desktop availability.`);
+  return result.status === 0;
+};
+
+const appLauncher = (platform, appName) => url => {
+  if (platform === 'darwin') {
+    const opened = spawnSync('open', ['-g', url], { encoding: 'utf8', timeout: 15000 });
+    if (opened.error || opened.status !== 0) throw new Error(`Could not open the Agent Fleet project in ${appName} desktop.`);
+    return;
+  }
+  // The app owns project registration. Never rewrite its global-state file or
+  // open the dispatcher's live main-agent thread, which would take its writer lock.
+  const result = spawnSync('powershell', ['-NoProfile', '-Command',
+    '$ErrorActionPreference="Stop"; Start-Process -FilePath $env:AGENT_FLEET_DESKTOP_URL -WindowStyle Hidden'],
+    { windowsHide: true, encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, AGENT_FLEET_DESKTOP_URL: url } });
+  if (result.error || result.status !== 0) throw new Error(`Could not open the Agent Fleet project in ${appName} desktop.`);
+};
+
+export async function ensureDesktopProject({ workspace, disabled = false, engine = 'codex' }, runtime = {}) {
   if (disabled) return { status: 'disabled' };
   const platform = runtime.platform || process.platform;
   if (platform !== 'win32' && platform !== 'darwin') return { status: 'not-available', reason: 'Automatic desktop registration supports Windows and macOS.' };
   workspace = resolve(workspace);
+  if (engine === 'claude') return openClaudeFolder(workspace, platform, runtime);
   const readState = stateReader(runtime);
   const known = projectForWorkspace(readState(), workspace, platform);
   const report = project => ({ status: 'registered', project_id: project.id, project_name: project.name, workspace });
   if (known) return report(known);
-  const installed = runtime.installed || (() => {
-    // macOS: whether any app handles codex:// links.
-    if (platform === 'darwin') return spawnSync('osascript', ['-l', 'JavaScript', '-e',
-      'ObjC.import("AppKit"); !!$.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("codex://new"))'],
-      { encoding: 'utf8', timeout: 10000 }).stdout.trim() === 'true';
-    const result = spawnSync('powershell', ['-NoProfile', '-Command',
-      "if (Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\\codex') { exit 0 } else { exit 3 }"],
-      { windowsHide: true, encoding: 'utf8', timeout: 10000 });
-    if (result.error) throw result.error;
-    if (result.status !== 0 && result.status !== 3) throw new Error('Could not check Codex desktop availability.');
-    return result.status === 0;
-  });
+  const installed = runtime.installed || appInstalled(platform, 'codex', 'codex://new');
   if (!installed()) return { status: 'not-installed', workspace };
   const createDirectory = runtime.mkdir || (path => mkdirSync(path, { recursive: true }));
   createDirectory(workspace);
-  const launch = runtime.launch || (url => {
-    if (platform === 'darwin') {
-      const opened = spawnSync('open', ['-g', url], { encoding: 'utf8', timeout: 15000 });
-      if (opened.error || opened.status !== 0) throw new Error('Could not open the Agent Fleet project in Codex desktop.');
-      return;
-    }
-    // The app owns project registration. Never rewrite its global-state file or
-    // open the dispatcher's live main-agent thread, which would take its writer lock.
-    const result = spawnSync('powershell', ['-NoProfile', '-Command',
-      '$ErrorActionPreference="Stop"; Start-Process -FilePath $env:AGENT_FLEET_DESKTOP_URL -WindowStyle Hidden'],
-      { windowsHide: true, encoding: 'utf8', timeout: 15000,
-        env: { ...process.env, AGENT_FLEET_DESKTOP_URL: url } });
-    if (result.error || result.status !== 0) throw new Error('Could not open the Agent Fleet project in Codex desktop.');
-  });
+  const launch = runtime.launch || appLauncher(platform, 'Codex');
   launch(desktopWorkspaceUrl(workspace));
   const sleep = runtime.sleep || (ms => new Promise(r => setTimeout(r, ms)));
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -89,15 +95,30 @@ export async function ensureDesktopProject({ workspace, disabled = false }, runt
     message: 'Codex has not confirmed project registration. Check for a folder-access prompt in the app, then rerun setup.' };
 }
 
+// A Claude worker's folder belongs in the Claude desktop Code tab, not in Codex. Claude desktop has
+// no public project list to read back, so the result is 'opened', never 'registered': the app asks
+// the owner to confirm the folder and then starts a Code session there.
+async function openClaudeFolder(workspace, platform, runtime) {
+  const installed = runtime.installed || appInstalled(platform, 'claude', 'claude://code/new');
+  if (!installed()) return { status: 'not-installed', app: 'claude', workspace };
+  const createDirectory = runtime.mkdir || (path => mkdirSync(path, { recursive: true }));
+  createDirectory(workspace);
+  const launch = runtime.launch || appLauncher(platform, 'Claude');
+  launch(claudeWorkspaceUrl(workspace));
+  return { status: 'opened', app: 'claude', workspace,
+    message: 'Claude desktop opened a Code session in this folder. Confirm the folder prompt in the app.' };
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  let workspace, disabled = false;
+  let workspace, disabled = false, engine = 'codex';
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--no-desktop') disabled = true;
     else if (args[i] === '--workspace' && args[i+1] && !args[i+1].startsWith('--')) workspace = args[++i];
-    else throw new Error('Usage: node setup-desktop.mjs --workspace PATH [--no-desktop]');
+    else if (args[i] === '--engine' && ['codex', 'claude'].includes(args[i+1])) engine = args[++i];
+    else throw new Error('Usage: node setup-desktop.mjs --workspace PATH [--engine codex|claude] [--no-desktop]');
   }
   if (!workspace && !disabled) throw new Error('--workspace is required');
-  try { console.log(JSON.stringify(await ensureDesktopProject({ workspace, disabled }), null, 2)); }
+  try { console.log(JSON.stringify(await ensureDesktopProject({ workspace, disabled, engine }), null, 2)); }
   catch { console.error('Desktop project setup failed. Worker data and sessions are preserved.'); process.exitCode = 1; }
 }

@@ -49,6 +49,22 @@ test('missing desktop app does not create a workspace or invoke its protocol', a
   assert.equal(result.status,'not-installed');
 });
 
+test('Claude workers open the folder through the Claude desktop link with special characters intact', async () => {
+  const workspace = resolve("fixture 工作 & ' folder");
+  let opened;
+  const result = await ensureDesktopProject({workspace,engine:'claude'}, {platform:'win32',installed:()=>true,mkdir:()=>{},
+    readState:()=>{throw Error('unexpected Codex read');},launch:url=>{opened=url;}});
+  assert.equal(result.status,'opened');
+  assert.equal(new URL(opened).searchParams.get('folder'),workspace);
+  assert.equal(new URL(opened).searchParams.has('q'),false);
+});
+
+test('Claude workers without Claude desktop do not create a workspace or launch anything', async () => {
+  const result = await ensureDesktopProject({workspace:resolve('fixture-absent'),engine:'claude'},
+    {platform:'darwin',installed:()=>false,mkdir:()=>{throw Error('unexpected write');},launch:()=>{throw Error('unexpected launch');}});
+  assert.deepEqual(result,{status:'not-installed',app:'claude',workspace:resolve('fixture-absent')});
+});
+
 test('Windows root lookup ignores casing and distinguishes different folders', () => {
   const state={'local-projects':{fleet:{id:'fleet',rootPaths:['C:\\Users\\Me\\Documents\\AgentFleet']}}};
   assert.equal(projectForWorkspace(state,'c:\\users\\me\\documents\\agentfleet','win32').id,'fleet');

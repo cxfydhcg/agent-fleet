@@ -77,6 +77,12 @@ It preserves the same session and never opens it. Claude worker chats remain in
 the worker dashboard. A sidebar project and a visible main-agent chat are checked
 separately.
 
+A Claude worker (`--engine claude`) puts its folder in the Claude desktop app, not
+Codex: setup opens `claude://code/new?folder=<workspace>`, and the app starts a
+Code session in that folder after the owner confirms its folder prompt. Claude
+desktop exposes no project list to verify, so `desktop.status` is `opened` (or
+`not-installed`), never `registered`. No Codex project is created.
+
 Repair only these project registrations for an installed worker, without
 redeploying or restarting the service, changing permissions, or reopening pairing:
 

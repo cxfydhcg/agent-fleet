@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 if ($Restricted -and $FullAccess) { throw 'Pass either -FullAccess or -Restricted, not both.' }
 $configPath = Join-Path $DataDir 'config.json'
 function Ensure-DesktopProject {
-    $desktopArgs = @((Join-Path $PSScriptRoot 'setup-desktop.mjs'),'--workspace',$Workspace)
+    $desktopArgs = @((Join-Path $PSScriptRoot 'setup-desktop.mjs'),'--workspace',$Workspace,'--engine',$Engine)
     if ($NoDesktop) { $desktopArgs += '--no-desktop' }
     $desktopOutput = & node @desktopArgs
     if ($LASTEXITCODE -ne 0) { throw 'Worker is configured, but desktop project registration failed.' }

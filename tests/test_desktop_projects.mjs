@@ -74,8 +74,8 @@ test('missing desktop app is reported without claiming registration', async () =
   assert.equal(app.launches.length, 0);
 });
 
-test('orchestrator, Claude and disabled folder sorting register only the main project', async () => {
-  for (const config of [undefined, { ...workerConfig, engine: 'claude' }, { ...workerConfig, codex_app_folders: false },
+test('orchestrator and disabled folder sorting register only the main project', async () => {
+  for (const config of [undefined, { ...workerConfig, codex_app_folders: false },
     { ...workerConfig, codex_app_register_other_project: false }]) {
     const app = fakeApp();
     const report = await ensureDesktopProjects({ workspace, workerConfig: config }, app.runtime);
@@ -83,6 +83,22 @@ test('orchestrator, Claude and disabled folder sorting register only the main pr
     assert.equal(report.projects.other, undefined);
     assert.equal(app.launches.length, 0);
   }
+});
+
+test('a Claude worker opens its folder in Claude desktop and never touches Codex', async () => {
+  const app = fakeApp({ pending: true });
+  app.runtime.readState = () => { throw new Error('Codex state must not be read for a Claude worker'); };
+  const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, app.runtime);
+  assert.equal(report.status, 'opened');
+  assert.equal(report.projects.main.app, 'claude');
+  assert.equal(report.projects.other, undefined);
+  assert.equal(app.launches.length, 1);
+  const url = new URL(app.launches[0]);
+  assert.equal(url.protocol, 'claude:');
+  assert.equal(url.hostname, 'code');
+  assert.equal(url.pathname, '/new');
+  assert.equal(url.searchParams.get('folder'), workspace);
+  assert.deepEqual(app.directories, [workspace]);
 });
 
 test('no-desktop never reads app state, creates folders, or launches the app', async () => {
