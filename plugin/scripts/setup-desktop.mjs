@@ -32,10 +32,15 @@ export async function ensureDesktopProjects({ workspace, workerConfig, disabled 
     if (directoryName !== expectedName)
       throw new Error('Task directory name must match the configured project name. / 任务目录名称必须与配置的项目名称一致。');
   }
+  // A Claude worker opens its other-agents folder in Claude desktop as well; the Codex project-name rule doesn't apply.
+  const claudeOther = workerConfig?.engine === 'claude' && !disabled &&
+    typeof workerConfig.tasks_dir === 'string' && isAbsolute(workerConfig.tasks_dir);
   const main = await ensureDesktopProject({ workspace, disabled, engine: workerConfig?.engine }, runtime);
   const projects = { main };
   if (otherEnabled && ['registered', 'pending'].includes(main.status))
     projects.other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir }, runtime);
+  else if (claudeOther && main.status === 'opened')
+    projects.other = await ensureDesktopProject({ workspace: workerConfig.tasks_dir, engine: 'claude' }, runtime);
   const incomplete = Object.values(projects).find(project => project.status !== 'registered');
   return { status: incomplete?.status || 'registered', projects,
     ...(incomplete?.message ? { message: incomplete.message } : {}) };

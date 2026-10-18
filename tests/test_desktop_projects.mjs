@@ -85,20 +85,35 @@ test('orchestrator and disabled folder sorting register only the main project', 
   }
 });
 
-test('a Claude worker opens its folder in Claude desktop and never touches Codex', async () => {
+test('a Claude worker opens both folders in Claude desktop and never touches Codex', async () => {
   const app = fakeApp({ pending: true });
   app.runtime.readState = () => { throw new Error('Codex state must not be read for a Claude worker'); };
   const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, app.runtime);
   assert.equal(report.status, 'opened');
   assert.equal(report.projects.main.app, 'claude');
-  assert.equal(report.projects.other, undefined);
-  assert.equal(app.launches.length, 1);
+  assert.equal(report.projects.other.app, 'claude');
+  assert.equal(app.launches.length, 2);
   const url = new URL(app.launches[0]);
   assert.equal(url.protocol, 'claude:');
   assert.equal(url.hostname, 'code');
   assert.equal(url.pathname, '/new');
   assert.equal(url.searchParams.get('folder'), workspace);
-  assert.deepEqual(app.directories, [workspace]);
+  assert.equal(new URL(app.launches[1]).searchParams.get('folder'), tasks);
+  assert.deepEqual(app.directories, [workspace, tasks]);
+});
+
+test('a Claude worker skips the other folder when its task path is unusable or Claude desktop is missing', async () => {
+  for (const tasks_dir of [undefined, 'relative tasks']) {
+    const app = fakeApp({ pending: true });
+    const report = await ensureDesktopProjects({ workspace, workerConfig: { engine: 'claude', tasks_dir } }, app.runtime);
+    assert.equal(report.projects.other, undefined);
+    assert.equal(app.launches.length, 1);
+  }
+  const absent = fakeApp({ installed: false });
+  const report = await ensureDesktopProjects({ workspace, workerConfig: { ...workerConfig, engine: 'claude' } }, absent.runtime);
+  assert.equal(report.status, 'not-installed');
+  assert.equal(report.projects.other, undefined);
+  assert.equal(absent.launches.length, 0);
 });
 
 test('no-desktop never reads app state, creates folders, or launches the app', async () => {

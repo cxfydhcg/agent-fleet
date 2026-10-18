@@ -79,7 +79,8 @@ separately.
 
 A Claude worker (`--engine claude`) puts its folder in the Claude desktop app, not
 Codex: setup opens `claude://code/new?folder=<workspace>`, and the app starts a
-Code session in that folder after the owner confirms its folder prompt. Claude
+Code session in that folder after the owner confirms its folder prompt; the
+other-agents folder (`tasks_dir`, e.g. `AgentFleet-其他`) is opened the same way. Claude
 desktop exposes no project list to verify, so `desktop.status` is `opened` (or
 `not-installed`), never `registered`. No Codex project is created.
 
