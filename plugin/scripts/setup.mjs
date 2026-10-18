@@ -115,6 +115,8 @@ function setupMacWorker() {
   mkdirSync(deployment, { recursive: true });
   cpSync(join(root, 'runtime', 'worker'), join(deployment, 'worker'), { recursive: true, force: true });
   for (const file of ['install-worker.sh', 'LICENSE']) cpSync(join(root, 'runtime', file), join(deployment, file), { force: true });
+  // The worker reports this as its version (/health, profile), as on Windows.
+  writeFileSync(join(deployment, 'plugin-version.txt'), JSON.parse(readFileSync(join(root, 'plugin.json'), 'utf8')).version);
   const result = lastObject(run('bash', [join(deployment, 'install-worker.sh'), ...args]));
   const clientHome = join(dataDir, 'local-client');
   const env = { ...process.env, AGENT_FLEET_HOME: clientHome };
