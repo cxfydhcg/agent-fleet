@@ -31,6 +31,8 @@
   .session.active { background: var(--user); }
   .session .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .session .sub { color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge.kind { color: var(--muted); }
+  .session .role { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
   .s-completed { color: var(--ok); } .s-running, .s-queued { color: var(--run); }
   .s-failed, .s-timed_out, .s-interrupted { color: var(--bad); } .s-cancelled { color: var(--idle); }
@@ -154,6 +156,7 @@
       listSep: '、', untitled: '未命名任务', thisComputer: '本机', busy: '忙：{0}', idle: '空闲', quotaWait: '等待额度',
       noGpu: '无独立显卡', ramGb: '{0}GB 内存', egress: '出口 {0}', computerFold: '电脑档案', hwChecked: '硬件信息检测于 {0}',
       role: '用途：{0}', roleMissing: '用途：未填写', software: '软件：{0}', account: '账号：{0}', accountName: '（{0}）', unknown: '未知',
+      kindMain: '主', kindResident: '固定', idleAgents: '还没有会话的常驻 Agent（{0}）',
       agentsFold: '常驻 Agent（{0}）', mainBadge: '（主）', lockedBadge: '（锁定）', noDispatchBadge: '（不能派任务）',
       sameNameBadge: '（{0} 个同名会话）', sessions: '会话', noTasks: '还没有任务', turns: '{0} 轮', forks: '分叉 {0}',
       back: '← 返回', workdir: '工作目录 {0}', sessionLabel: '会话 ', notCreated: '尚未创建',
@@ -175,6 +178,7 @@
       listSep: ', ', untitled: 'Untitled task', thisComputer: 'This computer', busy: 'Busy: {0}', idle: 'Idle', quotaWait: 'Waiting for quota',
       noGpu: 'No dedicated GPU', ramGb: '{0} GB RAM', egress: 'Egress {0}', computerFold: 'Computer profile', hwChecked: 'Hardware checked at {0}',
       role: 'Purpose: {0}', roleMissing: 'Purpose: not set', software: 'Software: {0}', account: 'Account: {0}', accountName: ' ({0})', unknown: 'unknown',
+      kindMain: 'main', kindResident: 'resident', idleAgents: 'Resident agents without a session ({0})',
       agentsFold: 'Resident agents ({0})', mainBadge: ' (main)', lockedBadge: ' (locked)', noDispatchBadge: ' (cannot dispatch)',
       sameNameBadge: ' ({0} sessions with this name)', sessions: 'Sessions', noTasks: 'No tasks yet',
       turns: (n) => n + (n === 1 ? ' turn' : ' turns'), forks: (n) => n + (n === 1 ? ' fork' : ' forks'),
@@ -379,7 +383,8 @@
       if (c.software && c.software.length) part.append(el('div', 'facts', t('software', c.software.join(t('listSep')))));
       for (const a of c.accounts || []) part.append(el('div', 'facts', t('account', a.site + (a.account ? t('accountName', a.account) : '') + ' · ' + word('accountStatus', a.status, a.status || t('unknown')))));
     }));
-    box.append(fold('agents', t('agentsFold', (profile.agents || []).length), true, (part) => { for (const a of profile.agents || []) {
+    const idle = (profile.agents || []).filter((a) => !groups.some((g) => g.name === a.name));
+    if (idle.length) box.append(fold('agents', t('idleAgents', idle.length), true, (part) => { for (const a of idle) {
       const card = el('div', 'agent');
       const head = el('div', 'name'); head.append(el('b', null, a.name + (a.type === 'main' ? t('mainBadge') : '') + (a.locked ? t('lockedBadge') : '') + (a.can_dispatch === false ? t('noDispatchBadge') : '') + (a.sessions > 1 ? t('sameNameBadge', a.sessions) : '')));
       if (a.status) head.append(document.createTextNode(' '), el('span', 'badge s-' + a.status, statusName(a.status)));
@@ -420,9 +425,19 @@
       if (!open) continue;
       for (const g of members) {
         const row = el('div', 'session' + (selected === g.key ? ' active' : ''));
-        const name = el('div', 'name'); name.append(el('span', null, g.name), el('span', 'badge s-' + g.status, statusName(g.status)));
+        const name = el('div', 'name'); name.append(el('span', null, g.name));
+        // A registered agent's card carries what the profile says about it: main or resident, limits, its job.
+        const agent = (profile && profile.agents || []).find((a) => a.name === g.name);
+        if (agent) {
+          name.append(el('span', 'badge kind', agent.type === 'main' ? t('kindMain') : t('kindResident')));
+          if (agent.locked) name.append(el('span', 'badge kind', t('lockedBadge').replace(/[（）() ]/g, '')));
+          if (agent.can_dispatch === false) name.append(el('span', 'badge kind', t('noDispatchBadge').replace(/[（）() ]/g, '')));
+        }
+        name.append(el('span', 'badge s-' + g.status, statusName(g.status)));
         const last = g.latest.latest_message || g.latest.error || g.latest.result || '';
-        row.append(name, el('div', 'sub', time(g.updated) + ' · ' + t('turns', g.tasks.length) + (g.forks ? ' · ' + t('forks', g.forks) : '')), el('div', 'sub', last.replace(/\s+/g, ' ')));
+        row.append(name);
+        if (agent && agent.role) row.append(el('div', 'role', agent.role));
+        row.append(el('div', 'sub', time(g.updated) + ' · ' + t('turns', g.tasks.length) + (g.forks ? ' · ' + t('forks', g.forks) : '')), el('div', 'sub', last.replace(/\s+/g, ' ')));
         row.addEventListener('click', () => select(g.key));
         list.append(row);
       }

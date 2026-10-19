@@ -1,6 +1,6 @@
 {
   "name": "agent-fleet",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Set up this computer as an orchestrator, worker, or both in Codex or Claude Code.",
   "author": {
     "name": "Agent Fleet"
