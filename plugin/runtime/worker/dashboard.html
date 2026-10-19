@@ -94,6 +94,10 @@
   .working::after { content: '…'; display: inline-block; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: .2; } }
   .sep { text-align: center; color: var(--muted); font-size: 12px; margin: 20px 0; }
+  .to-latest { position: fixed; right: 24px; bottom: 24px; z-index: 3; display: none; padding: 8px 14px; border-radius: 999px;
+               background: var(--panel); color: var(--text); border: 1px solid var(--line); box-shadow: 0 2px 10px rgba(0,0,0,.15); font-size: 13px; }
+  .to-latest.show { display: block; }
+  .to-latest:hover { background: var(--tool); }
   .empty { color: var(--muted); padding: 40px 20px; text-align: center; }
   #profile { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; }
   #profile .title { font-weight: 600; font-size: 14px; display: flex; gap: 8px; align-items: center; }
@@ -134,6 +138,7 @@
   <div id="list"><div class="empty" data-i18n="loading"></div></div>
   <div id="detail"><div class="empty" data-i18n="pickSession"></div></div>
 </main>
+<button id="to-latest" class="to-latest" type="button" data-i18n="toLatest"></button>
 <div id="login">
   <form id="login-form">
     <h2 data-i18n="loginTitle"></h2>
@@ -155,7 +160,7 @@
       accountStatus: { logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' },
       toolsUsed: '使用了 {0} 个工具', input: '输入', output: '输出', noOutput: '（没有输出）', toolFailed: '失败',
       runtime: 'Agent Fleet 运行时说明', working: '正在工作', copy: '复制', copied: '已复制',
-      cancelledUnsent: '已取消，未发送给 Agent', queuedNote: '排队中，还没发送',
+      cancelledUnsent: '已取消，未发送给 Agent', queuedNote: '排队中，还没发送', toLatest: '↓ 跳到最新',
       listSep: '、', untitled: '未命名任务', thisComputer: '本机', busy: '忙：{0}', idle: '空闲', quotaWait: '等待额度',
       noGpu: '无独立显卡', ramGb: '{0}GB 内存', egress: '出口 {0}', computerFold: '电脑档案', hwChecked: '硬件信息检测于 {0}',
       role: '用途：{0}', roleMissing: '用途：未填写', software: '软件：{0}', account: '账号：{0}', accountName: '（{0}）', unknown: '未知',
@@ -177,7 +182,7 @@
       accountStatus: { logged_in: 'signed in', logged_out: 'signed out', needs_verification: 'needs verification' },
       toolsUsed: (n) => (n === 1 ? 'Used 1 tool' : 'Used ' + n + ' tools'), input: 'Input', output: 'Output',
       noOutput: '(no output)', toolFailed: 'failed', runtime: 'Agent Fleet runtime note', working: 'Working',
-      copy: 'Copy', copied: 'Copied', cancelledUnsent: 'Cancelled, never sent to the agent', queuedNote: 'queued, not sent yet',
+      copy: 'Copy', copied: 'Copied', cancelledUnsent: 'Cancelled, never sent to the agent', queuedNote: 'queued, not sent yet', toLatest: '↓ Jump to latest',
       listSep: ', ', untitled: 'Untitled task', thisComputer: 'This computer', busy: 'Busy: {0}', idle: 'Idle', quotaWait: 'Waiting for quota',
       noGpu: 'No dedicated GPU', ramGb: '{0} GB RAM', egress: 'Egress {0}', computerFold: 'Computer profile', hwChecked: 'Hardware checked at {0}',
       role: 'Purpose: {0}', roleMissing: 'Purpose: not set', software: 'Software: {0}', account: 'Account: {0}', accountName: ' ({0})', unknown: 'unknown',
@@ -406,6 +411,7 @@
     selected = key; transcriptKey = ''; openKeys.clear();
     document.body.classList.toggle('viewing', !!key);
     renderList();
+    updateToLatest();
     if (key) renderDetail(true);
   }
   // Sessions in the same two folders as the desktop sidebars: AgentFleet (the main agent and what it opened)
@@ -487,12 +493,28 @@
     detail.replaceChildren(thread);
     // Opening a session shows its newest messages; a refresh keeps the reader where they were.
     pane = scroller();
-    pane.scrollTop = stick || force ? pane.scrollHeight : at;
+    pane.scrollTop = stick || force || Date.now() < jumpingUntil ? pane.scrollHeight : at;
+    updateToLatest();
   }
 
   // What scrolls the conversation: the detail pane side by side with the list, the page itself in the
   // narrow layout (a phone, or the fleet board's frame), where the pane grows to fit.
   const scroller = () => { const d = $('detail'); return d.scrollHeight > d.clientHeight + 1 ? d : document.scrollingElement; };
+  // "Jump to latest" shows once the reader has scrolled up from the newest message; End does the same.
+  function updateToLatest() {
+    const pane = scroller();
+    $('to-latest').classList.toggle('show', !!selected && pane.scrollHeight - pane.scrollTop - pane.clientHeight > 200);
+  }
+  let jumpingUntil = 0;  // a refresh landing mid-jump would otherwise stop the smooth scroll halfway
+  function jumpToLatest() { const pane = scroller(); jumpingUntil = Date.now() + 1500; pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' }); }
+  $('to-latest').addEventListener('click', jumpToLatest);
+  $('detail').addEventListener('scroll', updateToLatest);
+  window.addEventListener('scroll', updateToLatest);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'End' && selected && !e.ctrlKey && !e.metaKey && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      e.preventDefault(); jumpToLatest();
+    }
+  });
   // Which folds the reader opened, kept across the 4-second refreshes while a session runs.
   const openKeys = new Set();
   function foldable(cls, key, summary, fill) {
@@ -586,6 +608,7 @@
       groups = buildGroups(data.tasks.filter((t) => !t.archived)); // archived in the Codex app = removed by the user
       renderList();
       if (selected) await renderDetail(false);
+      updateToLatest();  // also after a refresh that didn't re-render, in case a scroll event was missed
       $('updated').textContent = t('updated', new Date().toLocaleTimeString(locale()));
     } catch (err) { if (err.message !== 'unauthorized') $('updated').textContent = t('connFailed'); }
   }
