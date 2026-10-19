@@ -413,7 +413,8 @@
     if (!groups.length) { list.append(el('div', 'section', t('sessions')), el('div', 'empty', t('noTasks'))); return; }
     for (const side of ['main', 'other']) {
       const members = groups.filter((g) => (g.folder || 'main') === side);
-      if (!members.length) continue;
+      // Both folders always show, an empty one with 0, so an empty AgentFleet-Other doesn't look missing.
+      if (!members.length && !folderNames[side]) continue;
       const key = 'folder-' + side, open = isOpen(key, true);
       const head = el('div', 'section folder', (open ? '▾ ' : '▸ ') + (folderNames[side] || side) + ' · ' + members.length);
       head.addEventListener('click', () => {
