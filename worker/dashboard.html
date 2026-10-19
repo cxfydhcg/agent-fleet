@@ -50,6 +50,8 @@
   .bubble { background: var(--user); border-radius: 18px; padding: 10px 16px; max-width: 85%; }
   .runtime { font-size: 11px; color: var(--muted); max-width: 85%; margin-bottom: 4px; }
   .runtime > summary { cursor: pointer; list-style: none; text-align: right; }
+  .runtime.unsent { max-width: none; margin: 12px 0; }
+  .runtime.unsent > summary { text-align: center; }
   .runtime > div { white-space: pre-wrap; margin-top: 4px; }
   .turn > .md { margin: 10px 0; }
   .md { font-size: 15px; line-height: 1.7; word-break: break-word; }
@@ -153,6 +155,7 @@
       accountStatus: { logged_in: '已登录', logged_out: '未登录', needs_verification: '需要验证' },
       toolsUsed: '使用了 {0} 个工具', input: '输入', output: '输出', noOutput: '（没有输出）', toolFailed: '失败',
       runtime: 'Agent Fleet 运行时说明', working: '正在工作', copy: '复制', copied: '已复制',
+      cancelledUnsent: '已取消，未发送给 Agent', queuedNote: '排队中，还没发送',
       listSep: '、', untitled: '未命名任务', thisComputer: '本机', busy: '忙：{0}', idle: '空闲', quotaWait: '等待额度',
       noGpu: '无独立显卡', ramGb: '{0}GB 内存', egress: '出口 {0}', computerFold: '电脑档案', hwChecked: '硬件信息检测于 {0}',
       role: '用途：{0}', roleMissing: '用途：未填写', software: '软件：{0}', account: '账号：{0}', accountName: '（{0}）', unknown: '未知',
@@ -174,7 +177,7 @@
       accountStatus: { logged_in: 'signed in', logged_out: 'signed out', needs_verification: 'needs verification' },
       toolsUsed: (n) => (n === 1 ? 'Used 1 tool' : 'Used ' + n + ' tools'), input: 'Input', output: 'Output',
       noOutput: '(no output)', toolFailed: 'failed', runtime: 'Agent Fleet runtime note', working: 'Working',
-      copy: 'Copy', copied: 'Copied',
+      copy: 'Copy', copied: 'Copied', cancelledUnsent: 'Cancelled, never sent to the agent', queuedNote: 'queued, not sent yet',
       listSep: ', ', untitled: 'Untitled task', thisComputer: 'This computer', busy: 'Busy: {0}', idle: 'Idle', quotaWait: 'Waiting for quota',
       noGpu: 'No dedicated GPU', ramGb: '{0} GB RAM', egress: 'Egress {0}', computerFold: 'Computer profile', hwChecked: 'Hardware checked at {0}',
       role: 'Purpose: {0}', roleMissing: 'Purpose: not set', software: 'Software: {0}', account: 'Account: {0}', accountName: ' ({0})', unknown: 'unknown',
@@ -478,12 +481,18 @@
     for (const task of g.tasks.filter((x) => x.status === 'failed' || x.status === 'timed_out')) {
       body.append(el('div', 'sep', t('taskFailed', task.task_id.slice(0, 8), statusName(task.status), task.error || '')));
     }
-    const stick = detail.scrollTop + detail.clientHeight >= detail.scrollHeight - 40, at = detail.scrollTop;
+    let pane = scroller();
+    const stick = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 40, at = pane.scrollTop;
     const thread = el('div', 'thread'); thread.append(head, info, note, body);
     detail.replaceChildren(thread);
-    detail.scrollTop = stick || force ? detail.scrollHeight : at;  // a refresh keeps the reader where they were
+    // Opening a session shows its newest messages; a refresh keeps the reader where they were.
+    pane = scroller();
+    pane.scrollTop = stick || force ? pane.scrollHeight : at;
   }
 
+  // What scrolls the conversation: the detail pane side by side with the list, the page itself in the
+  // narrow layout (a phone, or the fleet board's frame), where the pane grows to fit.
+  const scroller = () => { const d = $('detail'); return d.scrollHeight > d.clientHeight + 1 ? d : document.scrollingElement; };
   // Which folds the reader opened, kept across the 4-second refreshes while a session runs.
   const openKeys = new Set();
   function foldable(cls, key, summary, fill) {
@@ -513,9 +522,13 @@
     let turn = null, tools = null;
     const newTurn = () => { turn = el('div', 'turn'); box.append(turn); tools = null; };
     entries.forEach((e, i) => {
-      if (e.kind === 'user') {
+      if (e.kind === 'user' && e.state === 'cancelled') {
+        // Cancelled while still queued: the agent never saw it, so it is not part of the conversation.
+        const note = el('summary', null, t('cancelledUnsent') + ' · ' + time(e.time));
+        (turn || box).append(foldable('runtime unsent', 'c' + i, note, (d) => d.append(el('div', null, e.text || ''))));
+      } else if (e.kind === 'user') {
         const row = el('div', 'u-row');
-        row.append(el('div', 'u-time', time(e.time)));
+        row.append(el('div', 'u-time', time(e.time) + (e.state === 'queued' ? ' · ' + t('queuedNote') : '')));
         let text = e.text || '';
         const runtime = text.match(/^\[Agent Fleet runtime:[\s\S]*?\]\n\n/);
         if (runtime) {
