@@ -434,6 +434,8 @@
           if (agent.locked) name.append(el('span', 'badge kind', t('lockedBadge').replace(/[（）() ]/g, '')));
           if (agent.can_dispatch === false) name.append(el('span', 'badge kind', t('noDispatchBadge').replace(/[（）() ]/g, '')));
         }
+        // Which engine runs the session: two engines can share one worker.
+        name.append(el('span', 'badge kind', g.latest.engine === 'claude' ? 'Claude Code' : 'Codex'));
         name.append(el('span', 'badge s-' + g.status, statusName(g.status)));
         const last = g.latest.latest_message || g.latest.error || g.latest.result || '';
         row.append(name);
