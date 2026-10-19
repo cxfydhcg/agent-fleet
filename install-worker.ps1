@@ -264,7 +264,8 @@ $config = [ordered]@{
     worker_rules_file = (Join-Path $Workspace 'worker-rules.md')
     tasks_dir = $tasksDir
     shared_dir = (Join-Path $Workspace 'shared')
-    allowed_roots = @($Workspace)
+    # Folders added later (e.g. a resident agent's project) survive reruns and updates.
+    allowed_roots = @(@($Workspace) + @($(if ($priorSettings) { $priorSettings.allowed_roots })) | Where-Object { $_ } | Select-Object -Unique)
     allowed_hosts = $allowedHosts
     main_agent_workspaces = @($mainWorkspace)
     executor = $(if ($Engine -eq 'claude') { 'claude' } else { 'app-server' })
