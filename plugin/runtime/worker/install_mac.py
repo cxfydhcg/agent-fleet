@@ -323,7 +323,7 @@ class Setup:
             'tailscale_executable': self.tailscale_executable, 'state_dir': str(self.data / 'state'),
             'token_file': str(self.token_file), 'worker_rules_file': str(self.workspace / 'worker-rules.md'),
             'tasks_dir': str(self.tasks_dir), 'shared_dir': str(self.workspace / 'shared'),
-            'allowed_roots': list(dict.fromkeys([str(self.workspace)] + list((self.prior or {}).get('allowed_roots') or []))),  # added folders survive reruns 'allowed_hosts': hosts, 'main_agent_workspaces': [str(self.main_workspace)],
+            'allowed_roots': list(dict.fromkeys([str(self.workspace)] + list((self.prior or {}).get('allowed_roots') or []))), 'allowed_hosts': hosts, 'main_agent_workspaces': [str(self.main_workspace)],
             'executor': 'claude' if self.engine == 'claude' else 'app-server', 'engine': self.engine,
             'engines': self.engines, 'main_agents': self.mains,
             'claude_executable': self.claude or '', 'local_only': self.connectivity != 'tailscale',
