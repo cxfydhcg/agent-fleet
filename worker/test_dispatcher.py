@@ -712,6 +712,14 @@ class AppServerDispatcherTests(DispatcherTests):
         user, tool, reply = self.manager.transcript('cl-thread')
         self.assertEqual((user['kind'], reply['kind'], reply['text']), ('user', 'agent', '**one** file'))
         self.assertEqual((tool['type'], json.loads(tool['input']), tool['output'], tool['error']), ('Bash', {'command': 'ls'}, 'a.txt', False))
+        # A request cancelled before it started never reached the agent; a queued one hasn't yet.
+        self.manager.jobs['cl-cancelled'] = {'task_id': 'cl-cancelled', 'thread_id': 'cl-thread', 'engine': 'claude', 'prompt': 'again',
+                                             'created_at': '5', 'finished_at': '6', 'status': 'cancelled'}
+        self.manager.jobs['cl-queued'] = {'task_id': 'cl-queued', 'thread_id': 'cl-thread', 'engine': 'claude', 'prompt': 'again',
+                                          'created_at': '7', 'status': 'queued'}
+        entries = self.manager.transcript('cl-thread')
+        self.assertEqual([(e['text'], e.get('state')) for e in entries if e['kind'] == 'user'],
+                         [('list files', None), ('again', 'cancelled'), ('again', 'queued')])
 
 
     async def test_full_access_asks_and_auto_approves(self):

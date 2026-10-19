@@ -860,7 +860,11 @@ class TaskManager:
         if jobs:
             entries = []
             for job in jobs:
-                entries.append({'kind': 'user', 'time': job['created_at'], 'text': job['prompt']})
+                entry = {'kind': 'user', 'time': job['created_at'], 'text': job['prompt']}
+                # A request cancelled before it started never reached the agent; one still queued hasn't yet.
+                if job['status'] == 'queued' or (job['status'] == 'cancelled' and not job.get('started_at')):
+                    entry['state'] = job['status']
+                entries.append(entry)
                 events = self.jobs_dir / job['task_id'] / 'events.jsonl'
                 last_text, tools = None, {}
                 for line in events.read_text(encoding='utf-8', errors='replace').splitlines() if events.exists() else []:
