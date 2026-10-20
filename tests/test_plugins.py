@@ -195,6 +195,19 @@ class PluginSetupTests(unittest.TestCase):
                 self.assertEqual(calls[0]['name'], 'continue_task')
                 self.assertEqual(calls[0]['arguments']['task_id'], 'existing-task')
                 self.assertNotIn('submit_task',[c['name'] for c in calls])
+                self.assertNotIn('timeout_seconds', calls[0]['arguments'])  # the worker's default unless asked
+                # --timeout sets this turn's limit; a bad value stops before anything is sent.
+                run = lambda *extra: subprocess.run(['node',str(ROOT/'plugin/scripts/fleet.mjs'),'export','fixture-pc','Reply OK',*extra],
+                    env=self.session_env(AGENT_FLEET_HOME=str(self.home)),cwd=self.root,capture_output=True,text=True,encoding='utf-8',timeout=20)
+                calls.clear()
+                self.assertEqual(run('--timeout=90').returncode, 0)
+                self.assertEqual([c['arguments'].get('timeout_seconds') for c in calls if c['name'] == 'continue_task'], [5400])
+                calls.clear()
+                for bad in ('abc', '0', '121', '3h'):
+                    result = run(f'--timeout={bad}')
+                    self.assertEqual(result.returncode, 2, bad)
+                    self.assertIn('--timeout', result.stderr)
+                self.assertEqual(calls, [])
             finally:
                 server.shutdown(); thread.join()
 
