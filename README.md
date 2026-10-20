@@ -160,7 +160,7 @@ node <插件目录>/scripts/setup.mjs --role worker --engines codex,claude --mai
 
 全新安装的主 Agent 文件夹按引擎命名：`main-codex/AGENTS.md`（含专用 `.codex/config.toml`）和 `main-claude/CLAUDE.md`，只装一个引擎就只有其中一个。0.7.2 以前装的电脑用的是 `main-agent`，重跑或更新会保留它；已有安装重跑保留各自的 ID、名字、目录和说明。默认中文名字是“主agent export”和“Claude主agent”，英文为“Main agent”和“Claude main agent”。
 
-管理会话按名字调用，例如 `fleet.mjs agent <电脑名> "Claude主agent" "整理文件"`；名字决定引擎，无需再选引擎。`export <电脑名>` 仍找第一个主 Agent；`check <电脑名> [名字]` 检查指定主 Agent，省略名字则逐个检查。`overview` 显示全部引擎和主 Agent。其他会话不能借主 Agent 名字取得管理权限。
+每一轮默认最多跑 30 分钟，到时会被停掉（已提交的工作还在，再发一条消息就在同一个会话里接着做）；一轮里要跑长测试时加 `--timeout=60m`（1 到 120 分钟），只对这一轮有效。管理会话按名字调用，例如 `fleet.mjs agent <电脑名> "Claude主agent" "整理文件"`；名字决定引擎，无需再选引擎。`export <电脑名>` 仍找第一个主 Agent；`check <电脑名> [名字]` 检查指定主 Agent，省略名字则逐个检查。`overview` 显示全部引擎和主 Agent。其他会话不能借主 Agent 名字取得管理权限。
 
 配置增加 `engines` 与 `main_agents`（每项包含 `name`、`engine`、`id`、`workspace`）。原有 `executor`、`main_agent_name`、`main_agent_id`、`main_agent_workspaces` 对应第一个引擎；没有 `engines` 的旧配置按原来的单引擎运行。续接始终使用原会话引擎；主 Agent 的子任务继承它的引擎，直接提交的任务可显式指定已启用的 `engine`。桌面会话进入实际执行它的 App。
 

@@ -42,6 +42,9 @@
 //   node fleet.mjs continue <电脑> <task_id> <prompt> [--model=模型] [--effort=档位]
 //                                                     --model/--effort 平时不加；只在会话一直报 "Selected model is at capacity"
 //                                                     或用户要求时用。本轮生效，之后的续接沿用。
+//   agent / export / submit / continue 都可以加 [--timeout=60m]：这一轮最多跑多久（默认 30 分钟，最多 120 分钟；
+//                                                     写 90、90m、1h 或 5400s，不写单位按分钟）。只管这一轮，不影响之后的轮次。
+//                                                     用在一轮里要跑长测试、推送前钩子很慢的任务上。
 //   node fleet.mjs update   <电脑>                    把那台电脑的插件和 worker 更新到最新版：开一个一次性任务更新插件、重跑安装，
 //                                                     服务空闲后自己重启；等重启完成后报告新旧版本。需要那台电脑是完全访问。
 //   node fleet.mjs get      <电脑> <task_id>
@@ -707,7 +710,7 @@ async function namedSessions() {
 async function continueWhenFree(taskId, prompt) {
   for (let i = 0; i < 360; i++) {
     try {
-      return await call("continue_task", { task_id: taskId, prompt });
+      return await call("continue_task", { task_id: taskId, prompt, ...turnTimeout });
     } catch (error) {
       if (!/pending work|Wait for the task to finish/.test(error.message)) throw error;
       if (i === 0) console.error(T("  对方正在处理别的事（例如子任务完成后的自动通知），排队等它空闲...",
@@ -764,7 +767,7 @@ async function talkMain(prompt, requested) {
   if (pc.manager_name !== (main.manager_name ?? undefined)) await call("update_computer_profile", { manager_name: pc.manager_name ?? "" });
   const name = main.name;
   const started = main.task_id ? await continueWhenFree(main.task_id, prompt)
-    : await call("submit_task", { prompt, name, ...(main.workspace ? { workspace: main.workspace } : {}) });
+    : await call("submit_task", { prompt, name, ...(main.workspace ? { workspace: main.workspace } : {}), ...turnTimeout });
   return report(name, started, (pc.agents[name] ??= {}));
 }
 
@@ -824,7 +827,7 @@ async function talkNamed(agentName, prompt, create = flag("--new")) {
       agent = pc.agents[agentName] = { ...(agent ?? {}) };
     } else if (agent || create) {
       const workspace = option("workspace") ?? agent?.workspace;
-      started = await call("submit_task", { prompt, name: agentName, ...(workspace ? { workspace } : {}) });
+      started = await call("submit_task", { prompt, name: agentName, ...(workspace ? { workspace } : {}), ...turnTimeout });
       agent = pc.agents[agentName] = { ...(agent ?? {}), ...(workspace ? { workspace } : {}) };
     } else {
       const names = [...new Set([...Object.keys(pc.agents), ...(await namedSessions()).keys()])];
@@ -851,6 +854,20 @@ async function report(agentName, started, agent) {
                                "This session was opened in the Codex app, which keeps it locked. Quit the Codex app completely and retry, or let the main agent start a new task.") } : {}) });
 }
 
+// --timeout: how long this turn may run before the worker stops it (its default is 30 minutes). Checked here, before
+// anything is sent, so a typo never starts a turn with the default.
+const turnTimeout = (() => {
+  const raw = option("timeout");
+  if (raw === undefined) return {};
+  const m = /^(\d+)\s*(s|m|h)?$/i.exec(raw.trim());
+  const seconds = m ? Number(m[1]) * ({ s: 1, m: 60, h: 3600 }[(m[2] ?? "m").toLowerCase()]) : NaN;
+  if (!(seconds >= 60 && seconds <= 7200)) {
+    console.error(T("--timeout 要在 1 到 120 分钟之间，例如 --timeout=60m、--timeout=90 或 --timeout=2h。",
+                    "--timeout must be between 1 and 120 minutes, e.g. --timeout=60m, --timeout=90 or --timeout=2h."));
+    process.exit(2);
+  }
+  return { timeout_seconds: seconds };
+})();
 await connect(pc);
 const list = (value) => value?.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
 const toggle = (name) => {
@@ -1010,12 +1027,12 @@ End with one line only: version=<new version>`);
     const name = option("name");
     if (name && isMain(pc, name)) requireOrchestrator();
     const engine = option("engine");
-    const started = await call("submit_task", { prompt: rest.join(" "), ...(name ? { name } : {}), ...(engine ? { engine } : {}), ...modelChoice() });
+    const started = await call("submit_task", { prompt: rest.join(" "), ...(name ? { name } : {}), ...(engine ? { engine } : {}), ...modelChoice(), ...turnTimeout });
     out(flag("--wait") ? await wait(started.task_id) : started);
     break;
   }
   case "continue":
-    out(await call("continue_task", { task_id: rest[0], prompt: rest.slice(1).join(" "), ...modelChoice() }));
+    out(await call("continue_task", { task_id: rest[0], prompt: rest.slice(1).join(" "), ...modelChoice(), ...turnTimeout }));
     break;
   case "get":
     out(await call("get_task", { task_id: rest[0] }));

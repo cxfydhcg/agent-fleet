@@ -37,6 +37,7 @@ MSG
 
 - The heredoc keeps quotes and newlines in the message intact. Pass the user's words through, adding only the context the agent needs (it can't see this conversation).
 - The command blocks until the agent's turn finishes and prints JSON with `status`, `reply`, `error` and sometimes `hint`. Use a long timeout (10 minutes).
+- Each turn may run 30 minutes by default; the worker then stops it as `timed_out` (committed work stays, and the next message continues the same session). When a turn will run long tests or a slow pre-push hook, add `--timeout=60m` (1 to 120 minutes; `90`, `90m`, `1h` or `5400s`) to `agent`, `export`, `submit` or `continue`. It applies to that turn only. Wait on such a command in the background rather than with a 10-minute shell timeout.
 - **The main agent decides by itself** whether to do the work, spawn sub-agents, or split it. Give it the goal, not step-by-step orders, unless the user asked for exact steps. It ends its turn right after dispatching, so the first reply is often a plan plus sub-task ids.
 - To follow up on that work, send another message, for example asking it to check the sub-tasks and report. You can also wait on one sub-task with `wait <电脑> <task_id>`, then ask the main agent for the report.
 
